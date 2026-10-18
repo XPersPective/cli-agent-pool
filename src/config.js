@@ -10,6 +10,19 @@ export class PoolError extends Error {
 }
 
 const label = z.string().min(1).max(100).refine(value => !/[\u0000-\u001f\u007f]/.test(value), 'Kontrol karakterleri kullanılamaz.');
+export const billingModes = ['subscription', 'token_plan', 'free_credits', 'free', 'paid_api', 'unknown'];
+export const nonMeteredBillings = new Set(['subscription', 'token_plan', 'free_credits', 'free']);
+export const activeBillings = new Set(['subscription', 'token_plan', 'free_credits', 'free', 'paid_api']);
+
+const apiBlockSchema = z.object({
+  protocol: z.enum(['anthropic', 'openai']),
+  baseUrl: z.string().min(1).max(512).refine(value => {
+    try { const parsed = new URL(value); return parsed.protocol === 'https:' || parsed.protocol === 'http:'; }
+    catch { return false; }
+  }, 'API adresi geçerli bir http/https URL olmalı.'),
+  secretRef: label.regex(/^[a-zA-Z0-9_-]{1,64}$/).optional(),
+}).strict();
+
 export const configSchema = z.object({
   port: z.number().int().min(1024).max(65535).default(43127),
   python: z.string().min(1).default(process.platform === 'win32' ? 'python' : 'python3'),
@@ -17,14 +30,16 @@ export const configSchema = z.object({
   concurrency: z.number().int().min(1).max(8).default(1),
   routes: z.array(z.object({
     id: label.regex(/^[a-zA-Z0-9_-]+$/),
-    adapter: z.enum(['codex', 'claude', 'qwen', 'mmx']),
+    adapter: z.enum(['codex', 'claude', 'qwen', 'opencode', 'mmx']),
     executable: z.string().min(1).refine(value => path.isAbsolute(value), 'CLI yolu mutlak olmalı.'),
     enabled: z.boolean().default(false),
-    billing: z.enum(['subscription', 'unknown']).default('unknown'),
+    billing: z.enum(billingModes).default('unknown'),
+    autoSelect: z.boolean().optional(),
     trustedSettings: z.boolean().default(false),
     priority: z.number().int().min(0).max(1000).default(100),
     maxConcurrent: z.number().int().min(1).max(8).default(1),
     minRemainingPercent: z.number().min(0).max(100).default(0),
+    api: apiBlockSchema.optional(),
     models: z.array(z.object({
       id: label, alias: label, group: label,
       enabled: z.boolean().default(true),
@@ -43,6 +58,12 @@ export const configSchema = z.object({
       ctx.addIssue({ code: 'custom', message: 'mmx yalnızca metin görevi destekler.' });
     if (route.models.some(m => m.defaultEffort && !m.efforts.includes(m.defaultEffort)))
       ctx.addIssue({ code: 'custom', message: 'Varsayılan efor desteklenen değerlerden biri olmalı.' });
+    if (route.api) {
+      if (route.api.protocol === 'anthropic' && route.adapter !== 'claude')
+        ctx.addIssue({ code: 'custom', message: 'Anthropic uyumlu API yuvası claude adaptörünü kullanmalıdır.' });
+      if (route.api.protocol === 'openai' && route.adapter !== 'opencode')
+        ctx.addIssue({ code: 'custom', message: 'OpenAI uyumlu API yuvası opencode adaptörünü kullanmalıdır.' });
+    }
   }
 });
 

@@ -1,16 +1,32 @@
 import { randomBytes, timingSafeEqual, createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { configView, saveConfig, PoolError } from './config.js';
-import { discover } from './adapters.js';
+import { discover, opencodeCatalog, loginCommands } from './adapters.js';
 import { codexControl } from './codex-control.js';
+import { saveSecret, hasSecret } from './secrets-store.js';
+
+function annotateView(view, directory) {
+  return {
+    ...view,
+    secretStates: Object.fromEntries(view.config.routes.map(route => [
+      route.id,
+      route.api?.secretRef ? hasSecret(directory, route.api.secretRef) : false,
+    ])),
+  };
+}
 
 export function managementOperation(pool, management, body) {
   if (body.operation === 'save') {
     if (body.config?.port !== pool.config.port || body.config?.python !== pool.config.python) throw new PoolError('RESTART_REQUIRED', 'Port veya Python yolunu değiştirmek için servisi durdurup yerel ayarları değiştirin.');
+    if (body.secrets && typeof body.secrets === 'object') {
+      for (const [secretRef, value] of Object.entries(body.secrets)) {
+        if (typeof value === 'string' && value.trim()) saveSecret(management.directory, secretRef, value);
+      }
+    }
     pool.config = saveConfig(management.directory, body.config, body.revision);
     pool.schedule();
   } else if (body.operation !== 'get') throw new PoolError('INVALID_OPERATION', 'Geçersiz yönetim işlemi.');
-  return configView(management.directory);
+  return annotateView(configView(management.directory), management.directory);
 }
 
 export function browserUI(pool, management) {
@@ -55,17 +71,41 @@ export function browserUI(pool, management) {
     },
     async operation(body) {
       const { operation, payload = {} } = body;
-      if (operation === 'snapshot') return { connections: pool.config.routes.map(({ id, adapter, enabled, billing }) => ({ id, adapter, enabled, billing })), models: pool.models(), tasks: pool.list(50), installed: discover(), workspaceRoots: pool.config.workspaceRoots };
+      if (operation === 'snapshot') {
+        const quotas = Object.fromEntries(pool.config.routes.map(route => [route.id, pool.store.quota(route.id)]).filter(([, q]) => q));
+        return {
+          connections: pool.config.routes.map(({ id, adapter, enabled, billing, autoSelect, api }) => ({
+            id, adapter, enabled, billing,
+            autoSelect: autoSelect ?? (billing !== 'paid_api'),
+            protocol: api?.protocol || null,
+            baseUrl: api?.baseUrl || null,
+            hasSecret: api?.secretRef ? hasSecret(management.directory, api.secretRef) : false,
+            loginCommand: loginCommands[adapter],
+          })),
+          quotas,
+          models: pool.models(),
+          tasks: pool.list(50),
+          installed: discover(),
+          workspaceRoots: pool.config.workspaceRoots,
+        };
+      }
       if (operation === 'settings') return managementOperation(pool, management, { operation: 'get' });
       if (operation === 'save') return managementOperation(pool, management, { ...payload, operation: 'save' });
+      if (operation === 'secret') {
+        saveSecret(management.directory, payload.secretRef, payload.secret);
+        return { saved: payload.secretRef };
+      }
       if (operation === 'submit') return pool.submit(payload);
       if (operation === 'task') return pool.get(payload.taskId);
       if (operation === 'cancel') return pool.cancel(payload.taskId);
       if (operation === 'quota') return pool.getQuota(payload.routeId);
       if (operation === 'catalog') {
         const route = pool.config.routes.find(r => r.id === payload.routeId);
-        if (!route || route.adapter !== 'codex' || !pool.config.workspaceRoots[0]) throw new PoolError('UNSUPPORTED_DISCOVERY', 'Canlı keşif için Codex bağlantısı ve izinli çalışma klasörü gerekli.');
-        return codexControl(route, pool.config.workspaceRoots[0], pool.config.python, 'models');
+        const cwd = pool.config.workspaceRoots[0] || management.directory;
+        if (!route || !['codex', 'opencode'].includes(route.adapter)) throw new PoolError('UNSUPPORTED_DISCOVERY', 'Canlı model keşfi Codex ve OpenCode bağlantılarında desteklenir.');
+        return route.adapter === 'codex'
+          ? codexControl(route, cwd, pool.config.python, 'models')
+          : opencodeCatalog(route, cwd, pool.config.python);
       }
       throw new PoolError('INVALID_OPERATION', 'Geçersiz panel işlemi.');
     },

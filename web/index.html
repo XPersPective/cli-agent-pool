@@ -37,26 +37,37 @@
         </form>
       </section>
       <div class="right-column">
-        <section class="card" aria-labelledby="providers-heading"><div class="section-heading"><div><p class="eyebrow">BİLGİSAYARINIZDA</p><h2 id="providers-heading">CLI bağlantıları</h2></div><button id="open-settings" type="button">Modeller ve gruplar</button></div><div id="providers" class="provider-list"><p class="hint">Bağlantılar yükleniyor.</p></div></section>
+        <section class="card" aria-labelledby="providers-heading"><div class="section-heading"><div><p class="eyebrow">BİLGİSAYARINIZDA</p><h2 id="providers-heading">Bağlantılar, planlar ve krediler</h2></div><button id="open-settings" type="button">Modeller ve bağlantılar</button></div><div id="providers" class="provider-list"><p class="hint">Bağlantılar yükleniyor.</p></div></section>
         <section class="card" aria-labelledby="tasks-heading"><div class="section-heading"><div><p class="eyebrow">ÇALIŞMA GEÇMİŞİ</p><h2 id="tasks-heading">Son görevler</h2></div><span id="task-total" class="badge subtle">0</span></div><div id="tasks"><p class="empty">Henüz görev yok. İlk görevinizi soldaki formdan başlatın.</p></div></section>
       </div>
     </div>
     <section id="settings" class="card" aria-labelledby="settings-heading" hidden>
-      <div class="section-heading"><div><p class="eyebrow">SİZİN KURALLARINIZ</p><h2 id="settings-heading">Modeller ve gruplar</h2></div><button id="close-settings" type="button">Kapat</button></div>
-      <p class="hint">Grupları siz belirlersiniz. Model gücü ve efor ayrı ayarlardır. Bağlantıyı kapatmak çalışan işleri durdurmaz.</p>
+      <div class="section-heading"><div><p class="eyebrow">SİZİN KURALLARINIZ</p><h2 id="settings-heading">Modeller ve bağlantılar</h2></div><button id="close-settings" type="button">Kapat</button></div>
+      <p class="hint">Abonelik, token planı, günlük ücretsiz kredi veya kendi API sağlayıcınızı (Anthropic / OpenAI uyumlu) burada yönetin. API anahtarları yalnızca yerel veri klasörüne yazılır ve tarayıcıya geri gönderilmez.</p>
       <label class="setting-field" for="workspace-roots">İzin verilen çalışma klasörleri (her satıra bir klasör)<textarea id="workspace-roots" rows="3" placeholder="Örnek: D:\repositories\my-project"></textarea></label>
       <div id="settings-routes"></div>
-      <fieldset class="route-settings"><legend>Bağlantı ekle</legend>
+      <fieldset class="route-settings"><legend>Yerel CLI bağlantısı ekle</legend>
         <label class="setting-field" for="new-adapter">Kurulu CLI<select id="new-adapter"><option value="">CLI seçin</option></select></label>
-        <label class="setting-field" for="new-model">Model kimliği (Codex için boş bırakılabilir)<input id="new-model" maxlength="100" placeholder="CLI içinde kullandığınız gerçek model kimliği"></label>
-        <label class="route-header"><input id="subscription-confirmed" type="checkbox">Bu CLI’ın aboneliğimle yapılandırıldığını doğruladım.</label>
-        <button id="add-route" type="button">Bağlantıyı ekle</button>
-        <p class="hint">Yeni bağlantı kapalı eklenir. Codex model kataloğu CLI üzerinden bulunur; diğer CLI’lar için model kimliğini girin. Sağlayıcı anahtarları bu ekrana girilmez.</p>
+        <label class="setting-field" for="new-billing">Ödeme / plan türü<select id="new-billing"><option value="subscription">Abonelik (ChatGPT / Claude Pro-Max)</option><option value="token_plan">Token planı (sabit paket / Coding Plan)</option><option value="free_credits">Günlük / ücretsiz kredi (ör. mmx)</option><option value="free">Ücretsiz modeller (ör. OpenCode free)</option><option value="paid_api">Ücretli API (kullandıkça öde)</option></select></label>
+        <label class="setting-field" for="new-model">Model kimliği (Codex ve OpenCode için boş bırakılabilir)<input id="new-model" maxlength="100" placeholder="CLI içinde kullandığınız model (ör. sonnet, MiniMax-M2.7, qwen3.8-max)"></label>
+        <label class="route-header"><input id="subscription-confirmed" type="checkbox">Bu CLI’ın seçtiğim ödeme/plan türüyle yapılandırıldığını doğruladım.</label>
+        <button id="add-route" type="button">CLI bağlantısını ekle</button>
+        <p class="hint">Codex ve OpenCode model listesini otomatik çeker. Claude, Qwen ve mmx için ilk modeli girin; daha sonra yeni modeller ekleyebilirsiniz.</p>
+      </fieldset>
+      <fieldset class="route-settings"><legend>Özel API sağlayıcısı ekle (Anthropic veya OpenAI uyumlu)</legend>
+        <label class="setting-field" for="api-id">Bağlantı kimliği<input id="api-id" maxlength="60" placeholder="Örnek: qwen-api, deepseek-api, openrouter-api"></label>
+        <label class="setting-field" for="api-protocol">API yuvası / protokolü<select id="api-protocol"><option value="anthropic">Anthropic uyumlu (Claude Code üzerinden çalışır)</option><option value="openai">OpenAI uyumlu (OpenCode üzerinden çalışır)</option></select></label>
+        <label class="setting-field" for="api-billing">Ödeme / plan türü<select id="api-billing"><option value="token_plan">Token planı / Abonelik API</option><option value="free_credits">Ücretsiz kredi / Deneme</option><option value="free">Ücretsiz API</option><option value="paid_api">Ücretli API (kullandıkça öde)</option></select></label>
+        <label class="setting-field" for="api-base-url">API Base URL<input id="api-base-url" maxlength="512" placeholder="Örnek: https://dashscope-intl.aliyuncs.com/apps/anthropic"></label>
+        <label class="setting-field" for="api-key">API Anahtarı (yalnızca yerel diske yazılır, tekrar gösterilmez)<input id="api-key" type="password" autocomplete="off" maxlength="4096" placeholder="sk-..."></label>
+        <label class="setting-field" for="api-models">Model kimlikleri (virgülle ayırın)<input id="api-models" maxlength="300" placeholder="Örnek: qwen3.8-max-preview, deepseek-v4"></label>
+        <button id="add-api-route" type="button">API sağlayıcısını ekle</button>
+        <p class="hint">Anthropic yuvası kurulu Claude Code’u, OpenAI yuvası kurulu OpenCode’u kullanarak okuma/yazma/metin görevlerini çalıştırır.</p>
       </fieldset>
       <button id="save-settings" class="primary" type="button">Ayarları kaydet</button>
     </section>
     <section id="detail" class="card" aria-labelledby="detail-heading" hidden><div class="section-heading"><h2 id="detail-heading">Görev / kota ayrıntısı</h2><button id="close-detail" type="button">Kapat</button></div><pre id="detail-content" tabindex="0"></pre></section>
-    <footer>Abonelik oturumları kendi CLI’larında kalır. Bu ekran yalnızca bilgisayarınızda çalışır.</footer>
+    <footer>Kimlik bilgileri ve API anahtarları yalnızca bilgisayarınızdaki yerel veri klasöründe tutulur.</footer>
   </main>
 </body>
 </html>

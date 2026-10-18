@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { allowedWorkspace, overlaps, PoolError } from './config.js';
-import { checkAuth, execute, quota } from './adapters.js';
+import { allowedWorkspace, overlaps, PoolError, activeBillings, nonMeteredBillings, dataDirectory } from './config.js';
+import { checkAuth, execute, quota, loginCommands } from './adapters.js';
 import { codexControl } from './codex-control.js';
 
 export const taskSchema = z.object({
@@ -20,6 +20,7 @@ export class Pool {
   constructor(config, store, dependencies = {}) {
     this.config = config;
     this.store = store;
+    this.directory = dependencies.directory || dataDirectory();
     this.execute = dependencies.execute || execute;
     this.checkAuth = dependencies.checkAuth || checkAuth;
     this.active = new Map();
@@ -28,32 +29,48 @@ export class Pool {
     this.pumping = false;
   }
   models() {
-    return this.config.routes.flatMap(route => route.models.map(model => ({ ...model, routeId: route.id, adapter: route.adapter, enabled: route.enabled && model.enabled, billing: route.billing, priority: route.priority })));
+    return this.config.routes.flatMap(route => route.models.map(model => ({
+      ...model,
+      routeId: route.id,
+      adapter: route.adapter,
+      enabled: route.enabled && model.enabled,
+      billing: route.billing,
+      autoSelect: route.autoSelect ?? (route.billing !== 'paid_api'),
+      priority: route.priority,
+      protocol: route.api?.protocol || null,
+      baseUrl: route.api?.baseUrl || null,
+    })));
   }
   select(request) {
     const matches = this.models().filter(model => {
       const snapshot = this.store.quota(model.routeId);
       const route = this.config.routes.find(r => r.id === model.routeId);
       const fresh = snapshot && Date.now() - Date.parse(snapshot.observedAt) < 60_000;
-      const quotaBlocked = fresh && (snapshot.status === 'rate_limited' || snapshot.subscription === 'none' || snapshot.windows?.some(window => window.remainingPercent != null && window.remainingPercent <= route.minRemainingPercent));
-      return !quotaBlocked && model.enabled && model.billing === 'subscription' && model.kinds.includes(request.kind) &&
+      const missingPlan = snapshot?.subscription === 'none' && (route.billing === 'subscription' || route.billing === 'token_plan');
+      const quotaBlocked = fresh && (snapshot.status === 'rate_limited' || snapshot.status === 'auth_required' || missingPlan || snapshot.windows?.some(window => window.remainingPercent != null && window.remainingPercent <= route.minRemainingPercent));
+      const paidAllowed = model.billing !== 'paid_api' || Boolean(request.routeId) || Boolean(model.autoSelect);
+      return !quotaBlocked && model.enabled && activeBillings.has(model.billing) && paidAllowed && model.kinds.includes(request.kind) &&
       (!request.routeId || model.routeId === request.routeId) && (!request.modelId || model.id === request.modelId) &&
       (!request.group || model.group === request.group) && (!request.effort || model.efforts.includes(request.effort)); })
-      .sort((a, b) => a.priority - b.priority || a.routeId.localeCompare(b.routeId) || a.id.localeCompare(b.id));
-    if (!matches.length) throw new PoolError('NO_ROUTE', 'Kurallara uyan etkin abonelik modeli yok. Yerel bağlantı ayarlarını kontrol edin.');
-    return { selected: matches[0], alternatives: matches.slice(1), reason: 'Kullanıcı filtreleri, desteklenen görev/efor ve bağlantı önceliği uygulandı. Kota bilinmiyorsa kullanılabilir varsayılmaz; gerçek kabul CLI tarafından belirlenir.' };
+      .sort((a, b) => {
+        const tierA = nonMeteredBillings.has(a.billing) ? 0 : 1;
+        const tierB = nonMeteredBillings.has(b.billing) ? 0 : 1;
+        return tierA - tierB || a.priority - b.priority || a.routeId.localeCompare(b.routeId) || a.id.localeCompare(b.id);
+      });
+    if (!matches.length) throw new PoolError('NO_ROUTE', 'Kurallara uyan etkin model yok. Bağlantı, ödeme türü veya izin ayarlarını kontrol edin.');
+    return { selected: matches[0], alternatives: matches.slice(1), reason: 'Önce abonelik, token planı ve ücretsiz modeller tercih edilir; ücretli API yalnızca açıkça seçildiğinde veya otomatik seçime izin verildiğinde kullanılır.' };
   }
   async getQuota(routeId) {
     const route = this.config.routes.find(r => r.id === routeId);
     if (!route) throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı.');
-    if (!route.enabled) throw new PoolError('ROUTE_DISABLED', 'Bağlantı kapalı.');
     const cached = this.store.quota(routeId);
     if (cached && Date.now() - Date.parse(cached.observedAt) < 15_000) return cached;
     if (this.quotaRequests.has(routeId)) return this.quotaRequests.get(routeId);
     const request = (async () => {
-      const cwd = this.config.workspaceRoots[0];
-      if (!cwd) throw new PoolError('INVALID_WORKSPACE', 'Önce izinli bir çalışma klasörü tanımlayın.');
-      const snapshot = route.adapter === 'codex' ? await codexControl(route, cwd, this.config.python, 'quotas') : await quota(route, cwd, this.config.python);
+      const cwd = this.config.workspaceRoots[0] || process.cwd();
+      const snapshot = route.adapter === 'codex' && !route.api
+        ? { ...(await codexControl(route, cwd, this.config.python, 'quotas')), adapter: route.adapter, billing: route.billing, loginCommand: loginCommands.codex }
+        : await quota(route, cwd, this.config.python, this.directory);
       this.store.saveQuota(routeId, snapshot);
       return snapshot;
     })();
@@ -130,13 +147,13 @@ export class Pool {
     try {
       request.workspace = allowedWorkspace(request.workspace, this.config.workspaceRoots);
       const model = this.select(request).selected;
-      await this.checkAuth(route, request.workspace, this.config.python);
+      await this.checkAuth(route, request.workspace, this.config.python, this.directory);
       if (handle.cancelled || this.closed) { this.store.update(task.id, 'cancelled', null, 'CANCELLED'); return; }
       this.store.update(task.id, 'running');
       let events = 0;
       handle.run = this.execute(route, model, request, this.config.python, detail => {
         if (events++ < 100) this.store.event(task.id, 'progress', detail);
-      });
+      }, this.directory);
       const outcome = await handle.run.done;
       if (handle.cancelled) this.store.update(task.id, request.kind === 'write' ? 'needs_review' : 'cancelled', null, 'CANCELLED');
       else if (outcome.error) this.store.update(task.id, request.kind === 'write' ? 'needs_review' : outcome.error === 'TIMEOUT' ? 'timed_out' : 'failed', null, outcome.error);

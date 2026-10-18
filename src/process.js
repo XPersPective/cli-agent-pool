@@ -6,19 +6,19 @@ import { PoolError } from './config.js';
 const supervisor = fileURLToPath(new URL('./supervisor.py', import.meta.url));
 const environmentNames = new Set(['PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP', 'TMPDIR', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROGRAMDATA', 'LANG', 'LC_ALL', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'PYTHONIOENCODING']);
 
-export function childEnvironment() {
+export function childEnvironment(extraEnv = {}) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => environmentNames.has(key.toUpperCase())));
-  return { ...env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1', NO_COLOR: '1', FORCE_COLOR: '0' };
+  return { ...env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1', NO_COLOR: '1', FORCE_COLOR: '0', ...extraEnv };
 }
 
-export function runProcess({ argv, cwd, input = '', relay = false, python = process.platform === 'win32' ? 'python' : 'python3', timeoutMs = 30_000, onLine = () => {}, maxBytes = 1_048_576 }) {
+export function runProcess({ argv, cwd, input = '', relay = false, extraEnv = {}, python = process.platform === 'win32' ? 'python' : 'python3', timeoutMs = 30_000, onLine = () => {}, maxBytes = 1_048_576 }) {
   let stopReason = null;
   let bytes = 0;
   let output = '';
   let stderr = '';
   let settled = false;
   let lineFailure = false;
-  const child = spawn(python, ['-u', supervisor], { cwd, env: childEnvironment(), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  const child = spawn(python, ['-u', supervisor], { cwd, env: childEnvironment(extraEnv), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   const cancel = reason => {
     if (settled || stopReason) return;
     stopReason = reason || 'CANCELLED';

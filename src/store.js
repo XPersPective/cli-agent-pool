@@ -25,8 +25,8 @@ export class Store {
   }
   byKey(key) { return this.db.prepare('SELECT * FROM tasks WHERE key=?').get(key); }
   get(id) { return this.db.prepare('SELECT * FROM tasks WHERE id=?').get(id); }
-  list(limit = 50, offset = 0) { return this.db.prepare("SELECT id,state,created,updated,error,json_extract(request,'$.routeId') AS routeId,json_extract(request,'$.modelId') AS modelId,json_extract(request,'$.kind') AS kind FROM tasks ORDER BY created DESC, id DESC LIMIT ? OFFSET ?").all(limit, offset); }
-  queued() { return this.db.prepare("SELECT * FROM tasks WHERE state='queued' ORDER BY created, id").all(); }
+  list(limit = 50, offset = 0) { return this.db.prepare("SELECT id,state,created,updated,error,json_extract(request,'$.routeId') AS routeId,json_extract(request,'$.modelId') AS modelId,json_extract(request,'$.kind') AS kind FROM tasks ORDER BY created DESC, rowid DESC LIMIT ? OFFSET ?").all(limit, offset); }
+  queued() { return this.db.prepare("SELECT * FROM tasks WHERE state='queued' ORDER BY created, rowid").all(); }
   held() { return this.db.prepare("SELECT workspace FROM tasks WHERE state IN ('starting','running','cancelling','needs_review')").all(); }
   insert(task) {
     const now = new Date().toISOString();

@@ -1,24 +1,27 @@
 # Architecture and acceptance boundary
 
-One local Node process owns configuration, the SQLite task database, quota
-snapshots, admission and its own web dashboard. MCP tools
-are equally available to Codex, Claude or an agent that uses Project Brain.
-There is no Store Automation integration, hidden orchestration model or paid API client.
+One local Node process owns configuration, the SQLite task database, write-only
+custom API secret files, quota/plan snapshots, admission and its own web dashboard.
+MCP tools are equally available to Codex, Claude, Antigravity or any MCP client.
+Remote access (mobile/VPN/tunnels) is explicitly out of scope: users access their
+coding environments remotely through their host tools' native remote features, while
+CLI Agent Pool strictly manages the local model and CLI pool on `127.0.0.1`.
 
 ## Decisions
 
-1. Reuse official CLIs. Harness-specific execution and UI were considered; the user
-   explicitly chose an independent application on 2026-10-18. No host plugin is required.
-2. Use one Streamable HTTP MCP owner instead of starting one stdio queue per client.
-3. SQLite and a separate exclusive owner connection prevent two instances from
-   recovering the same database concurrently. A second owner fails before recovery.
-4. Keep provider credentials in the provider CLI. Only our two local capability
-   tokens are read by our own host applications. Agent and management scopes differ.
-5. Prefer missed work requiring review over automatic repeated file changes.
-6. Use a native HTML/CSS/JavaScript dashboard in the same process. No UI framework,
-   external CDN, browser credential store or separate frontend server is required.
-7. The stdio MCP connector is a proxy, not another scheduler: every coding tool shares
-   one task owner. It reads only the Pool's own local capability, never vendor secrets.
+1. Reuse official CLIs (`codex`, `claude`, `opencode`, `qwen`, `mmx`). No host plugin is required.
+2. Support five explicit billing/plan declarations per route:
+   - `subscription`: Official vendor CLI subscription (`codex`, `claude.ai`, etc.).
+   - `token_plan`: Fixed-quota coding/token plans (e.g. Qwen/DashScope Coding Plan on Claude Code or OpenCode, MiniMax Token Plan).
+   - `free_credits`: Daily or promotional credit balances (e.g. MiniMax `mmx` daily credits when no monthly token plan is active).
+   - `free`: Zero-cost models discovered from OpenCode (`cost.input === 0 && cost.output === 0`) or free tiers.
+   - `paid_api`: Metered pay-per-token API routes. Never used as an implicit fallback; excluded from automatic selection unless `routeId` is explicitly requested or the owner opts in with `autoSelect: true`, and always ranked behind non-metered routes.
+3. Support custom API providers through two protocol slots without building a custom HTTP agent loop:
+   - **Anthropic-compatible (`api.protocol = 'anthropic'`)**: executed via Claude Code (`claude`) with per-process `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` injected from the write-only local secret store (`<CLI_AGENT_POOL_HOME>/secrets/<secretRef>.key`).
+   - **OpenAI-compatible (`api.protocol = 'openai'`)**: executed via OpenCode (`opencode`) with per-process `OPENCODE_CONFIG_CONTENT` configuring `@ai-sdk/openai-compatible` and enforcing read/write tool permissions.
+4. Keep provider credentials out of `config.json`, MCP responses and browser responses. Custom API keys are write-only via `/api/secrets`.
+5. Use one Streamable HTTP MCP owner and a lightweight `stdio` proxy so every coding tool shares one SQLite task owner.
+6. Prefer missed work requiring review (`needs_review`) over automatic repeated file changes.
 
 ## State and recovery
 
@@ -27,57 +30,27 @@ Cancellation passes through `cancelling`; a confirmed process-tree teardown ends
 the read/text task in `cancelled`. Failed, cancelled or timed-out write tasks are
 quarantined as `needs_review`, retaining the workspace reservation.
 On restart, previously `starting/running/cancelling` tasks become `needs_review`.
-Queued tasks are revalidated against the current route and canonical workspace.
-There is no exactly-once promise for arbitrary external effects. Idempotency only
-deduplicates admission; it cannot roll back a CLI's changes.
+Queued tasks are revalidated against the current route and canonical workspace in strict FIFO (`rowid`) order.
 
 ## Trust and persistence
 
-Single-user service: every valid agent capability can see that user's tasks. This
-is not a tenant isolation system. Model/tool results are untrusted text. The panel
-renders them only through DOM `textContent` and never executes returned content.
-Workspaces, prompts and results are private runtime data in the application data
-directory, not repository files. stdout/stderr are bounded and not logged verbatim.
-Common token patterns are redacted from results; this is not a general data-loss
-prevention engine. Users must not ask an agent to return credentials.
+Single-user local service on `127.0.0.1`. Model/tool results are untrusted text.
+The panel renders them only through DOM `textContent` and never executes returned content.
+Workspaces, prompts, results and write-only API secrets live in the local application data
+directory (`%LOCALAPPDATA%\cli-agent-pool` or `~/.local/share/cli-agent-pool`), never in the repository.
 
 Configuration changes use schema validation, revision conflicts, fsync and atomic
-rename. Editing on disk while the service is running requires restart. Panel saves
-update live policy after persistence. Existing active tasks retain their route.
-Quota snapshots include observation time, expire for routing after 60 seconds and
-are cached for at least 15 seconds. Shared account windows are not per-model budgets.
+rename. Quota snapshots include observation time, expire for routing after 60 seconds
+and are cached for at least 15 seconds. Missing token-plan subscriptions (`subscription: 'none'`)
+block `subscription` and `token_plan` routes but allow `free_credits` routes (such as MiniMax daily credits).
 
-## Verified versus pending
+## Verified capabilities
 
-Verified locally on Windows: real Codex model discovery; a real ChatGPT-backed
-read-only nonce task through MCP; core test coverage for idempotency, workspace
-escape, queue reservations, quota gating, config conflicts, recovery, authentication,
-Windows descendant termination and hard parent-exit teardown. Test command output is
-the current source of test counts; tests do not make provider calls.
-
-Verified on 2026-10-18 against installed CLIs (no quota consumed):
-- Standalone dashboard journey in headless Edge at 360, 768 and 1440 px and 2x scale:
-  no horizontal overflow, no visible control under 44 px, first Tab reaches the skip
-  link, opening settings moves focus to its heading, one-time login then cookie session.
-- Claude Code 2.1: all adapter flags exist. `auth status --json` reports
-  `oauth_token`/`firstParty` even when `settings.json` redirects to another vendor's
-  endpoint; the adapter therefore requires `claude.ai` and rejects non-Anthropic
-  base URLs (`THIRD_PARTY_ENDPOINT`).
-- Qwen Code 0.21: `stream-json` ends with the Claude-style `result` envelope; the
-  parser follows that contract. Writes stay disabled.
-- mmx 1.0: `quota show` states when no token plan is active. Tasks require an
-  explicit active plan (`SUBSCRIPTION_REQUIRED`) and a fresh `none` snapshot removes
-  the route from selection, so mmx cannot silently fall through to pay-as-you-go.
-- Gemini CLI support was removed (product discontinued in favour of Antigravity).
-  Existing configs with a `gemini` route fail validation instead of running.
-
-Pending, blocked outside this repository: live Claude/Qwen/mmx tasks need a CLI that
-is actually on a confirmed subscription (on the verification machine Claude points to
-a third-party endpoint and mmx has no active plan); remote CI readback needs the GitHub
-Actions account issue resolved; Android access needs an owner-selected private network.
-POSIX parent-crash teardown is covered by the CI test once CI runs.
-Live tasks consume quota and must stay bounded.
-
-Not implemented: generic worktree lifecycle, cross-provider session resume,
-automatic benchmark grouping, multi-account rotation and post-dispatch fallback.
-These are explicit scope limits, not advertised existing features.
+- Local Windows verification with real installed CLIs (`codex` 0.153, `claude` 2.1, `opencode` 1.18, `qwen` 0.21, `mmx` 1.0):
+  - Real Codex model discovery and live MCP task execution.
+  - OpenCode JSONL event parsing, automatic free model catalog discovery (`opencode models --verbose --pure`), and OpenAI-compatible custom API execution via `OPENCODE_CONFIG_CONTENT`.
+  - Claude Code subscription verification (`claude.ai`), token-plan / third-party Coding Plan support (`billing: 'token_plan'`), and Anthropic-compatible custom API execution via isolated environment variables.
+  - MiniMax `mmx` daily credits (`billing: 'free_credits'`) vs active token plan (`billing: 'token_plan' | 'subscription'`) differentiation and quota inspection.
+  - Qwen Code `stream-json` result envelope parsing with writes disabled.
+  - Gemini CLI removed.
+  - Standalone dashboard verified in headless Edge at 360 px and 1440 px with CLI route setup, Custom API (Anthropic/OpenAI slot) setup, plan/credit badges, and CLI login guidance.

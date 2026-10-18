@@ -12,7 +12,8 @@ import { pathToFileURL } from 'node:url';
 import { Store } from '../src/store.js';
 import { Pool } from '../src/pool.js';
 import { runProcess, childEnvironment } from '../src/process.js';
-import { buildArguments, checkAuth, execute, quota } from '../src/adapters.js';
+import { buildArguments, checkAuth, execute, quota, routeEnvironment, opencodeCatalog } from '../src/adapters.js';
+import { saveSecret, hasSecret, loadSecret } from '../src/secrets-store.js';
 
 function fixture(t, dependencies = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-test-'));
@@ -149,27 +150,52 @@ test('no inherited API secrets and shell-free Codex/Claude arguments', t => {
 });
 
 const py = process.platform === 'win32' ? 'python' : 'python3';
-test('auth checks fail closed on third-party Claude endpoints, missing mmx plans and removed Gemini routes', async t => {
+test('auth checks enforce subscription vs token_plan vs free_credits and reject removed Gemini routes', async t => {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-auth-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const fake = (name, body) => { const file = path.join(root, `${name}.js`); writeFileSync(file, `const a=process.argv.slice(2).join(' ');${body}`); return file; };
-  const claude = (authMethod, baseURL) => ({ id: 'c', adapter: 'claude', billing: 'subscription', trustedSettings: true, executable: fake(`claude-${authMethod}-${Boolean(baseURL)}`,
+  const claude = (authMethod, baseURL, billing = 'subscription') => ({ id: 'c', adapter: 'claude', billing, trustedSettings: true, executable: fake(`claude-${authMethod}-${Boolean(baseURL)}-${billing}`,
     `if(a==='auth status --json')console.log(JSON.stringify({loggedIn:true,authMethod:${JSON.stringify(authMethod)},apiProvider:'firstParty'}));else if(a==='auth status --text')console.log(${JSON.stringify(baseURL ? `Auth token: ANTHROPIC_AUTH_TOKEN\nAnthropic base URL: ${baseURL}` : 'Login method: Claude Max account')});else process.exit(2)`) });
-  // Installed Claude 2.1 reports oauth_token + firstParty even when settings.json redirects to another vendor.
-  await assert.rejects(checkAuth(claude('oauth_token', 'https://example.invalid/anthropic'), root, py), { code: 'AUTH_REQUIRED' });
-  await assert.rejects(checkAuth(claude('claude.ai', 'https://example.invalid/anthropic'), root, py), { code: 'THIRD_PARTY_ENDPOINT' });
-  await checkAuth(claude('claude.ai'), root, py);
-  const mmx = (name, body) => ({ id: 'm', adapter: 'mmx', billing: 'subscription', trustedSettings: true, executable: fake(name, body) });
-  const missing = mmx('mmx-none', `process.stderr.write(JSON.stringify({error:{code:1,message:'API error: no active token plan subscription (HTTP 200)'}}));process.exit(1)`);
+  await assert.rejects(checkAuth(claude('oauth_token', 'https://example.invalid/anthropic', 'subscription'), root, py), { code: 'AUTH_REQUIRED' });
+  await assert.rejects(checkAuth(claude('claude.ai', 'https://example.invalid/anthropic', 'subscription'), root, py), { code: 'THIRD_PARTY_ENDPOINT' });
+  await checkAuth(claude('claude.ai', null, 'subscription'), root, py);
+  // When explicitly declared as token_plan, Claude Code redirected to a Coding Plan endpoint is allowed.
+  await checkAuth(claude('oauth_token', 'https://example.invalid/anthropic', 'token_plan'), root, py);
+  const mmx = (name, body, billing = 'subscription') => ({ id: 'm', adapter: 'mmx', billing, trustedSettings: true, executable: fake(name, body) });
+  const missing = mmx('mmx-none', `if(a.includes('auth status'))console.log(JSON.stringify({method:'oauth'}));else{process.stderr.write(JSON.stringify({error:{code:1,message:'API error: no active token plan subscription (HTTP 200)'}}));process.exit(1)}`);
   await assert.rejects(checkAuth(missing, root, py), { code: 'SUBSCRIPTION_REQUIRED' });
   assert.equal((await quota(missing, root, py)).subscription, 'none');
-  const drift = mmx('mmx-drift', `console.log('not json')`);
+  // Daily / free credits on mmx work even when there is no active token plan subscription.
+  await checkAuth({ ...missing, billing: 'free_credits' }, root, py);
+  const drift = mmx('mmx-drift', `if(a.includes('auth status'))console.log(JSON.stringify({method:'oauth'}));else console.log('not json')`);
   assert.equal((await quota(drift, root, py)).subscription, 'unknown');
   await assert.rejects(checkAuth(drift, root, py), { code: 'SUBSCRIPTION_REQUIRED' });
-  const active = mmx('mmx-active', `console.log(JSON.stringify({data:{plan:'active'}}))`);
+  const active = mmx('mmx-active', `if(a.includes('auth status'))console.log(JSON.stringify({method:'oauth'}));else console.log(JSON.stringify({data:{plan:'active'}}))`);
   await checkAuth(active, root, py);
   assert.equal((await quota(active, root, py)).subscription, 'active');
   assert.throws(() => configSchema.parse({ workspaceRoots: [], routes: [{ id: 'g', adapter: 'gemini', executable: process.execPath, models: [] }] }));
+});
+
+test('OpenCode JSON events, free model catalog and custom API routes work with write-only secrets', async t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pool-opencode-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  saveSecret(root, 'my-api', 'secret-token-value-123456');
+  assert.equal(hasSecret(root, 'my-api'), true);
+  assert.equal(loadSecret(root, 'my-api'), 'secret-token-value-123456');
+  const script = path.join(root, 'opencode.js');
+  writeFileSync(script, `const args=process.argv.slice(2);if(args[0]==='models'){console.log('opencode/beam-free\\n'+JSON.stringify({id:'beam-free',name:'Beam Free',cost:{input:0,output:0},variants:{low:{},high:{}}}));process.exit(0);}let p='';process.stdin.on('data',c=>p+=c).on('end',()=>{const cfg=JSON.parse(process.env.OPENCODE_CONFIG_CONTENT||'{}');console.log(JSON.stringify({type:'step_start'}));console.log(JSON.stringify({type:'text',part:{text:p+':'+Boolean(cfg.provider?.pool_custom_openai?.options?.apiKey)}}));console.log(JSON.stringify({type:'step_finish'}))});`);
+  const freeRoute = { id: 'oc-free', adapter: 'opencode', billing: 'free', trustedSettings: true, executable: script, models: [{ id: 'opencode/beam-free', alias: 'Beam Free', group: 'free', efforts: ['low', 'high'], kinds: ['text', 'read', 'write'] }] };
+  const cat = await opencodeCatalog(freeRoute, root, py);
+  assert.equal(cat.models.length, 1);
+  assert.equal(cat.models[0].free, true);
+  const apiRoute = { id: 'custom-openai', adapter: 'opencode', billing: 'token_plan', trustedSettings: true, executable: script, api: { protocol: 'openai', baseUrl: 'https://example.invalid/v1', secretRef: 'my-api' }, models: [{ id: 'qwen-max', alias: 'Qwen Max', group: 'api', efforts: [], kinds: ['text', 'read', 'write'] }] };
+  await checkAuth(apiRoute, root, py, root);
+  const outcome = await execute(apiRoute, apiRoute.models[0], { prompt: 'hello', workspace: root, kind: 'read', timeoutSeconds: 10 }, py, () => {}, root).done;
+  assert.deepEqual(outcome, { result: 'hello:true' });
+  const anthropicRoute = { id: 'custom-anth', adapter: 'claude', billing: 'paid_api', trustedSettings: true, executable: script, api: { protocol: 'anthropic', baseUrl: 'https://example.invalid/anthropic', secretRef: 'my-api' }, models: [{ id: 'claude-sonnet', alias: 'Sonnet', group: 'api', efforts: [], kinds: ['text'] }] };
+  const env = routeEnvironment(anthropicRoute, root, 'text');
+  assert.equal(env.ANTHROPIC_BASE_URL, 'https://example.invalid/anthropic');
+  assert.equal(env.ANTHROPIC_AUTH_TOKEN, 'secret-token-value-123456');
 });
 
 test('Qwen stream-json result envelope is parsed, errors fail and writes stay disabled', async t => {
@@ -184,12 +210,31 @@ test('Qwen stream-json result envelope is parsed, errors fail and writes stay di
   assert.throws(() => buildArguments({ adapter: 'qwen', executable: ok }, { id: 'm' }, { kind: 'write' }), { code: 'WRITE_NOT_SUPPORTED' });
 });
 
-test('a fresh snapshot stating no active plan removes the route from selection', t => {
-  const { pool, store } = fixture(t);
-  store.saveQuota('test', { connection: 'test', status: 'unknown', subscription: 'none', windows: [], observedAt: new Date().toISOString() });
-  assert.throws(() => pool.select({ kind: 'read' }), { code: 'NO_ROUTE' });
-  store.saveQuota('test', { connection: 'test', status: 'unknown', subscription: 'none', windows: [], observedAt: new Date(Date.now() - 61_000).toISOString() });
-  assert.equal(pool.select({ kind: 'read' }).selected.id, 'test-model');
+test('non-metered routes are preferred over paid_api and missing subscription plan only blocks subscription/token_plan', t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pool-select-'));
+  const config = configSchema.parse({
+    workspaceRoots: [root],
+    routes: [
+      { id: 'paid', adapter: 'claude', executable: process.execPath, enabled: true, billing: 'paid_api', autoSelect: false, priority: 1, api: { protocol: 'anthropic', baseUrl: 'https://example.invalid' }, models: [{ id: 'paid-m', alias: 'Paid', group: 'g', efforts: [], kinds: ['text', 'read'] }] },
+      { id: 'free-oc', adapter: 'opencode', executable: process.execPath, enabled: true, billing: 'free', priority: 100, models: [{ id: 'free-m', alias: 'Free', group: 'g', efforts: [], kinds: ['text', 'read'] }] },
+      { id: 'mmx-cred', adapter: 'mmx', executable: process.execPath, enabled: true, billing: 'free_credits', priority: 50, models: [{ id: 'mmx-m', alias: 'MMX', group: 'g', efforts: [], kinds: ['text'] }] },
+    ],
+  });
+  const store = new Store(path.join(root, 'pool.sqlite'));
+  const pool = new Pool(config, store, { directory: root });
+  t.after(async () => { await pool.close(); store.close(); rmSync(root, { recursive: true, force: true }); });
+  // Even though paid has priority 1, it is excluded from automatic selection when autoSelect is false.
+  assert.equal(pool.select({ kind: 'read' }).selected.id, 'free-m');
+  // Explicit routeId allows selecting paid_api.
+  assert.equal(pool.select({ kind: 'read', routeId: 'paid' }).selected.id, 'paid-m');
+  // Even with autoSelect=true, non-metered routes win over paid_api.
+  pool.config.routes[0].autoSelect = true;
+  assert.equal(pool.select({ kind: 'read' }).selected.id, 'free-m');
+  // Snapshot with subscription='none' does NOT block free_credits on mmx, but DOES block subscription/token_plan.
+  store.saveQuota('mmx-cred', { connection: 'mmx-cred', status: 'available', subscription: 'none', windows: [], observedAt: new Date().toISOString() });
+  assert.equal(pool.select({ kind: 'text', routeId: 'mmx-cred' }).selected.id, 'mmx-m');
+  pool.config.routes[2].billing = 'token_plan';
+  assert.throws(() => pool.select({ kind: 'text', routeId: 'mmx-cred' }), { code: 'NO_ROUTE' });
 });
 
 test('supervisor preserves Unicode and literal prompt data', async () => {
