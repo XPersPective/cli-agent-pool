@@ -14,8 +14,8 @@ This delivery keeps two repositories and two independently distributed skills.
 - [x] Full source tests, syntax, secret scan and dependency audit.
 - [x] Compact catalog rework: 24 models/page, four columns at 1440 px, local scrolling and collapsed quota details.
 - [x] Pool 1.1.0 installed; both managed skills updated across 40 targets each, all source hashes matched.
-- [ ] Commit/push both repositories and verify remote commit readback.
-- [ ] Repeat installed integration and browser usability checks after push.
+- [x] Both repositories committed/pushed; remote main/master and Brain working branch read back at the release commits.
+- [x] Post-push: 37 Pool tests, complete Brain suite, installed synthetic-worker integration, real 13-route/65-model discovery, compact catalog wheel/pagination, installed browser and responsive checks all passed.
 
 Freebuff is connected as a supported MCP client. Its installed 0.2.29 CLI does not
 expose headless prompt/model/effort execution and is not advertised as a Pool model
@@ -23,3 +23,5 @@ provider. Unsupported quota/version metadata stays unknown. Real speech hardware
 recognition has not been proven; browser speech/keyboard/error flows are covered.
 
 Pre-push verification: 37 Pool node:test checks, complete Brain offline suite, real installed-daemon synthetic worker integration (including nested-delegation refusal), Python 3.8 grammar parsing of 19 files, browser pool/workspace/voice-event/keyboard/dark/responsive flows and zero installed-console errors. Native Windows folder selection/cancellation were verified in the preceding UI pass.
+
+Both skills were updated via Skills Manager with IDs, Default preset and existing 40 deployment targets preserved. All 25 Brain files and the Pool skill matched the central library and every deployed target by SHA-256. The installed Pool reports 1.1.0; Brain reports 3.3.0. Freebuff uses its supported global MCP configuration; native trust/reload remains under Freebuff control.
