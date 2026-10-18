@@ -1,6 +1,7 @@
+import { rm } from 'node:fs/promises';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, mkdirSync, symlinkSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, symlinkSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -20,7 +21,7 @@ function fixture(t, dependencies = {}) {
   const config = configSchema.parse({ workspaceRoots: [root], routes: [{ id: 'test', adapter: 'codex', executable: process.execPath, enabled: true, billing: 'subscription', models: [{ id: 'test-model', alias: 'Test', group: 'manual', efforts: ['low'], kinds: ['read', 'write', 'text'] }] }] });
   const store = new Store(path.join(root, 'pool.sqlite'));
   const pool = new Pool(config, store, { checkAuth: async () => {}, execute: () => ({ cancel() {}, done: Promise.resolve({ result: 'ok' }) }), ...dependencies });
-  t.after(async () => { await pool.close(); store.close(); rmSync(root, { recursive: true, force: true }); });
+  t.after(async () => { await pool.close(); store.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   const request = { prompt: 'test', workspace: root, kind: 'read', idempotencyKey: 'test-key-123' };
   return { root, config, store, pool, request };
 }
@@ -33,7 +34,7 @@ async function terminal(pool, id) {
 test('canonical workspace containment rejects siblings, traversal and symlink escape', t => {
   const { root } = fixture(t);
   const outside = mkdtempSync(path.join(tmpdir(), 'pool-outside-'));
-  t.after(() => rmSync(outside, { recursive: true, force: true }));
+  t.after(() => rm(outside, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const child = path.join(root, 'child'); mkdirSync(child);
   assert.equal(allowedWorkspace(child, [root]), child);
   assert.throws(() => allowedWorkspace(outside, [root]), { code: 'WORKSPACE_DENIED' });
@@ -94,7 +95,7 @@ test('write failure quarantines the workspace and never retries', async t => {
 
 test('restart preserves completed results and quarantines interrupted tasks', t => {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-restart-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const filename = path.join(root, 'pool.sqlite');
   let store = new Store(filename);
   store.insert({ id: '1', key: 'key1', fingerprint: 'fp', workspace: root, request: {} });
@@ -152,7 +153,7 @@ test('no inherited API secrets and shell-free Codex/Claude arguments', t => {
 const py = process.platform === 'win32' ? 'python' : 'python3';
 test('auth checks enforce subscription vs token_plan vs free_credits and reject removed Gemini routes', async t => {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-auth-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const fake = (name, body) => { const file = path.join(root, `${name}.js`); writeFileSync(file, `const a=process.argv.slice(2).join(' ');${body}`); return file; };
   const claude = (authMethod, baseURL, billing = 'subscription') => ({ id: 'c', adapter: 'claude', billing, trustedSettings: true, executable: fake(`claude-${authMethod}-${Boolean(baseURL)}-${billing}`,
     `if(a==='auth status --json')console.log(JSON.stringify({loggedIn:true,authMethod:${JSON.stringify(authMethod)},apiProvider:'firstParty'}));else if(a==='auth status --text')console.log(${JSON.stringify(baseURL ? `Auth token: ANTHROPIC_AUTH_TOKEN\nAnthropic base URL: ${baseURL}` : 'Login method: Claude Max account')});else process.exit(2)`) });
@@ -178,7 +179,7 @@ test('auth checks enforce subscription vs token_plan vs free_credits and reject 
 
 test('OpenCode JSON events, free model catalog and custom API routes work with write-only secrets', async t => {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-opencode-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   saveSecret(root, 'my-api', 'secret-token-value-123456');
   assert.equal(hasSecret(root, 'my-api'), true);
   assert.equal(loadSecret(root, 'my-api'), 'secret-token-value-123456');
@@ -200,7 +201,7 @@ test('OpenCode JSON events, free model catalog and custom API routes work with w
 
 test('Qwen stream-json result envelope is parsed, errors fail and writes stay disabled', async t => {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-qwen-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const script = (name, events) => { const file = path.join(root, `${name}.js`); writeFileSync(file, `let p='';process.stdin.on('data',c=>p+=c).on('end',()=>{for(const e of ${events})console.log(JSON.stringify(e))})`); return file; };
   const run = executable => execute({ id: 'q', adapter: 'qwen', executable }, { id: 'qwen-model' }, { prompt: 'say ok', workspace: root, kind: 'read', timeoutSeconds: 10 }, py, () => {}).done;
   const ok = script('ok', `[{type:'system',subtype:'init'},{type:'assistant',message:{role:'assistant',content:[{type:'text',text:p}]}},{type:'result',subtype:'success',is_error:false,result:'echo:'+p}]`);
@@ -212,7 +213,7 @@ test('Qwen stream-json result envelope is parsed, errors fail and writes stay di
 
 test('ZCode stream-json response, MiniMax Code, Custom CLI argsTemplate and importDiscoveredRoutes work', async t => {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-multi-cli-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const zcodeFile = path.join(root, 'zcode.cjs');
   writeFileSync(zcodeFile, `const args=process.argv.slice(2);const pIdx=args.indexOf('-p');const p=pIdx>=0?args[pIdx+1]:'';console.log(JSON.stringify({type:'result',response:'zcode:'+p+':'+args.includes('--disallowed-tools')}));`);
   const zRoute = { id: 'zcode-local', adapter: 'zcode', billing: 'token_plan', trustedSettings: true, executable: zcodeFile, models: [{ id: 'builtin:zai-coding-plan/GLM-5.3', alias: 'GLM-5.3', group: 'zai', efforts: ['low', 'high'], kinds: ['text', 'read', 'write'] }] };
@@ -249,7 +250,7 @@ test('non-metered routes are preferred over paid_api and missing subscription pl
   });
   const store = new Store(path.join(root, 'pool.sqlite'));
   const pool = new Pool(config, store, { directory: root });
-  t.after(async () => { await pool.close(); store.close(); rmSync(root, { recursive: true, force: true }); });
+  t.after(async () => { await pool.close(); store.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   // Even though paid has priority 1, it is excluded from automatic selection when autoSelect is false.
   assert.equal(pool.select({ kind: 'read' }).selected.id, 'free-m');
   // Explicit routeId allows selecting paid_api.
@@ -271,7 +272,7 @@ test('supervisor preserves Unicode and literal prompt data', async () => {
 
 test('timeout kills a grandchild process tree before reporting completion', async t => {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-process-'));
-  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const pidFile = path.join(root, 'pid');
   const code = `const {spawn}=require('node:child_process'); const fs=require('node:fs'); const c=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'}); fs.writeFileSync(${JSON.stringify(pidFile)},String(c.pid));setInterval(()=>{},1000)`;
   const result = await runProcess({ argv: [process.execPath, '-e', code], cwd: root, timeoutMs: 1500 }).done;
@@ -283,11 +284,7 @@ test('timeout kills a grandchild process tree before reporting completion', asyn
 
 test('a hard parent exit closes the supervisor control pipe and kills the owned CLI', async t => {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-parent-exit-'));
-  t.after(async () => {
-    for (let i = 0; i < 20; i++) {
-      try { rmSync(root, { recursive: true, force: true }); return; } catch { await delay(25); }
-    }
-  });
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const pidFile = path.join(root, 'pid');
   const moduleURL = pathToFileURL(path.resolve('src/process.js')).href;
   const childCode = `require('node:fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setInterval(()=>{},1000)`;

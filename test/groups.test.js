@@ -1,6 +1,7 @@
+import { rm } from 'node:fs/promises';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { configSchema, configView } from '../src/config.js';
@@ -13,7 +14,7 @@ test('agent grouping is owner-enabled, revision-bound, atomic and limited to mod
   const config = configSchema.parse({ workspaceRoots: [directory], routes: [{ id: 'codex', adapter: 'codex', executable: process.execPath, billing: 'subscription', models: [{ id: 'astra', alias: 'Astra', group: 'manual', kinds: ['text'] }] }] });
   writeFileSync(path.join(directory, 'config.json'), JSON.stringify(config));
   const store = new Store(':memory:'); const pool = new Pool(config, store, { directory });
-  t.after(async () => { await pool.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  t.after(async () => { await pool.close(); store.close(); await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   const assignment = { routeId: 'codex', modelId: 'astra', group: 'high' };
   assert.throws(() => pool.assignGroups({ revision: configView(directory).revision, assignments: [assignment] }), { code: 'GROUPING_DENIED' });
   config.groupingMode = 'agent'; writeFileSync(path.join(directory, 'config.json'), JSON.stringify(config));
@@ -33,7 +34,7 @@ test('live group selection skips exhausted routes, respects pins and never retri
   const config = configSchema.parse({ workspaceRoots: [directory], routes: ['first', 'second', 'paid', 'other'].map((id, index) => ({ id, adapter: 'codex', executable: process.execPath, enabled: true, billing: id === 'paid' ? 'paid_api' : 'subscription', priority: index, models: [{ id: 'model', alias: id, group: id === 'other' ? 'high' : 'medium', kinds: ['write', 'text'] }] })) });
   const store = new Store(':memory:'); let executions = 0; const probes = [];
   const pool = new Pool(config, store, { directory, checkAuth: async () => {}, execute: () => { executions++; return { cancel() {}, done: Promise.resolve({ error: 'RATE_LIMIT' }) }; } });
-  t.after(async () => { await pool.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  t.after(async () => { await pool.close(); store.close(); await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   pool.getQuota = async id => { probes.push(id); const quota = { status: 'available', windows: [{ remainingPercent: id === 'first' ? 0 : 50 }], observedAt: new Date().toISOString() }; store.saveQuota(id, quota); return quota; };
   const selected = await pool.selectLive({ kind: 'text', group: 'medium' });
   assert.equal(selected.selected.routeId, 'second'); assert.deepEqual(probes, ['first', 'second']);
@@ -47,7 +48,7 @@ test('live group selection skips exhausted routes, respects pins and never retri
 
 test('Windows picker uses a shell-free fixed command, validates selected directory and handles cancellation', async t => {
   const directory = mkdtempSync(path.join(tmpdir(), 'pool-picker-'));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  t.after(() => rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   let invocation;
   const run = async (file, args, options) => { invocation = { file, args, ...options }; return { stdout: JSON.stringify({ path: directory }) }; };
   const initial = `${directory}'; Write-Output injected`;

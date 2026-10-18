@@ -1,6 +1,7 @@
+import { rm } from 'node:fs/promises';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -34,7 +35,7 @@ async function application(t) {
   writeFileSync(path.join(root, 'config.json'), JSON.stringify({ ...config, port: address.port }));
   writeFileSync(path.join(root, 'access-token'), token);
   writeFileSync(path.join(root, 'management-token'), managementToken);
-  t.after(async () => { app.server.close(); app.server.closeAllConnections(); await pool.close(); store.close(); rmSync(root, { recursive: true, force: true }); });
+  t.after(async () => { app.server.close(); app.server.closeAllConnections(); await pool.close(); store.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   return { root, pool, token, managementToken, app, url: new URL(`http://127.0.0.1:${address.port}/mcp`) };
 }
 

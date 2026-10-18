@@ -27,3 +27,5 @@ Pre-push verification: 38 Pool node:test checks, complete Brain offline suite, r
 Both skills were updated via Skills Manager with IDs, Default preset and existing 40 deployment targets preserved. All 25 Brain files and the Pool skill matched the central library and every deployed target by SHA-256. The installed Pool reports 1.1.1; Brain reports 3.3.0. Freebuff uses its supported global MCP configuration; native trust/reload remains under Freebuff control.
 
 1.1.1 follow-up: the model card has a small Ekle action; its dialog chooses destination pool and effort without changing the top pool view. Explicit light/dark/system theme is persisted locally. The addition flow, independent efforts, theme persistence and OS override were browser-verified.
+
+Windows test cleanup now awaits the standard fs/promises.rm retry policy across temporary test directories; process-tree assertions remain unchanged and the full 38-test suite passes.

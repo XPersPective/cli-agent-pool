@@ -1,6 +1,7 @@
+import { rm } from 'node:fs/promises';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { configSchema } from '../src/config.js';
@@ -31,7 +32,7 @@ test('manual pools enforce membership and per-pool effort at selection and execu
   const config = configSchema.parse({ selectionMode: 'manual', workspaceRoots: [root], routes: [{ id: 'codex', adapter: 'codex', executable: process.execPath, billing: 'subscription', enabled: true, models: [{ id: 'gpt-version', alias: 'GPT', group: 'unassigned', efforts: ['low', 'medium', 'high'], defaultEffort: 'high', kinds: ['text'], memberships: [{ group: 'high', effort: 'high' }, { group: 'medium', effort: 'medium' }, { group: 'low' }] }, { id: 'outside', alias: 'Outside', group: 'unassigned', efforts: [], kinds: ['text'], memberships: [] }] }] });
   const store = new Store(':memory:'); let used;
   const pool = new Pool(config, store, { directory: root, checkAuth: async () => {}, execute: (route, model, request, python, progress) => { used = request; progress('model:resolved-gpt-version'); return { cancel() {}, done: Promise.resolve({ result: 'ok' }) }; } });
-  t.after(async () => { await pool.close(); store.close(); rmSync(root, { recursive: true, force: true }); });
+  t.after(async () => { await pool.close(); store.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   assert.throws(() => pool.select({ kind: 'text', routeId: 'codex', modelId: 'outside' }), { code: 'POOL_REQUIRED' });
   assert.throws(() => pool.select({ kind: 'text', group: 'high', modelId: 'outside' }), { code: 'NO_ROUTE' });
   assert.throws(() => pool.select({ kind: 'text', group: 'high', effort: 'low' }), { code: 'NO_ROUTE' });
@@ -59,7 +60,7 @@ test('manual pools enforce membership and per-pool effort at selection and execu
 
 test('Claude control catalog imports resolved versions without a user prompt and preserves pool rules', async t => {
   const root = mkdtempSync(path.join(tmpdir(), 'claude-catalog-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const executable = path.join(root, 'claude.mjs');
   writeFileSync(executable, `import{createInterface}from'node:readline';if(process.argv.includes('--input-format')){createInterface({input:process.stdin}).on('line',line=>{const message=JSON.parse(line);if(message.type!=='control_request')process.exit(9);console.log(JSON.stringify({type:'control_response',response:{request_id:message.request_id,response:{models:[{value:'default',resolvedModel:'claude-opus-9-1',supportedEffortLevels:['low','high']},{value:'opus',resolvedModel:'claude-opus-9-1',supportedEffortLevels:['low','high']}]}}}));});}else{process.stdin.resume();process.stdin.on('end',()=>{console.log(JSON.stringify({type:'system',model:'claude-opus-9-1'}));console.log(JSON.stringify({type:'result',result:'done'}));});}`);
   const route = { id: 'claude', adapter: 'claude', executable, billing: 'subscription', models: [{ id: 'opus', alias: 'Opus', group: 'high', efforts: ['low', 'high'], enabled: false, kinds: ['text'], memberships: [{ group: 'high', effort: 'high' }] }] };
@@ -103,7 +104,7 @@ test('quota percentages are validated and model-specific limits do not block sib
   const config = configSchema.parse({ routes: [{ id: 'claude', adapter: 'claude', executable: process.execPath, billing: 'subscription', enabled: true, models: ['opus', 'sonnet'].map(family => ({ id: `claude-${family}-9-1`, alias: family, group: 'high', kinds: ['text'], efforts: [] })) }], workspaceRoots: [root] });
   writeFileSync(path.join(root, 'config.json'), JSON.stringify(config));
   const store = new Store(':memory:'); const pool = new Pool(config, store, { directory: root });
-  t.after(async () => { await pool.close(); store.close(); rmSync(root, { recursive: true, force: true }); });
+  t.after(async () => { await pool.close(); store.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   store.saveQuota('claude', { status: 'available', windows, observedAt: new Date().toISOString() });
   assert.equal(pool.select({ kind: 'text', group: 'high' }).selected.id, 'claude-sonnet-9-1');
   config.routes[0].enabled = false;
@@ -115,7 +116,7 @@ test('quota percentages are validated and model-specific limits do not block sib
 
 test('local model catalogs preserve actual model keys and tags instead of a fabricated default', async t => {
   const root = mkdtempSync(path.join(tmpdir(), 'local-catalog-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const executable = path.join(root, 'models.mjs');
   writeFileSync(executable, `if(process.argv.includes('--json'))console.log(JSON.stringify([{modelKey:'qwen3-8b-v2'}]));else console.log('NAME ID SIZE MODIFIED\\nqwen3:8b abc123 5GB today');`);
   const python = process.platform === 'win32' ? 'python' : 'python3';
@@ -127,7 +128,7 @@ test('local model catalogs preserve actual model keys and tags instead of a fabr
 
 test('agent auto-start preserves owner-disabled routes and never grants trust implicitly', t => {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-owner-policy-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const config = configSchema.parse({ workspaceRoots: [root], selectionMode: 'manual', routes: [{ id: 'owner-disabled', adapter: 'custom', executable: process.execPath, argsTemplate: ['--version'], billing: 'free', enabled: false, trustedSettings: false, models: [] }] });
   writeFileSync(path.join(root, 'config.json'), JSON.stringify(config));
   const loaded = ensureInitialized(root);
