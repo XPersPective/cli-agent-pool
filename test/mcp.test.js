@@ -67,7 +67,7 @@ test('standalone dashboard uses one-time login, signed HttpOnly cookie and same-
   assert.equal((await post('https://attacker.invalid')).status, 403);
   assert.equal((await post(url.origin, cookie.slice(0, -1) + 'x')).status, 403);
   const result = await post(url.origin); assert.equal(result.status, 200);
-  const view = await result.json(); assert.deepEqual(view.installed.map(cli => cli.adapter), ['codex', 'claude', 'qwen', 'opencode', 'mmx']);
+  const view = await result.json(); assert.deepEqual(view.installed.map(cli => cli.adapter), ['codex', 'claude', 'opencode', 'zcode', 'qwen', 'mcode', 'mmx', 'kimi', 'mimo', 'agy', 'omniroute', 'lmstudio', 'ollama', 'aider', 'kilocode', 'hermes']);
   assert.ok(!JSON.stringify(view).includes(token));
   assert.equal((await fetch(url, { method: 'POST', headers: { Cookie: cookie, Origin: url.origin, 'Content-Type': 'application/json' }, body: '{}' })).status, 403);
 });

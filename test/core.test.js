@@ -12,7 +12,7 @@ import { pathToFileURL } from 'node:url';
 import { Store } from '../src/store.js';
 import { Pool } from '../src/pool.js';
 import { runProcess, childEnvironment } from '../src/process.js';
-import { buildArguments, checkAuth, execute, quota, routeEnvironment, opencodeCatalog } from '../src/adapters.js';
+import { buildArguments, checkAuth, execute, quota, routeEnvironment, opencodeCatalog, importDiscoveredRoutes } from '../src/adapters.js';
 import { saveSecret, hasSecret, loadSecret } from '../src/secrets-store.js';
 
 function fixture(t, dependencies = {}) {
@@ -210,6 +210,33 @@ test('Qwen stream-json result envelope is parsed, errors fail and writes stay di
   assert.throws(() => buildArguments({ adapter: 'qwen', executable: ok }, { id: 'm' }, { kind: 'write' }), { code: 'WRITE_NOT_SUPPORTED' });
 });
 
+test('ZCode stream-json response, MiniMax Code, Custom CLI argsTemplate and importDiscoveredRoutes work', async t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pool-multi-cli-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const zcodeFile = path.join(root, 'zcode.cjs');
+  writeFileSync(zcodeFile, `const args=process.argv.slice(2);const pIdx=args.indexOf('-p');const p=pIdx>=0?args[pIdx+1]:'';console.log(JSON.stringify({type:'result',response:'zcode:'+p+':'+args.includes('--disallowed-tools')}));`);
+  const zRoute = { id: 'zcode-local', adapter: 'zcode', billing: 'token_plan', trustedSettings: true, executable: zcodeFile, models: [{ id: 'builtin:zai-coding-plan/GLM-5.3', alias: 'GLM-5.3', group: 'zai', efforts: ['low', 'high'], kinds: ['text', 'read', 'write'] }] };
+  const zRead = await execute(zRoute, zRoute.models[0], { prompt: 'hello-glm', workspace: root, kind: 'read', timeoutSeconds: 10 }, py, () => {}, root).done;
+  assert.deepEqual(zRead, { result: 'zcode:hello-glm:true' });
+  const zWriteArgs = buildArguments(zRoute, zRoute.models[0], { prompt: 'edit', workspace: root, kind: 'write', effort: 'high' });
+  assert.ok(zWriteArgs.includes('edit'));
+  assert.ok(zWriteArgs.includes('Bash') && !zWriteArgs.includes('Bash,Edit,Write'));
+
+  const customFile = path.join(root, 'my-cli.js');
+  writeFileSync(customFile, `let s='';process.stdin.on('data',c=>s+=c).on('end',()=>console.log('custom:'+process.argv.slice(2).join('|')+':'+s));`);
+  const customRoute = configSchema.parse({
+    workspaceRoots: [root],
+    routes: [{ id: 'custom-1', adapter: 'custom', executable: customFile, billing: 'subscription', argsTemplate: ['run', '-m', '{model}', '--cwd', '{workspace}'], promptStdin: true, models: [{ id: 'my-model', alias: 'My Model', group: 'custom', efforts: [], kinds: ['text', 'read'] }] }],
+  }).routes[0];
+  const customRes = await execute(customRoute, customRoute.models[0], { prompt: 'stdin-prompt', workspace: root, kind: 'read', timeoutSeconds: 10 }, py, () => {}, root).done;
+  assert.deepEqual(customRes, { result: `custom:run|-m|my-model|--cwd|${root}:stdin-prompt` });
+  assert.throws(() => configSchema.parse({ workspaceRoots: [root], routes: [{ id: 'bad-custom', adapter: 'custom', executable: customFile, models: [] }] }));
+
+  const emptyConfig = configSchema.parse({ workspaceRoots: [root], routes: [] });
+  const imported = importDiscoveredRoutes(emptyConfig);
+  assert.ok(Array.isArray(imported.config.routes));
+});
+
 test('non-metered routes are preferred over paid_api and missing subscription plan only blocks subscription/token_plan', t => {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-select-'));
   const config = configSchema.parse({
@@ -244,7 +271,7 @@ test('supervisor preserves Unicode and literal prompt data', async () => {
 
 test('timeout kills a grandchild process tree before reporting completion', async t => {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-process-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
   const pidFile = path.join(root, 'pid');
   const code = `const {spawn}=require('node:child_process'); const fs=require('node:fs'); const c=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'}); fs.writeFileSync(${JSON.stringify(pidFile)},String(c.pid));setInterval(()=>{},1000)`;
   const result = await runProcess({ argv: [process.execPath, '-e', code], cwd: root, timeoutMs: 1500 }).done;
@@ -256,7 +283,11 @@ test('timeout kills a grandchild process tree before reporting completion', asyn
 
 test('a hard parent exit closes the supervisor control pipe and kills the owned CLI', async t => {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-parent-exit-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(async () => {
+    for (let i = 0; i < 20; i++) {
+      try { rmSync(root, { recursive: true, force: true }); return; } catch { await delay(25); }
+    }
+  });
   const pidFile = path.join(root, 'pid');
   const moduleURL = pathToFileURL(path.resolve('src/process.js')).href;
   const childCode = `require('node:fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setInterval(()=>{},1000)`;

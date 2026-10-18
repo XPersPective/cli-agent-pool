@@ -9,19 +9,20 @@ CLI Agent Pool strictly manages the local model and CLI pool on `127.0.0.1`.
 
 ## Decisions
 
-1. Reuse official CLIs (`codex`, `claude`, `opencode`, `qwen`, `mmx`). No host plugin is required.
-2. Support five explicit billing/plan declarations per route:
-   - `subscription`: Official vendor CLI subscription (`codex`, `claude.ai`, etc.).
-   - `token_plan`: Fixed-quota coding/token plans (e.g. Qwen/DashScope Coding Plan on Claude Code or OpenCode, MiniMax Token Plan).
+1. Discover and reuse all installed AI CLIs on the host machine (`codex`, `claude`, `opencode`, `zcode`, `qwen`, `mcode`, `mmx`, `kimi`, `mimo`, `agy`, `omniroute`, `lmstudio`, `ollama`, `aider`, `kilocode`, `hermes`) plus arbitrary user-defined CLIs via `adapter: 'custom'` (`argsTemplate`). No host plugin is required.
+2. Read local model catalogs directly from each tool's non-secret configuration (`~/.zcode/v2/config.json`, `~/.qwen/settings.json`, `~/.config/opencode/opencode.json`, `~/.codex/models_cache.json`, `~/.minimax/config.yaml`, `~/.kimi-code/config.toml`, `~/.ollama/models`, `lms ls --json`) without ever copying or exposing credentials, and allow one-click bulk import (`scan-import`).
+3. Support five explicit billing/plan declarations per route:
+   - `subscription`: Official vendor CLI subscription (`codex`, `claude.ai`, `agy`, etc.).
+   - `token_plan`: Fixed-quota coding/token plans (e.g. Z.AI GLM Coding Plan on `zcode`, Qwen/DashScope Coding Plan on `qwen`/`claude`/`opencode`, MiniMax Token Plan on `mcode`/`mmx`, Kimi Coding Plan on `kimi`).
    - `free_credits`: Daily or promotional credit balances (e.g. MiniMax `mmx` daily credits when no monthly token plan is active).
-   - `free`: Zero-cost models discovered from OpenCode (`cost.input === 0 && cost.output === 0`) or free tiers.
+   - `free`: Zero-cost models discovered from OpenCode (`cost.input === 0 && cost.output === 0`), `:free` models on ZCode/OpenRouter, or local models (`lmstudio`, `ollama`).
    - `paid_api`: Metered pay-per-token API routes. Never used as an implicit fallback; excluded from automatic selection unless `routeId` is explicitly requested or the owner opts in with `autoSelect: true`, and always ranked behind non-metered routes.
-3. Support custom API providers through two protocol slots without building a custom HTTP agent loop:
+4. Support custom API providers through two protocol slots without building a custom HTTP agent loop:
    - **Anthropic-compatible (`api.protocol = 'anthropic'`)**: executed via Claude Code (`claude`) with per-process `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` injected from the write-only local secret store (`<CLI_AGENT_POOL_HOME>/secrets/<secretRef>.key`).
    - **OpenAI-compatible (`api.protocol = 'openai'`)**: executed via OpenCode (`opencode`) with per-process `OPENCODE_CONFIG_CONTENT` configuring `@ai-sdk/openai-compatible` and enforcing read/write tool permissions.
-4. Keep provider credentials out of `config.json`, MCP responses and browser responses. Custom API keys are write-only via `/api/secrets`.
-5. Use one Streamable HTTP MCP owner and a lightweight `stdio` proxy so every coding tool shares one SQLite task owner.
-6. Prefer missed work requiring review (`needs_review`) over automatic repeated file changes.
+5. Keep provider credentials out of `config.json`, MCP responses and browser responses. Custom API keys are write-only via `/api/secrets`.
+6. Use one Streamable HTTP MCP owner and a lightweight `stdio` proxy so every coding tool shares one SQLite task owner.
+7. Prefer missed work requiring review (`needs_review`) over automatic repeated file changes.
 
 ## State and recovery
 
@@ -46,11 +47,13 @@ block `subscription` and `token_plan` routes but allow `free_credits` routes (su
 
 ## Verified capabilities
 
-- Local Windows verification with real installed CLIs (`codex` 0.153, `claude` 2.1, `opencode` 1.18, `qwen` 0.21, `mmx` 1.0):
+- Local Windows system-wide discovery across 16 CLI adapters (13 installed CLIs and 64 models discovered automatically on the host, including `codex`, `claude`, `opencode`, `zcode`, `qwen`, `mcode`, `mmx`, `kimi`, `mimo`, `agy`, `omniroute`, `lmstudio`, `hermes`):
+  - ZCode (`C:\Program Files\ZCode\resources\glm\zcode.cjs`) discovery, `GLM-5.3` / `GLM-5.2` / `GLM-5-Turbo` model extraction from `~/.zcode/v2/config.json`, `stream-json` result parsing, read-only tool disallowing, and live Z.AI quota windows via `cclimits`.
   - Real Codex model discovery and live MCP task execution.
   - OpenCode JSONL event parsing, automatic free model catalog discovery (`opencode models --verbose --pure`), and OpenAI-compatible custom API execution via `OPENCODE_CONFIG_CONTENT`.
   - Claude Code subscription verification (`claude.ai`), token-plan / third-party Coding Plan support (`billing: 'token_plan'`), and Anthropic-compatible custom API execution via isolated environment variables.
-  - MiniMax `mmx` daily credits (`billing: 'free_credits'`) vs active token plan (`billing: 'token_plan' | 'subscription'`) differentiation and quota inspection.
-  - Qwen Code `stream-json` result envelope parsing with writes disabled.
+  - MiniMax Code (`mcode`) and MiniMax CLI (`mmx`) daily credits (`billing: 'free_credits'`) vs active token plan (`billing: 'token_plan' | 'subscription'`) differentiation and quota inspection.
+  - Qwen Code `~/.qwen/settings.json` multi-provider model discovery and `stream-json` result envelope parsing with writes disabled.
+  - Kimi Code (`kimi`), Xiaomi MiMoCode (`mimo`), Google Antigravity (`agy`), OmniRoute (`omniroute`), LM Studio (`lmstudio`), Ollama (`ollama`), and Custom CLI (`argsTemplate`) support.
   - Gemini CLI removed.
-  - Standalone dashboard verified in headless Edge at 360 px and 1440 px with CLI route setup, Custom API (Anthropic/OpenAI slot) setup, plan/credit badges, and CLI login guidance.
+  - Standalone dashboard verified with one-click system scan/import (`scan-import`), CLI route setup, Custom API (Anthropic/OpenAI slot) setup, Custom CLI template setup, plan/credit badges, and CLI login guidance.

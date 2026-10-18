@@ -10,6 +10,11 @@ export class PoolError extends Error {
 }
 
 const label = z.string().min(1).max(100).refine(value => !/[\u0000-\u001f\u007f]/.test(value), 'Kontrol karakterleri kullanılamaz.');
+export const adapterValues = [
+  'codex', 'claude', 'opencode', 'zcode', 'qwen', 'mcode', 'mmx',
+  'kimi', 'mimo', 'agy', 'omniroute', 'lmstudio', 'ollama',
+  'aider', 'kilocode', 'hermes', 'custom',
+];
 export const billingModes = ['subscription', 'token_plan', 'free_credits', 'free', 'paid_api', 'unknown'];
 export const nonMeteredBillings = new Set(['subscription', 'token_plan', 'free_credits', 'free']);
 export const activeBillings = new Set(['subscription', 'token_plan', 'free_credits', 'free', 'paid_api']);
@@ -30,7 +35,7 @@ export const configSchema = z.object({
   concurrency: z.number().int().min(1).max(8).default(1),
   routes: z.array(z.object({
     id: label.regex(/^[a-zA-Z0-9_-]+$/),
-    adapter: z.enum(['codex', 'claude', 'qwen', 'opencode', 'mmx']),
+    adapter: z.enum(adapterValues),
     executable: z.string().min(1).refine(value => path.isAbsolute(value), 'CLI yolu mutlak olmalı.'),
     enabled: z.boolean().default(false),
     billing: z.enum(billingModes).default('unknown'),
@@ -40,6 +45,8 @@ export const configSchema = z.object({
     maxConcurrent: z.number().int().min(1).max(8).default(1),
     minRemainingPercent: z.number().min(0).max(100).default(0),
     api: apiBlockSchema.optional(),
+    argsTemplate: z.array(z.string().min(1).max(512).refine(v => !/[\u0000]/.test(v), 'NUL karakteri kullanılamaz.')).min(1).max(32).optional(),
+    promptStdin: z.boolean().optional(),
     models: z.array(z.object({
       id: label, alias: label, group: label,
       enabled: z.boolean().default(true),
@@ -56,6 +63,8 @@ export const configSchema = z.object({
       ctx.addIssue({ code: 'custom', message: 'Bağlantıdaki model kimlikleri benzersiz olmalı.' });
     if (route.adapter === 'mmx' && route.models.some(m => m.kinds.some(k => k !== 'text')))
       ctx.addIssue({ code: 'custom', message: 'mmx yalnızca metin görevi destekler.' });
+    if (route.adapter === 'custom' && (!route.argsTemplate || route.argsTemplate.length === 0))
+      ctx.addIssue({ code: 'custom', message: 'Özel CLI (custom) bağlantısı için argsTemplate tanımlanmalıdır.' });
     if (route.models.some(m => m.defaultEffort && !m.efforts.includes(m.defaultEffort)))
       ctx.addIssue({ code: 'custom', message: 'Varsayılan efor desteklenen değerlerden biri olmalı.' });
     if (route.api) {

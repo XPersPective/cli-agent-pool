@@ -37,32 +37,40 @@
         </form>
       </section>
       <div class="right-column">
-        <section class="card" aria-labelledby="providers-heading"><div class="section-heading"><div><p class="eyebrow">BİLGİSAYARINIZDA</p><h2 id="providers-heading">Bağlantılar, planlar ve krediler</h2></div><button id="open-settings" type="button">Modeller ve bağlantılar</button></div><div id="providers" class="provider-list"><p class="hint">Bağlantılar yükleniyor.</p></div></section>
+        <section class="card" aria-labelledby="providers-heading"><div class="section-heading"><div><p class="eyebrow">BİLGİSAYARINIZDA GENEL TARAMA</p><h2 id="providers-heading">Bağlantılar, planlar ve kurulu CLI’lar</h2></div><div class="actions"><button id="quick-scan-import" type="button">Tüm kurulu CLI’ları aktar</button><button id="open-settings" type="button">Modeller ve bağlantılar</button></div></div><div id="providers" class="provider-list"><p class="hint">Bağlantılar yükleniyor.</p></div></section>
         <section class="card" aria-labelledby="tasks-heading"><div class="section-heading"><div><p class="eyebrow">ÇALIŞMA GEÇMİŞİ</p><h2 id="tasks-heading">Son görevler</h2></div><span id="task-total" class="badge subtle">0</span></div><div id="tasks"><p class="empty">Henüz görev yok. İlk görevinizi soldaki formdan başlatın.</p></div></section>
       </div>
     </div>
     <section id="settings" class="card" aria-labelledby="settings-heading" hidden>
-      <div class="section-heading"><div><p class="eyebrow">SİZİN KURALLARINIZ</p><h2 id="settings-heading">Modeller ve bağlantılar</h2></div><button id="close-settings" type="button">Kapat</button></div>
-      <p class="hint">Abonelik, token planı, günlük ücretsiz kredi veya kendi API sağlayıcınızı (Anthropic / OpenAI uyumlu) burada yönetin. API anahtarları yalnızca yerel veri klasörüne yazılır ve tarayıcıya geri gönderilmez.</p>
+      <div class="section-heading"><div><p class="eyebrow">SİZİN KURALLARINIZ</p><h2 id="settings-heading">Modeller ve bağlantılar</h2></div><div class="actions"><button id="scan-import" type="button">Bilgisayarı tara ve tümünü havuza aktar</button><button id="close-settings" type="button">Kapat</button></div></div>
+      <p class="hint">Bilgisayarınızdaki tüm AI CLI’ları (Codex, Claude, OpenCode, ZCode / Z.AI, Qwen, MiniMax mcode/mmx, Kimi, MiMo, Antigravity, OmniRoute, LM Studio, Ollama vb.), token planlarını, günlük ücretsiz kredileri ve özel API yuvalarını (Anthropic / OpenAI uyumlu) buradan yönetin.</p>
       <label class="setting-field" for="workspace-roots">İzin verilen çalışma klasörleri (her satıra bir klasör)<textarea id="workspace-roots" rows="3" placeholder="Örnek: D:\repositories\my-project"></textarea></label>
       <div id="settings-routes"></div>
-      <fieldset class="route-settings"><legend>Yerel CLI bağlantısı ekle</legend>
+      <fieldset class="route-settings"><legend>Kurulu CLI bağlantısı ekle</legend>
         <label class="setting-field" for="new-adapter">Kurulu CLI<select id="new-adapter"><option value="">CLI seçin</option></select></label>
-        <label class="setting-field" for="new-billing">Ödeme / plan türü<select id="new-billing"><option value="subscription">Abonelik (ChatGPT / Claude Pro-Max)</option><option value="token_plan">Token planı (sabit paket / Coding Plan)</option><option value="free_credits">Günlük / ücretsiz kredi (ör. mmx)</option><option value="free">Ücretsiz modeller (ör. OpenCode free)</option><option value="paid_api">Ücretli API (kullandıkça öde)</option></select></label>
-        <label class="setting-field" for="new-model">Model kimliği (Codex ve OpenCode için boş bırakılabilir)<input id="new-model" maxlength="100" placeholder="CLI içinde kullandığınız model (ör. sonnet, MiniMax-M2.7, qwen3.8-max)"></label>
+        <label class="setting-field" for="new-billing">Ödeme / plan türü<select id="new-billing"><option value="subscription">Abonelik (ChatGPT / Claude Pro-Max / Antigravity)</option><option value="token_plan">Token planı (Z.AI GLM / Qwen / MiniMax / Kimi / Coding Plan)</option><option value="free_credits">Günlük / ücretsiz kredi (ör. mmx)</option><option value="free">Ücretsiz modeller (ör. OpenCode free / Yerel LM Studio / Ollama)</option><option value="paid_api">Ücretli API (kullandıkça öde)</option></select></label>
+        <label class="setting-field" for="new-model">Model kimliği (boş bırakılırsa CLI’da bulunan tüm modeller otomatik eklenir)<input id="new-model" maxlength="100" placeholder="Boş bırakın veya tek model yazın (ör. GLM-5.3, sonnet, qwen3.8-max-preview)"></label>
         <label class="route-header"><input id="subscription-confirmed" type="checkbox">Bu CLI’ın seçtiğim ödeme/plan türüyle yapılandırıldığını doğruladım.</label>
         <button id="add-route" type="button">CLI bağlantısını ekle</button>
-        <p class="hint">Codex ve OpenCode model listesini otomatik çeker. Claude, Qwen ve mmx için ilk modeli girin; daha sonra yeni modeller ekleyebilirsiniz.</p>
+        <p class="hint">Genel tarama ZCode (`~/.zcode`), Qwen (`~/.qwen`), OpenCode (`~/.config/opencode`), MiniMax (`~/.minimax`), Kimi (`~/.kimi-code`), Codex ve Claude içindeki tanımlı modelleri otomatik bulur.</p>
       </fieldset>
       <fieldset class="route-settings"><legend>Özel API sağlayıcısı ekle (Anthropic veya OpenAI uyumlu)</legend>
-        <label class="setting-field" for="api-id">Bağlantı kimliği<input id="api-id" maxlength="60" placeholder="Örnek: qwen-api, deepseek-api, openrouter-api"></label>
+        <label class="setting-field" for="api-id">Bağlantı kimliği<input id="api-id" maxlength="60" placeholder="Örnek: qwen-api, zai-api, deepseek-api, openrouter-api"></label>
         <label class="setting-field" for="api-protocol">API yuvası / protokolü<select id="api-protocol"><option value="anthropic">Anthropic uyumlu (Claude Code üzerinden çalışır)</option><option value="openai">OpenAI uyumlu (OpenCode üzerinden çalışır)</option></select></label>
         <label class="setting-field" for="api-billing">Ödeme / plan türü<select id="api-billing"><option value="token_plan">Token planı / Abonelik API</option><option value="free_credits">Ücretsiz kredi / Deneme</option><option value="free">Ücretsiz API</option><option value="paid_api">Ücretli API (kullandıkça öde)</option></select></label>
         <label class="setting-field" for="api-base-url">API Base URL<input id="api-base-url" maxlength="512" placeholder="Örnek: https://dashscope-intl.aliyuncs.com/apps/anthropic"></label>
         <label class="setting-field" for="api-key">API Anahtarı (yalnızca yerel diske yazılır, tekrar gösterilmez)<input id="api-key" type="password" autocomplete="off" maxlength="4096" placeholder="sk-..."></label>
-        <label class="setting-field" for="api-models">Model kimlikleri (virgülle ayırın)<input id="api-models" maxlength="300" placeholder="Örnek: qwen3.8-max-preview, deepseek-v4"></label>
+        <label class="setting-field" for="api-models">Model kimlikleri (virgülle ayırın)<input id="api-models" maxlength="300" placeholder="Örnek: qwen3.8-max-preview, GLM-5.3, deepseek-v4"></label>
         <button id="add-api-route" type="button">API sağlayıcısını ekle</button>
         <p class="hint">Anthropic yuvası kurulu Claude Code’u, OpenAI yuvası kurulu OpenCode’u kullanarak okuma/yazma/metin görevlerini çalıştırır.</p>
+      </fieldset>
+      <fieldset class="route-settings"><legend>Özel CLI aracı ekle (herhangi bir komut satırı programı)</legend>
+        <label class="setting-field" for="custom-cli-id">Bağlantı kimliği<input id="custom-cli-id" maxlength="60" placeholder="Örnek: my-agent-cli"></label>
+        <label class="setting-field" for="custom-cli-exe">Çalıştırılabilir dosya yolu (.exe veya .js/.mjs/.cjs)<input id="custom-cli-exe" maxlength="512" placeholder="Örnek: C:\path\to\agent.exe"></label>
+        <label class="setting-field" for="custom-cli-args">Argüman şablonu (boşlukla ayırın; {model}, {effort}, {workspace}, {prompt})<input id="custom-cli-args" maxlength="512" placeholder="Örnek: run --model {model} --cwd {workspace}"></label>
+        <label class="setting-field" for="custom-cli-billing">Ödeme / plan türü<select id="custom-cli-billing"><option value="token_plan">Token planı</option><option value="subscription">Abonelik</option><option value="free_credits">Günlük / ücretsiz kredi</option><option value="free">Ücretsiz / Yerel</option><option value="paid_api">Ücretli API</option></select></label>
+        <label class="setting-field" for="custom-cli-models">Model kimlikleri (virgülle ayırın)<input id="custom-cli-models" maxlength="300" placeholder="Örnek: default, custom-model-1"></label>
+        <button id="add-custom-cli" type="button">Özel CLI aracını ekle</button>
       </fieldset>
       <button id="save-settings" class="primary" type="button">Ayarları kaydet</button>
     </section>

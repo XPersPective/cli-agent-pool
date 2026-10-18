@@ -52,7 +52,7 @@ function updateModels() {
     if (models.some(model => `${model.routeId}/${model.id}` === previous)) $('task-model').value = previous;
   }
   $('submit').disabled = busy || !models.length;
-  $('model-empty').textContent = models.length ? 'Abonelik, token planı ve ücretsiz modeller önceliklidir; ücretli API açıkça seçildiğinde çalışır.' : 'Bu görev için etkin model yok. Modeller ve bağlantılar bölümünden bir CLI veya API etkinleştirin.';
+  $('model-empty').textContent = models.length ? 'Abonelik, token planı ve ücretsiz modeller önceliklidir; ücretli API açıkça seçildiğinde çalışır.' : 'Bu görev için etkin model yok. "Tüm kurulu CLI’ları aktar" düğmesini kullanın veya Modeller ve bağlantılar bölümünden bir bağlantı etkinleştirin.';
   $('write-warning').hidden = $('task-kind').value !== 'write';
 }
 function showDetail(value) { $('detail-content').textContent = value.result || JSON.stringify(value, null, 2); $('detail').hidden = false; $('detail-heading').tabIndex = -1; $('detail-heading').focus(); }
@@ -65,7 +65,14 @@ function formatQuotaSummary(conn, q) {
   if (q.subscription === 'none' && conn.billing === 'free_credits') return 'Token planı yok · Günlük / ücretsiz kredi modu etkin';
   if (q.subscription === 'none') return 'Etkin token planı yok (günlük kredi için free_credits seçin)';
   if (q.endpoint) return `Uç nokta: ${q.endpoint}`;
-  return `Durum: ${q.status}`;
+  return `Durum: ${q.status}${q.auth ? ` (${q.auth})` : ''}`;
+}
+async function runScanImport() {
+  const res = await call('scan_import');
+  settings = res;
+  if (!$('settings').hidden) renderSettings();
+  await refresh();
+  notice(`Genel tarama tamamlandı: ${res.discoveredCount} kurulu CLI bulundu, ${res.addedRoutes} yeni bağlantı ve ${res.addedModels} model havuza aktarıldı.`);
 }
 async function refresh(announce = false) {
   if (refreshing) return;
@@ -95,8 +102,10 @@ async function refresh(announce = false) {
     for (const cli of snapshot.installed) {
       if (snapshot.connections.some(c => c.adapter === cli.adapter && !c.protocol)) continue;
       const row = element('div', null, 'provider');
-      const info = element('div'); info.append(element('strong', cli.adapter));
-      info.append(element('small', cli.status === 'installed' ? `Kurulu · Giriş: ${cli.loginCommand}` : 'Bilgisayarda bulunamadı'));
+      const info = element('div');
+      info.append(element('strong', `${cli.label || cli.adapter} (${cli.adapter})`));
+      const modelCount = cli.discoveredModels?.length || 0;
+      info.append(element('small', cli.status === 'installed' ? `Kurulu · ${modelCount} model bulundu · Giriş: ${cli.loginCommand}` : 'Bilgisayarda bulunamadı'));
       row.append(info, element('span', cli.status === 'installed' ? 'Kurulu' : 'Bulunamadı', 'provider-state'));
       providerRows.push(row);
     }
@@ -128,7 +137,7 @@ function renderSettings() {
   $('workspace-roots').value = settings.config.workspaceRoots.join('\n');
   const previousAdapter = $('new-adapter').value;
   const adapters = snapshot.installed.filter(cli => cli.status === 'installed');
-  $('new-adapter').replaceChildren(new Option('CLI seçin', ''), ...adapters.map(cli => new Option(cli.adapter, cli.adapter)));
+  $('new-adapter').replaceChildren(new Option('CLI seçin', ''), ...adapters.map(cli => new Option(`${cli.label || cli.adapter} (${cli.discoveredModels?.length || 0} model)`, cli.adapter)));
   if (adapters.some(cli => cli.adapter === previousAdapter)) $('new-adapter').value = previousAdapter;
   const billingChoices = Object.entries(billingLabels).map(([k, v]) => [k, v]);
   $('settings-routes').replaceChildren(...settings.config.routes.map(route => {
@@ -192,35 +201,38 @@ function renderSettings() {
     addModelRow.append(newModelInput, addModelBtn); section.append(addModelRow);
     const routeActions = element('div', null, 'actions');
     routeActions.append(button('Plan / kota durumunu sorgula', async () => { const q = await call('quota', { routeId: route.id }); await refresh(); showDetail(q); }));
-    if (['codex', 'opencode'].includes(route.adapter) && !route.api) {
+    if (!route.api && route.adapter !== 'custom') {
       routeActions.append(button('Modelleri CLI’dan yenile', async () => {
         const catalog = await call('catalog', { routeId: route.id });
+        const kinds = route.adapter === 'mmx' ? ['text'] : route.adapter === 'qwen' ? ['text', 'read'] : ['text', 'read', 'write'];
         for (const m of catalog.models) {
-          if (!route.models.some(existing => existing.id === m.id)) {
-            route.models.push({ id: m.id, alias: m.name, group: m.free ? 'free' : 'unassigned', enabled: true, efforts: m.efforts, kinds: ['text', 'read', 'write'] });
+          if (!route.models.some(existing => existing.id === m.id) && route.models.length < 100) {
+            route.models.push({ id: m.id, alias: m.name, group: m.free ? 'free' : 'unassigned', enabled: true, efforts: m.efforts, kinds });
           }
         }
         settings = await call('save', settings); renderSettings(); await refresh();
-        notice(`${route.id} model listesi güncellendi.`);
+        notice(`${route.id} model listesi güncellendi (${route.models.length} model).`);
       }));
     }
     section.append(routeActions);
     return section;
   }));
-  if (!settings.config.routes.length) $('settings-routes').append(element('p', 'Henüz bağlantı yok. Aşağıdan kurulu bir CLI veya özel API sağlayıcısı ekleyin.', 'empty'));
+  if (!settings.config.routes.length) $('settings-routes').append(element('p', 'Henüz bağlantı yok. Üstteki "Bilgisayarı tara ve tümünü havuza aktar" düğmesine basın veya aşağıdan ekleyin.', 'empty'));
   if (busy) $('settings-routes').querySelectorAll('input,select,textarea,button').forEach(node => { node.disabled = true; });
 }
 function loginCommandsLabel(adapter) {
-  return ({ codex: 'codex login', claude: 'claude auth login', qwen: 'qwen', opencode: 'opencode providers login', mmx: 'mmx auth login' })[adapter] || adapter;
+  const found = snapshot?.installed?.find(cli => cli.adapter === adapter);
+  return found?.loginCommand || adapter;
 }
 $('new-adapter').addEventListener('change', () => {
   const adapter = $('new-adapter').value;
-  if (adapter === 'opencode') $('new-billing').value = 'free';
-  else if (adapter === 'mmx') $('new-billing').value = 'free_credits';
-  else if (adapter === 'claude' || adapter === 'codex') $('new-billing').value = 'subscription';
+  const cli = snapshot?.installed?.find(item => item.adapter === adapter);
+  if (cli?.defaultBilling) $('new-billing').value = cli.defaultBilling;
 });
 $('task-kind').addEventListener('change', updateModels);
 $('refresh').addEventListener('click', () => void refresh(true));
+$('quick-scan-import').addEventListener('click', () => void action(runScanImport));
+$('scan-import').addEventListener('click', () => void action(runScanImport));
 $('close-detail').addEventListener('click', () => { $('detail').hidden = true; $('task-heading').tabIndex = -1; $('task-heading').focus(); });
 $('open-settings').addEventListener('click', () => void action(async () => {
   settings = await call('settings'); renderSettings(); $('settings').hidden = false;
@@ -238,21 +250,25 @@ $('add-route').addEventListener('click', () => void action(async () => {
   if (!$('subscription-confirmed').checked) throw new Error('Önce CLI’ın seçtiğiniz ödeme/plan türüyle yapılandırıldığını onaylayın.');
   if (!settings.config.workspaceRoots.length) throw new Error('Önce izin verilen bir çalışma klasörü ekleyin.');
   const modelId = $('new-model').value.trim();
-  if (!['codex', 'opencode'].includes(adapter) && !modelId) throw new Error('CLI içinde kullandığınız model kimliğini girin.');
   let id = `${adapter}-local`;
   let suffix = 2;
   while (settings.config.routes.some(route => route.id === id)) id = `${adapter}-local-${suffix++}`;
   const kinds = adapter === 'mmx' ? ['text'] : adapter === 'qwen' ? ['text', 'read'] : ['text', 'read', 'write'];
-  const route = { id, adapter, executable: cli.executable, enabled: false, billing, trustedSettings: billing === 'free' && adapter === 'opencode', priority: 100, maxConcurrent: 1, models: modelId ? [{ id: modelId, alias: modelId, group: billing === 'free' ? 'free' : 'unassigned', enabled: true, efforts: [], kinds }] : [] };
+  const initialModels = modelId
+    ? [{ id: modelId, alias: modelId, group: billing === 'free' ? 'free' : 'unassigned', enabled: true, efforts: [], kinds }]
+    : (cli.discoveredModels || []).map(({ free, ...m }) => m);
+  const route = { id, adapter, executable: cli.executable, enabled: false, billing, trustedSettings: true, priority: 100, maxConcurrent: 1, models: initialModels };
   settings.config.routes.push(route);
   settings = await call('save', settings);
-  if (['codex', 'opencode'].includes(adapter) && !modelId) {
-    const catalog = await call('catalog', { routeId: id });
-    settings.config.routes.find(connection => connection.id === id).models = catalog.models.map(model => ({ id: model.id, alias: model.name, group: model.free ? 'free' : 'unassigned', enabled: true, efforts: model.efforts, kinds: ['text', 'read', 'write'] }));
-    settings = await call('save', settings);
+  if (!modelId && ['codex', 'opencode', 'mimo'].includes(adapter)) {
+    try {
+      const catalog = await call('catalog', { routeId: id });
+      settings.config.routes.find(connection => connection.id === id).models = catalog.models.map(model => ({ id: model.id, alias: model.name, group: model.free ? 'free' : 'unassigned', enabled: true, efforts: model.efforts, kinds }));
+      settings = await call('save', settings);
+    } catch {}
   }
   $('new-model').value = ''; $('subscription-confirmed').checked = false;
-  renderSettings(); await refresh(); notice('CLI bağlantısı eklendi. Modelleri inceleyip bağlantıyı etkinleştirebilirsiniz.');
+  renderSettings(); await refresh(); notice(`${id} bağlantısı (${initialModels.length} model) eklendi.`);
 }));
 $('add-api-route').addEventListener('click', () => void action(async () => {
   const id = $('api-id').value.trim();
@@ -278,6 +294,27 @@ $('add-api-route').addEventListener('click', () => void action(async () => {
   settings = await call('save', { ...settings, secrets: apiKey ? { [id]: apiKey } : {} });
   $('api-id').value = ''; $('api-base-url').value = ''; $('api-key').value = ''; $('api-models').value = '';
   renderSettings(); await refresh(); notice(`${id} API bağlantısı eklendi ve etkinleştirildi.`);
+}));
+$('add-custom-cli').addEventListener('click', () => void action(async () => {
+  const id = $('custom-cli-id').value.trim();
+  const executable = $('custom-cli-exe').value.trim();
+  const argsTemplate = $('custom-cli-args').value.trim().split(/\s+/).filter(Boolean);
+  const billing = $('custom-cli-billing').value;
+  const modelNames = $('custom-cli-models').value.split(',').map(s => s.trim()).filter(Boolean);
+  if (!/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error('Bağlantı kimliği yalnızca harf, rakam, tire ve alt çizgi içermelidir.');
+  if (settings.config.routes.some(route => route.id === id)) throw new Error('Bu bağlantı kimliği zaten tanımlı.');
+  if (!executable) throw new Error('Çalıştırılabilir dosya yolunu girin.');
+  if (!argsTemplate.length) throw new Error('Argüman şablonunu girin.');
+  if (!modelNames.length) throw new Error('En az bir model kimliği girin.');
+  const route = {
+    id, adapter: 'custom', executable, argsTemplate, promptStdin: !argsTemplate.some(a => a.includes('{prompt}')),
+    enabled: false, billing, trustedSettings: true, priority: 100, maxConcurrent: 1,
+    models: modelNames.map(m => ({ id: m, alias: m, group: 'custom', enabled: true, efforts: [], kinds: ['text', 'read', 'write'] })),
+  };
+  settings.config.routes.push(route);
+  settings = await call('save', settings);
+  $('custom-cli-id').value = ''; $('custom-cli-exe').value = ''; $('custom-cli-args').value = ''; $('custom-cli-models').value = '';
+  renderSettings(); await refresh(); notice(`${id} özel CLI bağlantısı eklendi.`);
 }));
 $('task-form').addEventListener('submit', event => {
   event.preventDefault();

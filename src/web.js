@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual, createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { configView, saveConfig, PoolError } from './config.js';
-import { discover, opencodeCatalog, loginCommands } from './adapters.js';
+import { discover, routeCatalog, importDiscoveredRoutes, loginCommands } from './adapters.js';
 import { codexControl } from './codex-control.js';
 import { saveSecret, hasSecret } from './secrets-store.js';
 
@@ -91,6 +91,13 @@ export function browserUI(pool, management) {
       }
       if (operation === 'settings') return managementOperation(pool, management, { operation: 'get' });
       if (operation === 'save') return managementOperation(pool, management, { ...payload, operation: 'save' });
+      if (operation === 'scan_import') {
+        const view = configView(management.directory);
+        const imported = importDiscoveredRoutes(view.config);
+        pool.config = saveConfig(management.directory, imported.config, view.revision);
+        pool.schedule();
+        return { ...annotateView(configView(management.directory), management.directory), addedRoutes: imported.addedRoutes, addedModels: imported.addedModels, discoveredCount: imported.discoveredCount };
+      }
       if (operation === 'secret') {
         saveSecret(management.directory, payload.secretRef, payload.secret);
         return { saved: payload.secretRef };
@@ -102,10 +109,12 @@ export function browserUI(pool, management) {
       if (operation === 'catalog') {
         const route = pool.config.routes.find(r => r.id === payload.routeId);
         const cwd = pool.config.workspaceRoots[0] || management.directory;
-        if (!route || !['codex', 'opencode'].includes(route.adapter)) throw new PoolError('UNSUPPORTED_DISCOVERY', 'Canlı model keşfi Codex ve OpenCode bağlantılarında desteklenir.');
-        return route.adapter === 'codex'
-          ? codexControl(route, cwd, pool.config.python, 'models')
-          : opencodeCatalog(route, cwd, pool.config.python);
+        if (!route) throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı.');
+        if (route.adapter === 'codex' && !route.api) {
+          try { return await codexControl(route, cwd, pool.config.python, 'models'); }
+          catch { return routeCatalog(route, cwd, pool.config.python); }
+        }
+        return routeCatalog(route, cwd, pool.config.python);
       }
       throw new PoolError('INVALID_OPERATION', 'Geçersiz panel işlemi.');
     },

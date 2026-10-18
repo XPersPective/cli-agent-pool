@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { dataDirectory, initialize, loadConfig, configView, saveConfig, PoolError } from '../src/config.js';
-import { discover, executableArgv, opencodeCatalog } from '../src/adapters.js';
+import { discover, executableArgv, routeCatalog, importDiscoveredRoutes } from '../src/adapters.js';
 import { capture } from '../src/process.js';
 import { Store } from '../src/store.js';
 import { Pool } from '../src/pool.js';
@@ -16,11 +16,18 @@ export async function main(args = process.argv.slice(2)) {
   const directory = dataDirectory();
   const print = value => console.log(JSON.stringify(value, null, 2));
   if (!command || command === 'help' || command === '--help') {
-    console.log('CLI Agent Pool\n\n  init                    Create private local configuration\n  discover                Locate installed official CLIs; no login or model calls\n  validate                Validate local configuration\n  models <route>          Discover Codex or OpenCode models without starting a task\n  refresh-models <route>  Update catalog, preserving manual groups\n  serve                   Start independent dashboard and MCP\n  stdio                   Connect an MCP coding tool to the shared pool\n  resolve <task-id>       Release an interrupted workspace after manual inspection\n\nConfiguration: ' + path.join(directory, 'config.json'));
+    console.log('CLI Agent Pool\n\n  init                    Create private local configuration\n  discover                Scan system for all installed AI CLIs and local model configs\n  scan-import             Import all discovered CLIs and models into local config\n  validate                Validate local configuration\n  models <route>          Discover models for a route without starting a task\n  refresh-models <route>  Update catalog for a route, preserving manual groups\n  serve                   Start independent dashboard and MCP\n  stdio                   Connect an MCP coding tool to the shared pool\n  resolve <task-id>       Release an interrupted workspace after manual inspection\n\nConfiguration: ' + path.join(directory, 'config.json'));
     return;
   }
   if (command === 'init') { initialize(directory); print({ configuration: path.join(directory, 'config.json'), tokenFile: path.join(directory, 'access-token'), next: 'Configure workspaceRoots and routes; secrets stay outside the repository.' }); return; }
   if (command === 'discover') { print(discover()); return; }
+  if (command === 'scan-import') {
+    const view = configView(directory);
+    const imported = importDiscoveredRoutes(view.config);
+    saveConfig(directory, imported.config, view.revision);
+    print({ discoveredCLIs: imported.discoveredCount, addedRoutes: imported.addedRoutes, addedModels: imported.addedModels, totalRoutes: imported.config.routes.length });
+    return;
+  }
   const config = loadConfig(directory);
   if (command === 'stdio') { await stdioBridge(directory, config); return; }
   if (command === 'validate') {
@@ -32,17 +39,22 @@ export async function main(args = process.argv.slice(2)) {
   if (command === 'models' || command === 'refresh-models') {
     const route = config.routes.find(r => r.id === rest[0]);
     const cwd = config.workspaceRoots[0] || directory;
-    if (!route || !['codex', 'opencode'].includes(route.adapter)) throw new PoolError('UNSUPPORTED_DISCOVERY', 'Model keşfi için Codex veya OpenCode bağlantısı belirtin.');
-    const catalog = route.adapter === 'codex'
-      ? await codexControl(route, cwd, config.python, 'models')
-      : await opencodeCatalog(route, cwd, config.python);
+    if (!route) throw new PoolError('NOT_FOUND', 'Bağlantı kimliği bulunamadı.');
+    let catalog;
+    if (route.adapter === 'codex' && !route.api) {
+      try { catalog = await codexControl(route, cwd, config.python, 'models'); }
+      catch { catalog = await routeCatalog(route, cwd, config.python); }
+    } else {
+      catalog = await routeCatalog(route, cwd, config.python);
+    }
     if (command === 'refresh-models') {
       const view = configView(directory);
       const stored = view.config.routes.find(r => r.id === route.id);
+      const kinds = route.adapter === 'mmx' ? ['text'] : route.adapter === 'qwen' ? ['text', 'read'] : ['text', 'read', 'write'];
       for (const model of catalog.models) {
         const existing = stored.models.find(m => m.id === model.id);
         if (existing) { existing.efforts = model.efforts; if (!model.efforts.includes(existing.defaultEffort)) delete existing.defaultEffort; }
-        else stored.models.push({ id: model.id, alias: model.name, group: model.free ? 'free' : 'unassigned', efforts: model.efforts, kinds: ['text', 'read', 'write'] });
+        else stored.models.push({ id: model.id, alias: model.name, group: model.free ? 'free' : 'unassigned', efforts: model.efforts, kinds });
       }
       saveConfig(directory, view.config, view.revision);
       print({ updated: stored.id, models: stored.models.length, manualGroups: 'preserved', restart: 'Restart pool service if already running.' });
