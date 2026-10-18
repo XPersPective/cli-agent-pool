@@ -1,9 +1,9 @@
 {
   "name": "cli-agent-pool",
-  "version": "0.1.0",
-  "private": true,
+  "version": "1.0.0",
+  "private": false,
   "type": "module",
-  "files": ["bin", "src", "web", "README.md", "docs"],
+  "files": ["bin", "src", "web", "skills", "README.md", "docs"],
   "description": "Local task pool for authenticated AI CLIs",
   "engines": {
     "node": ">=24.7.0"
@@ -13,6 +13,8 @@
   },
   "scripts": {
     "start": "node bin/pool.js serve",
+    "open": "node bin/pool.js open",
+    "setup": "node scripts/setup.js",
     "test": "node --test --test-timeout=15000 --test-concurrency=1",
     "check": "node scripts/check.js",
     "secrets": "node scripts/secrets.js"

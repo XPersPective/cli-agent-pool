@@ -8,7 +8,7 @@ import { browserUI, managementOperation } from './web.js';
 import { taskSchema } from './pool.js';
 
 export function mcpServer(pool) {
-  const server = new McpServer({ name: 'cli-agent-pool', version: '0.1.0' });
+  const server = new McpServer({ name: 'cli-agent-pool', version: '1.0.0' });
   const register = (name, description, inputSchema, callback, readOnly = true) => server.registerTool(name, {
     description, inputSchema, annotations: { readOnlyHint: readOnly, destructiveHint: !readOnly, idempotentHint: readOnly, openWorldHint: !readOnly },
   }, async input => {
@@ -68,7 +68,11 @@ export function createServer(pool, token, port = pool.config.port, management) {
       try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return fail(400, 'INVALID_JSON', 'Geçerli JSON gönderin.'); }
       if (manage || browser) {
         try {
-          const value = browser ? await ui.operation(body) : managementOperation(pool, management, body);
+          const value = browser
+            ? await ui.operation(body)
+            : body.operation === 'pair_ui'
+              ? { status: 'listening', endpoint: `http://127.0.0.1:${actualPort}/mcp`, dashboard: ui?.launchURL(actualPort) }
+              : managementOperation(pool, management, body);
           res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
           res.end(JSON.stringify(value));
         } catch (error) { fail(error instanceof PoolError ? 409 : 400, error instanceof PoolError ? error.code : 'INVALID_CONFIG', error instanceof PoolError ? error.message : 'Ayarlar geçersiz. Girdiğiniz değerleri kontrol edin.'); }

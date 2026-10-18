@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { dataDirectory, initialize, loadConfig, configView, saveConfig, PoolError } from '../src/config.js';
@@ -10,25 +10,124 @@ import { Pool } from '../src/pool.js';
 import { createServer } from '../src/server.js';
 import { codexControl } from '../src/codex-control.js';
 import { stdioBridge } from '../src/stdio.js';
+import { ensureInitialized, ensureDaemon, openDashboardWindow, withMcpClient, callPoolTool, runTaskFromCli, installDesktopAndSkills } from '../src/daemon.js';
+
+function parseFlags(args) {
+  const flags = {};
+  const positional = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg.startsWith('--')) {
+      const key = arg.slice(2);
+      const next = args[i + 1];
+      if (next !== undefined && !next.startsWith('--')) {
+        flags[key] = next;
+        i++;
+      } else {
+        flags[key] = true;
+      }
+    } else {
+      positional.push(arg);
+    }
+  }
+  return { flags, positional };
+}
 
 export async function main(args = process.argv.slice(2)) {
   const [command, ...rest] = args;
   const directory = dataDirectory();
   const print = value => console.log(JSON.stringify(value, null, 2));
   if (!command || command === 'help' || command === '--help') {
-    console.log('CLI Agent Pool\n\n  init                    Create private local configuration\n  discover                Scan system for all installed AI CLIs and local model configs\n  scan-import             Import all discovered CLIs and models into local config\n  validate                Validate local configuration\n  models <route>          Discover models for a route without starting a task\n  refresh-models <route>  Update catalog for a route, preserving manual groups\n  serve                   Start independent dashboard and MCP\n  stdio                   Connect an MCP coding tool to the shared pool\n  resolve <task-id>       Release an interrupted workspace after manual inspection\n\nConfiguration: ' + path.join(directory, 'config.json'));
+    console.log([
+      'CLI Agent Pool (v1.0.0)',
+      '',
+      '  install                 Set up local pool, scan CLIs, create Desktop shortcut & deploy skill',
+      '  open                    Auto-start background service if needed and open desktop app window',
+      '  ensure                  Ensure background pool service is running',
+      '  status                  Show active connections, models and policy (auto-starts service)',
+      '  select                  Select best available model (--kind read|write|text --group <g>)',
+      '  run                     Execute a bounded task (--kind read|write|text --workspace <dir> --prompt <text>)',
+      '  init                    Create private local configuration',
+      '  discover                Scan system for all installed AI CLIs and local model configs',
+      '  scan-import             Import all discovered CLIs and models into local config',
+      '  validate                Validate local configuration',
+      '  models <route>          Discover models for a route without starting a task',
+      '  refresh-models <route>  Update catalog for a route, preserving manual groups',
+      '  serve                   Run background HTTP MCP and dashboard server in foreground',
+      '  stdio                   Connect an MCP coding tool to the shared pool (auto-starts service)',
+      '  resolve <task-id>       Release an interrupted workspace after manual inspection',
+      '',
+      'Configuration: ' + path.join(directory, 'config.json'),
+    ].join('\n'));
+    return;
+  }
+  if (command === 'install' || command === 'setup') {
+    print(await installDesktopAndSkills(directory));
+    return;
+  }
+  if (command === 'open' || command === 'ui' || command === 'dashboard') {
+    const config = ensureInitialized(directory, true);
+    const info = await ensureDaemon(directory, config);
+    const windowInfo = openDashboardWindow(info.dashboard);
+    print({ ...info, ...windowInfo });
+    return;
+  }
+  if (command === 'ensure' || command === 'start') {
+    const config = ensureInitialized(directory, true);
+    print(await ensureDaemon(directory, config));
+    return;
+  }
+  if (command === 'status') {
+    const out = await withMcpClient(directory, async client => ({
+      connections: await callPoolTool(client, 'pool_list_connections'),
+      models: await callPoolTool(client, 'pool_list_models'),
+      policy: await callPoolTool(client, 'pool_get_policy'),
+    }));
+    print(out);
+    return;
+  }
+  if (command === 'select') {
+    const { flags } = parseFlags(rest);
+    const out = await withMcpClient(directory, client => callPoolTool(client, 'pool_select', {
+      kind: flags.kind || 'read',
+      ...(flags.route ? { routeId: flags.route } : {}),
+      ...(flags.model ? { modelId: flags.model } : {}),
+      ...(flags.group ? { group: flags.group } : {}),
+      ...(flags.effort ? { effort: flags.effort } : {}),
+    }));
+    print(out);
+    return;
+  }
+  if (command === 'run') {
+    const { flags, positional } = parseFlags(rest);
+    const prompt = flags.prompt || positional.join(' ');
+    if (!prompt) throw new PoolError('PROMPT_REQUIRED', 'Görev metnini --prompt "..." ile belirtin.');
+    const out = await runTaskFromCli(directory, {
+      prompt,
+      workspace: flags.workspace || process.cwd(),
+      kind: flags.kind || 'read',
+      routeId: flags.route,
+      modelId: flags.model,
+      group: flags.group,
+      effort: flags.effort,
+      timeoutSeconds: flags.timeout,
+      idempotencyKey: flags.key,
+      detach: Boolean(flags.detach),
+    });
+    print(out);
     return;
   }
   if (command === 'init') { initialize(directory); print({ configuration: path.join(directory, 'config.json'), tokenFile: path.join(directory, 'access-token'), next: 'Configure workspaceRoots and routes; secrets stay outside the repository.' }); return; }
   if (command === 'discover') { print(discover()); return; }
   if (command === 'scan-import') {
+    initialize(directory);
     const view = configView(directory);
     const imported = importDiscoveredRoutes(view.config);
     saveConfig(directory, imported.config, view.revision);
     print({ discoveredCLIs: imported.discoveredCount, addedRoutes: imported.addedRoutes, addedModels: imported.addedModels, totalRoutes: imported.config.routes.length });
     return;
   }
-  const config = loadConfig(directory);
+  const config = ensureInitialized(directory, false);
   if (command === 'stdio') { await stdioBridge(directory, config); return; }
   if (command === 'validate') {
     for (const route of config.routes) executableArgv(route.executable);
@@ -77,10 +176,12 @@ export async function main(args = process.argv.slice(2)) {
   const store = new Store(path.join(directory, 'pool.sqlite'));
   const pool = new Pool(config, store, { directory });
   const app = createServer(pool, token, config.port, { directory, token: readFileSync(path.join(directory, 'management-token'), 'utf8').trim() });
+  const pidFile = path.join(directory, 'daemon.pid');
   let stopping = false;
   async function stop() {
     if (stopping) return;
     stopping = true;
+    try { rmSync(pidFile, { force: true }); } catch { /* ignore */ }
     app.server.close();
     app.server.closeAllConnections();
     await pool.close();
@@ -88,6 +189,7 @@ export async function main(args = process.argv.slice(2)) {
   }
   try {
     const address = await app.listen();
+    writeFileSync(pidFile, String(process.pid), 'utf8');
     print({ status: 'listening', endpoint: `http://127.0.0.1:${address.port}/mcp`, dashboard: app.uiURL(), authentication: 'Bearer token from private access-token file; dashboard uses a separate HttpOnly browser session' });
     process.once('SIGINT', () => { void stop(); });
     process.once('SIGTERM', () => { void stop(); });

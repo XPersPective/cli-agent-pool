@@ -16,25 +16,31 @@ ihtiyacı Codex veya Antigravity gibi ana geliştirme araçlarının kendi uzak 
 - En az bir desteklenen AI CLI (`codex`, `claude`, `opencode`, `zcode`, `qwen`, `mcode`, `mmx`, `kimi`, `mimo`, `agy`, `omniroute`, `lmstudio`, `ollama`, `aider`, `kilocode`, `hermes` veya özel `custom` CLI).
 - Yönetim ekranı için güncel bir web tarayıcısı; başka bir ajan uygulaması gerekmez.
 
-## Başlangıç ve Otomatik Sistem Taraması (`scan-import`)
+## Kurulum, Masaüstü Kısayolu ve Skill Entegrasyonu
+
+GitHub üzerinden klonladıktan sonra tek komutla global kurulum, otomatik CLI taraması,
+**Masaüstü / Başlat Menüsü kısayolu (`CLI Agent Pool`)** ve **Skills Manager skill dağıtımı** yapılır:
 
 ```powershell
 npm ci --ignore-scripts
-node bin/pool.js init
-node bin/pool.js discover
-node bin/pool.js scan-import
+npm run setup
 ```
 
-`discover` komutu bilgisayarınızdaki `PATH`, global npm paketleri, kullanıcı CLI klasörleri (`~/.zcode`, `~/.minimax-code`, `~/.kimi-code`, `~/.mimocode`, `~/.lmstudio`, `%LOCALAPPDATA%\agy`, `%LOCALAPPDATA%\qwen-code`, `%LOCALAPPDATA%\hermes` vb.) ve masaüstü uygulama dizinlerini (`C:\Program Files\ZCode\resources\glm\zcode.cjs` dahil) otomatik tarar ve her aracın yerel yapılandırmasındaki modelleri (Z.AI GLM Coding Plan, Qwen, OpenCode, Codex, MiniMax Code, Kimi vb.) credential kopyalamadan bulur.
+`npm run setup` (veya global kurulum sonrası `cli-agent-pool install`) şu işlemleri otomatik yapar:
+1. Paketi global npm dizinine (`%APPDATA%\npm\node_modules\cli-agent-pool`) kurar; böylece uygulama kaynak kod klasöründen bağımsız çalışır ve `cli-agent-pool` komutu her yerden çağrılabilir.
+2. `%LOCALAPPDATA%\cli-agent-pool` (veya `~/.local/share/cli-agent-pool`) veri dizinini oluşturur ve bilgisayardaki tüm kurulu AI CLI'ları ile modellerini (`discover` + `scan-import`) havuza aktarır.
+3. **Masaüstüne (`Desktop`) ve Başlat Menüsüne `CLI Agent Pool` kısayolunu ekler.** Kısayola çift tıkladığınızda siyah terminal penceresi açmadan arka plan servisini otomatik ayağa kaldırır ve **CLI Agent Pool** yönetim ekranını bağımsız bir uygulama penceresi olarak açar (`cli-agent-pool open`).
+4. Bilgisayarınızda **Skills Manager** kuruluysa `skills/cli-agent-pool/SKILL.md` yeteneğini (`cli-agent-pool`) merkezi kütüphaneye kaydeder ve tüm kodlama ajanlarına (`antigravity`, `claude_code`, `codex`, `zcode`, `qwen_code`, `opencode`, `kimi` vb.) otomatik dağıtır.
 
-`scan-import` komutu (veya web ekranındaki **"Bilgisayarı tara ve tümünü havuza aktar"** düğmesi) bulunan tüm kurulu CLI'ları ve modellerini tek adımda yerel `config.json` havuzuna aktarır.
+### Servis Kapalıyken Bile Otomatik Ayağa Kalkma (Auto-Start)
 
-`init` yerel veri dizininde `config.json`, `access-token`, `management-token` ve
-yaz-salt (write-only) API anahtarları için `secrets/` klasörünü oluşturur.
-Windows varsayılanı `%LOCALAPPDATA%\cli-agent-pool`, diğer sistemlerde
-`~/.local/share/cli-agent-pool`. `CLI_AGENT_POOL_HOME` ile değiştirilebilir.
-**Bu dizini repository, OneDrive veya başka bir senkronizasyon klasörü içine koymayın.**
-Token değerlerini sohbete, komut satırı argümanlarına veya Git'e yapıştırmayın.
+Havuz servisi o an çalışmıyor bile olsa:
+- Masaüstündeki **`CLI Agent Pool`** kısayoluna tıkladığınızda,
+- Veya herhangi bir yapay zeka **Skill** üzerinden (`cli-agent-pool status`, `cli-agent-pool select`, `cli-agent-pool run`) ya da **MCP** üzerinden (`cli-agent-pool stdio`) havuza istek gönderdiğinde,
+
+arka plan servisi (`127.0.0.1:43127`) **otomatik olarak başlatılır** ve görevi kesintisiz yürütür.
+
+**Not:** `%LOCALAPPDATA%\cli-agent-pool` veri dizinini repository, OneDrive veya başka bir senkronizasyon klasörü içine koymayın. Token değerlerini sohbete, komut satırı argümanlarına veya Git'e yapıştırmayın.
 
 Yerel `config.json` içinde `workspaceRoots` ve `routes` tanımlayabilir veya doğrudan
 web yönetim ekranından bağlantı ekleyebilirsiniz:

@@ -95,11 +95,15 @@ test('browser session remains valid through a service restart on the same privat
   assert.equal((await fetch(new URL('/', url), { headers: { Cookie: cookie } })).status, 200);
 });
 
-test('agent token cannot manage policy; admin updates are revision-bound', async t => {
+test('agent token cannot manage policy; admin updates are revision-bound and pair_ui re-mints one-time login URL', async t => {
   const { url, token, managementToken, pool } = await application(t);
   const managementURL = new URL('/manage', url);
   const post = (bearer, body) => fetch(managementURL, { method: 'POST', headers: { Authorization: `Bearer ${bearer}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   assert.equal((await post(token, { operation: 'get' })).status, 401);
+  assert.equal((await post(token, { operation: 'pair_ui' })).status, 401);
+  const paired = await (await post(managementToken, { operation: 'pair_ui' })).json();
+  assert.equal((await fetch(paired.dashboard, { redirect: 'manual' })).status, 303);
+  assert.equal((await fetch(paired.dashboard, { redirect: 'manual' })).status, 401);
   const initial = await (await post(managementToken, { operation: 'get' })).json();
   initial.config.routes[0].enabled = false;
   const saved = await post(managementToken, { operation: 'save', ...initial });

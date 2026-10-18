@@ -40,7 +40,10 @@ export function browserUI(pool, management) {
   const equal = (a, b) => typeof a === 'string' && typeof b === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
   const sign = payload => createHmac('sha256', cookieSecret).update(payload).digest('hex');
   return {
-    launchURL(port) { return `http://127.0.0.1:${port}/?token=${launchToken}`; },
+    launchURL(port) {
+      if (!launchToken) launchToken = randomBytes(32).toString('hex');
+      return `http://127.0.0.1:${port}/?token=${launchToken}`;
+    },
     authorized(req, port) {
       const cookie = (req.headers.cookie || '').split(';').map(c => c.trim()).find(c => c.startsWith(`pool_${port}=`));
       if (!cookie) return false;
