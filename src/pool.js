@@ -26,17 +26,16 @@ export class Pool {
     this.quotaRequests = new Map();
     this.closed = false;
     this.pumping = false;
-    this.schedule();
   }
   models() {
-    return this.config.routes.flatMap(route => route.models.map(model => ({ ...model, routeId: route.id, adapter: route.adapter, enabled: route.enabled, billing: route.billing, priority: route.priority })));
+    return this.config.routes.flatMap(route => route.models.map(model => ({ ...model, routeId: route.id, adapter: route.adapter, enabled: route.enabled && model.enabled, billing: route.billing, priority: route.priority })));
   }
   select(request) {
     const matches = this.models().filter(model => {
       const snapshot = this.store.quota(model.routeId);
       const route = this.config.routes.find(r => r.id === model.routeId);
       const fresh = snapshot && Date.now() - Date.parse(snapshot.observedAt) < 60_000;
-      const quotaBlocked = fresh && (snapshot.status === 'rate_limited' || snapshot.windows?.some(window => window.remainingPercent != null && window.remainingPercent <= route.minRemainingPercent));
+      const quotaBlocked = fresh && (snapshot.status === 'rate_limited' || snapshot.subscription === 'none' || snapshot.windows?.some(window => window.remainingPercent != null && window.remainingPercent <= route.minRemainingPercent));
       return !quotaBlocked && model.enabled && model.billing === 'subscription' && model.kinds.includes(request.kind) &&
       (!request.routeId || model.routeId === request.routeId) && (!request.modelId || model.id === request.modelId) &&
       (!request.group || model.group === request.group) && (!request.effort || model.efforts.includes(request.effort)); })

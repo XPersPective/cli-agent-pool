@@ -6,10 +6,13 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { configSchema, allowedWorkspace, overlaps, redact, configView, saveConfig } from '../src/config.js';
 import { writeFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { Store } from '../src/store.js';
 import { Pool } from '../src/pool.js';
 import { runProcess, childEnvironment } from '../src/process.js';
-import { buildArguments } from '../src/adapters.js';
+import { buildArguments, checkAuth, execute, quota } from '../src/adapters.js';
 
 function fixture(t, dependencies = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-test-'));
@@ -145,6 +148,50 @@ test('no inherited API secrets and shell-free Codex/Claude arguments', t => {
   assert.equal(redact('Bearer ' + 'a'.repeat(30)), 'Bearer [REDACTED]');
 });
 
+const py = process.platform === 'win32' ? 'python' : 'python3';
+test('auth checks fail closed on third-party Claude endpoints, missing mmx plans and removed Gemini routes', async t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pool-auth-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const fake = (name, body) => { const file = path.join(root, `${name}.js`); writeFileSync(file, `const a=process.argv.slice(2).join(' ');${body}`); return file; };
+  const claude = (authMethod, baseURL) => ({ id: 'c', adapter: 'claude', billing: 'subscription', trustedSettings: true, executable: fake(`claude-${authMethod}-${Boolean(baseURL)}`,
+    `if(a==='auth status --json')console.log(JSON.stringify({loggedIn:true,authMethod:${JSON.stringify(authMethod)},apiProvider:'firstParty'}));else if(a==='auth status --text')console.log(${JSON.stringify(baseURL ? `Auth token: ANTHROPIC_AUTH_TOKEN\nAnthropic base URL: ${baseURL}` : 'Login method: Claude Max account')});else process.exit(2)`) });
+  // Installed Claude 2.1 reports oauth_token + firstParty even when settings.json redirects to another vendor.
+  await assert.rejects(checkAuth(claude('oauth_token', 'https://example.invalid/anthropic'), root, py), { code: 'AUTH_REQUIRED' });
+  await assert.rejects(checkAuth(claude('claude.ai', 'https://example.invalid/anthropic'), root, py), { code: 'THIRD_PARTY_ENDPOINT' });
+  await checkAuth(claude('claude.ai'), root, py);
+  const mmx = (name, body) => ({ id: 'm', adapter: 'mmx', billing: 'subscription', trustedSettings: true, executable: fake(name, body) });
+  const missing = mmx('mmx-none', `process.stderr.write(JSON.stringify({error:{code:1,message:'API error: no active token plan subscription (HTTP 200)'}}));process.exit(1)`);
+  await assert.rejects(checkAuth(missing, root, py), { code: 'SUBSCRIPTION_REQUIRED' });
+  assert.equal((await quota(missing, root, py)).subscription, 'none');
+  const drift = mmx('mmx-drift', `console.log('not json')`);
+  assert.equal((await quota(drift, root, py)).subscription, 'unknown');
+  await assert.rejects(checkAuth(drift, root, py), { code: 'SUBSCRIPTION_REQUIRED' });
+  const active = mmx('mmx-active', `console.log(JSON.stringify({data:{plan:'active'}}))`);
+  await checkAuth(active, root, py);
+  assert.equal((await quota(active, root, py)).subscription, 'active');
+  assert.throws(() => configSchema.parse({ workspaceRoots: [], routes: [{ id: 'g', adapter: 'gemini', executable: process.execPath, models: [] }] }));
+});
+
+test('Qwen stream-json result envelope is parsed, errors fail and writes stay disabled', async t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pool-qwen-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const script = (name, events) => { const file = path.join(root, `${name}.js`); writeFileSync(file, `let p='';process.stdin.on('data',c=>p+=c).on('end',()=>{for(const e of ${events})console.log(JSON.stringify(e))})`); return file; };
+  const run = executable => execute({ id: 'q', adapter: 'qwen', executable }, { id: 'qwen-model' }, { prompt: 'say ok', workspace: root, kind: 'read', timeoutSeconds: 10 }, py, () => {}).done;
+  const ok = script('ok', `[{type:'system',subtype:'init'},{type:'assistant',message:{role:'assistant',content:[{type:'text',text:p}]}},{type:'result',subtype:'success',is_error:false,result:'echo:'+p}]`);
+  assert.deepEqual(await run(ok), { result: 'echo:say ok' });
+  const failed = script('failed', `[{type:'result',subtype:'error_during_execution',is_error:true,error:{message:'x'}}]`);
+  assert.deepEqual(await run(failed), { error: 'CLI_FAILED' });
+  assert.throws(() => buildArguments({ adapter: 'qwen', executable: ok }, { id: 'm' }, { kind: 'write' }), { code: 'WRITE_NOT_SUPPORTED' });
+});
+
+test('a fresh snapshot stating no active plan removes the route from selection', t => {
+  const { pool, store } = fixture(t);
+  store.saveQuota('test', { connection: 'test', status: 'unknown', subscription: 'none', windows: [], observedAt: new Date().toISOString() });
+  assert.throws(() => pool.select({ kind: 'read' }), { code: 'NO_ROUTE' });
+  store.saveQuota('test', { connection: 'test', status: 'unknown', subscription: 'none', windows: [], observedAt: new Date(Date.now() - 61_000).toISOString() });
+  assert.equal(pool.select({ kind: 'read' }).selected.id, 'test-model');
+});
+
 test('supervisor preserves Unicode and literal prompt data', async () => {
   const result = await runProcess({ argv: [process.execPath, '-e', 'process.stdin.pipe(process.stdout)'], cwd: process.cwd(), input: 'İstanbul $() & | " ` test', timeoutMs: 5000 }).done;
   assert.equal(result.code, 0); assert.equal(result.output, 'İstanbul $() & | " ` test');
@@ -160,4 +207,20 @@ test('timeout kills a grandchild process tree before reporting completion', asyn
   const pid = Number(readFileSync(pidFile, 'utf8'));
   for (let i = 0; i < 100; i++) { try { process.kill(pid, 0); } catch { return; } await delay(20); }
   assert.fail('Grandchild survived cancellation');
+});
+
+test('a hard parent exit closes the supervisor control pipe and kills the owned CLI', async t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pool-parent-exit-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const pidFile = path.join(root, 'pid');
+  const moduleURL = pathToFileURL(path.resolve('src/process.js')).href;
+  const childCode = `require('node:fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setInterval(()=>{},1000)`;
+  const parentCode = `import {runProcess} from ${JSON.stringify(moduleURL)};import{existsSync}from'node:fs';runProcess({argv:[process.execPath,'-e',${JSON.stringify(childCode)}],cwd:${JSON.stringify(root)},timeoutMs:10000});const timer=setInterval(()=>{if(existsSync(${JSON.stringify(pidFile)})){clearInterval(timer);process.exit(0)}},20)`;
+  const parent = spawn(process.execPath, ['--input-type=module', '-e', parentCode], { stdio: 'ignore', windowsHide: true });
+  t.after(() => { if (parent.exitCode === null) parent.kill(); });
+  await new Promise((resolve, reject) => { parent.once('error', reject); parent.once('exit', code => code === 0 ? resolve() : reject(new Error('Parent failed'))); });
+  assert.ok(existsSync(pidFile));
+  const pid = Number(readFileSync(pidFile, 'utf8'));
+  for (let i = 0; i < 100; i++) { try { process.kill(pid, 0); } catch { return; } await delay(20); }
+  assert.fail('Owned CLI survived its parent');
 });

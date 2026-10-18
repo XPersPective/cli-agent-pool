@@ -3,13 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "main": "integrations/dsh/index.js",
-  "exports": { ".": "./integrations/dsh/index.js", "./client": "./integrations/dsh/client.js" },
-  "files": ["bin", "src", "integrations", "cordis.patch.yml", "README.md", "docs"],
-  "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
-    "client": { "platform": "web", "inject": ["@deepseek-ai/dsh-client-ui-renderer", "@deepseek-ai/dsh-client-ui-settings"] }
-  },
+  "files": ["bin", "src", "web", "README.md", "docs"],
   "description": "Local task pool for authenticated AI CLIs",
   "engines": {
     "node": ">=24.7.0"

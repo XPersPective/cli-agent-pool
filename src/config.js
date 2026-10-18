@@ -9,7 +9,7 @@ export class PoolError extends Error {
   constructor(code, message) { super(message); this.code = code; }
 }
 
-const label = z.string().min(1).max(100);
+const label = z.string().min(1).max(100).refine(value => !/[\u0000-\u001f\u007f]/.test(value), 'Kontrol karakterleri kullanılamaz.');
 export const configSchema = z.object({
   port: z.number().int().min(1024).max(65535).default(43127),
   python: z.string().min(1).default(process.platform === 'win32' ? 'python' : 'python3'),
@@ -17,8 +17,8 @@ export const configSchema = z.object({
   concurrency: z.number().int().min(1).max(8).default(1),
   routes: z.array(z.object({
     id: label.regex(/^[a-zA-Z0-9_-]+$/),
-    adapter: z.enum(['codex', 'claude', 'gemini', 'qwen', 'mmx']),
-    executable: z.string().min(1),
+    adapter: z.enum(['codex', 'claude', 'qwen', 'mmx']),
+    executable: z.string().min(1).refine(value => path.isAbsolute(value), 'CLI yolu mutlak olmalı.'),
     enabled: z.boolean().default(false),
     billing: z.enum(['subscription', 'unknown']).default('unknown'),
     trustedSettings: z.boolean().default(false),
@@ -27,6 +27,7 @@ export const configSchema = z.object({
     minRemainingPercent: z.number().min(0).max(100).default(0),
     models: z.array(z.object({
       id: label, alias: label, group: label,
+      enabled: z.boolean().default(true),
       efforts: z.array(label).max(10).default([]),
       defaultEffort: label.optional(),
       kinds: z.array(z.enum(['text', 'read', 'write'])).min(1),
@@ -71,7 +72,11 @@ export function loadConfig(directory) {
     const config = configSchema.parse(JSON.parse(readFileSync(path.join(directory, 'config.json'), 'utf8')));
     config.workspaceRoots = config.workspaceRoots.map(root => realpathSync(root));
     return config;
-  } catch { throw new PoolError('INVALID_CONFIG', 'Yerel config.json geçersiz. Ayarları ve çalışma klasörlerini kontrol edin.'); }
+  } catch (error) {
+    // Field paths only: values may contain private local paths and are never echoed.
+    const fields = error instanceof z.ZodError ? [...new Set(error.issues.map(issue => issue.path.join('.') || '(root)'))].slice(0, 5).join(', ') : error?.code === 'ENOENT' ? 'workspaceRoots (klasör bulunamadı) veya config.json' : 'JSON söz dizimi';
+    throw new PoolError('INVALID_CONFIG', `Yerel config.json geçersiz (${fields}). Ayarları ve çalışma klasörlerini kontrol edin.`);
+  }
 }
 
 export function configView(directory) {

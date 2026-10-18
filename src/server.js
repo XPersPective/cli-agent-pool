@@ -3,7 +3,8 @@ import { timingSafeEqual } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
-import { PoolError, configView, saveConfig } from './config.js';
+import { PoolError } from './config.js';
+import { browserUI, managementOperation } from './web.js';
 import { taskSchema } from './pool.js';
 
 export function mcpServer(pool) {
@@ -35,15 +36,21 @@ export function createServer(pool, token, port = pool.config.port, management) {
   if (!/^[a-f0-9]{64}$/.test(token)) throw new PoolError('INVALID_TOKEN', 'Erişim anahtarı geçersiz. Yerel kurulumu kontrol edin.');
   if (management && !/^[a-f0-9]{64}$/.test(management.token)) throw new PoolError('INVALID_TOKEN', 'Yönetim anahtarı geçersiz. Yerel kurulumu kontrol edin.');
   let inflight = 0;
+  const ui = management ? browserUI(pool, management) : null;
   const server = http.createServer(async (req, res) => {
     const fail = (status, code, message) => { if (!res.headersSent) res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify({ error: { code, message } })); };
     const actualPort = server.address()?.port;
-    if (req.headers.host !== `127.0.0.1:${actualPort}` || 'origin' in req.headers || 'sec-fetch-site' in req.headers) return fail(403, 'ORIGIN_DENIED', 'Bu bağlantı kaynağına izin verilmiyor.');
+    if (req.headers.host !== `127.0.0.1:${actualPort}`) return fail(403, 'ORIGIN_DENIED', 'Bu bağlantı kaynağına izin verilmiyor.');
+    if (ui?.serve(req, res, actualPort)) return;
+    const browser = req.url === '/ui' && ui;
+    if (browser) {
+      if (req.headers.origin !== `http://127.0.0.1:${actualPort}` || !ui.authorized(req, actualPort)) return fail(403, 'UNAUTHORIZED', 'Yönetim oturumu geçersiz. Terminaldeki bağlantıdan yeniden açın.');
+    } else if ('origin' in req.headers || 'sec-fetch-site' in req.headers) return fail(403, 'ORIGIN_DENIED', 'Bu bağlantı kaynağına izin verilmiyor.');
     const authorization = req.headers.authorization || '';
     const manage = req.url === '/manage' && management;
     const expected = `Bearer ${manage ? management.token : token}`;
-    if (Buffer.byteLength(authorization) !== Buffer.byteLength(expected) || !timingSafeEqual(Buffer.from(authorization), Buffer.from(expected))) return fail(401, 'UNAUTHORIZED', 'Yerel MCP erişim anahtarı gerekli.');
-    if (req.url !== '/mcp' && !manage) return fail(404, 'NOT_FOUND', 'İstenen arayüz bulunamadı.');
+    if (!browser && (Buffer.byteLength(authorization) !== Buffer.byteLength(expected) || !timingSafeEqual(Buffer.from(authorization), Buffer.from(expected)))) return fail(401, 'UNAUTHORIZED', 'Yerel MCP erişim anahtarı gerekli.');
+    if (req.url !== '/mcp' && !manage && !browser) return fail(404, 'NOT_FOUND', 'İstenen arayüz bulunamadı.');
     if (req.method !== 'POST') return fail(405, 'METHOD_NOT_ALLOWED', 'Bu arayüz POST isteği kabul eder.');
     if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) return fail(415, 'CONTENT_TYPE', 'JSON isteği gerekli.');
     if (inflight >= 16) return fail(429, 'BUSY', 'Çok fazla eşzamanlı istek var. Biraz sonra deneyin.');
@@ -59,15 +66,11 @@ export function createServer(pool, token, port = pool.config.port, management) {
       }
       let body;
       try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return fail(400, 'INVALID_JSON', 'Geçerli JSON gönderin.'); }
-      if (manage) {
+      if (manage || browser) {
         try {
-          if (body.operation === 'save') {
-            if (body.config?.port !== pool.config.port || body.config?.python !== pool.config.python) return fail(400, 'RESTART_REQUIRED', 'Port veya Python yolunu değiştirmek için servisi durdurup yerel ayarları değiştirin.');
-            pool.config = saveConfig(management.directory, body.config, body.revision);
-            pool.schedule();
-          } else if (body.operation !== 'get') return fail(400, 'INVALID_OPERATION', 'Geçersiz yönetim işlemi.');
+          const value = browser ? await ui.operation(body) : managementOperation(pool, management, body);
           res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-          res.end(JSON.stringify(configView(management.directory)));
+          res.end(JSON.stringify(value));
         } catch (error) { fail(error instanceof PoolError ? 409 : 400, error instanceof PoolError ? error.code : 'INVALID_CONFIG', error instanceof PoolError ? error.message : 'Ayarlar geçersiz. Girdiğiniz değerleri kontrol edin.'); }
         return;
       }
@@ -82,8 +85,8 @@ export function createServer(pool, token, port = pool.config.port, management) {
   server.headersTimeout = 10_000;
   server.keepAliveTimeout = 5000;
   server.maxHeadersCount = 32;
-  return { server, listen: () => new Promise((resolve, reject) => {
+  return { server, uiURL: () => ui?.launchURL(server.address()?.port), listen: () => new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(port, '127.0.0.1', () => { server.removeListener('error', reject); resolve(server.address()); });
+    server.listen(port, '127.0.0.1', () => { server.removeListener('error', reject); pool.schedule(); resolve(server.address()); });
   }) };
 }

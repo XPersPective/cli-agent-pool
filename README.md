@@ -1,18 +1,21 @@
 # CLI Agent Pool
 
 Yerel AI CLI aboneliklerini MCP üzerinden ortak bir görev havuzunda kullanın.
-DSH yönetim panelidir; Project Brain ve Store Automation bağımlılığı yoktur.
+Kendi yerel web ekranı ve standart MCP arayüzü vardır. DeepSeek Harness, Hermes,
+Project Brain veya Store Automation bağımlılığı yoktur.
 
-**Durum: geliştirme sürümü; üretim kabulü tamamlanmadı.** Gerçek Codex aboneliğiyle
-MCP → havuz → CLI → sonuç akışı doğrulandı. Diğer sağlayıcılar ve DSH tarayıcı
-akışı ayrı doğrulama gerektirir; desteklenmeyen kota hiçbir zaman tahmin edilmez.
+**Durum: Codex için yerel üretim kullanımına hazır; diğer sağlayıcılar koşullu.**
+Gerçek Codex aboneliğiyle MCP → havuz → CLI → sonuç akışı ve bağımsız yönetim ekranı
+(dar/geniş görünüm, klavye) doğrulandı. Claude, Qwen ve mmx yalnızca abonelik
+gerçekten doğrulanabildiğinde çalışır; aksi hâlde görev başlatılmaz. Desteklenmeyen
+kota hiçbir zaman tahmin edilmez. Gemini CLI desteği kaldırıldı.
 
 ## Gereksinimler
 
 - Node.js 24.7 veya üstü (`node:sqlite` bu sürümde deneysel).
 - Python 3.11 veya üstü; ek Python paketi yok.
 - En az bir resmî AI CLI ve o CLI içinde kullanıcı tarafından tamamlanmış giriş.
-- DSH paneli için DeepSeek Harness 0.2.0-rc.2 hedeflenmiştir.
+- Yönetim ekranı için güncel bir web tarayıcısı; başka bir ajan uygulaması gerekmez.
 
 ## Başlangıç
 
@@ -54,6 +57,7 @@ node bin/pool.js validate
 node bin/pool.js serve
 ```
 
+İlk bağlantı ve izinli klasörler web ekranından da eklenebilir; örnek JSON isteğe bağlıdır.
 Model keşfi mevcut manuel grupları korur; yeni modeller `unassigned` grubundadır.
 CLI üzerinden katalog güncellemesinden sonra çalışan havuzu yeniden başlatın.
 Bağlantı ilk tanımlandığında kapalı kalır; model/eforları inceleyip panelden veya
@@ -62,8 +66,20 @@ yerel ayardan etkinleştirin. Agent MCP araçları güvenlik politikasını değ
 ## MCP bağlantısı
 
 Endpoint: `http://127.0.0.1:43127/mcp`, taşıma: **Streamable HTTP**.
-İstemci `Authorization: Bearer ...` başlığını yerel `access-token` dosyasından
+HTTP istemcisi `Authorization: Bearer ...` başlığını yerel `access-token` dosyasından
 güvenli şekilde sağlamalıdır. Anahtarı repository'deki MCP config dosyasına yazmayın.
+
+Kodlama araçları için daha kolay yol, anahtarı kendisi okuyan **stdio bağlantısıdır**:
+
+```powershell
+codex mcp add cli-agent-pool -- node D:\repositories\cli-agent-pool\bin\pool.js stdio
+```
+
+Diğer MCP istemcilerinde komut `node`, argümanlar
+`["D:/repositories/cli-agent-pool/bin/pool.js", "stdio"]` olur.
+Bu bağlantı yeni bir havuz oluşturmaz; çalışan tek HTTP servisine bağlanır.
+Havuzu `serve` ile önce başlatın. İstemci yapılandırmasına sağlayıcı anahtarı,
+abonelik tokenı veya Pool erişim anahtarı yazılması gerekmez.
 
 Araçlar: `pool_list_connections`, `pool_list_models`, `pool_get_policy`,
 `pool_select`, `pool_submit`, `pool_get_task`, `pool_list_tasks`,
@@ -75,30 +91,27 @@ Araçlar: `pool_list_connections`, `pool_list_models`, `pool_get_policy`,
 Farklı içerikle aynı anahtar `IDEMPOTENCY_CONFLICT` üretir.
 Gönderim HTTP bağlantısı kapansa da kabul edilmiş görev çalışmaya devam eder.
 
-## DSH paneli
+## Bağımsız yönetim ekranı
 
-Bu paket DSH host eklentisini ve derleme gerektirmeyen tarayıcı factory'sini içerir:
+`serve` komutu bir MCP adresi ve ayrı bir `dashboard` bağlantısı yazdırır.
+Dashboard bağlantısı tek kullanımlıktır; açıldıktan sonra adres temizlenir ve
+8 saatlik, HttpOnly / SameSite=Strict oturum çerezi kullanılır. Oturum biterse servisi
+yeniden başlatıp yeni bağlantıyı açın. Tarayıcıya sağlayıcı credential'ı veya kalıcı
+MCP/yönetim anahtarı verilmez. Dashboard bağlantısını paylaşmayın.
 
-```powershell
-dsh plugin --profile web add D:\repositories\cli-agent-pool -w
-dsh web --no-open
-```
-
-Havuz ayrıca çalışmalıdır. DSH **Ayarlar → CLI Ajan Havuzu** paneli; kurulum
-durumunu, manuel grupları, varsayılan eforu, bağlantı önceliğini, görev başlatmayı,
-iptali, geçmişi ve desteklenen kotayı sunar. İlk bağlantı/model ekleme yerel
-config ve `refresh-models` komutuyla yapılır.
-Panel, DSH'nin mevcut kimlik doğrulaması üzerinden konuşur. Pool erişim ve yönetim
-anahtarları DSH host'unda kalır; tarayıcıya veya telefona gönderilmez.
+Ekranda kurulu CLI'lar, bağlantı ekleme, izinli klasörler, manuel model grupları,
+model kapatma, varsayılan efor, bağlantı önceliği, görev başlatma, iptal, geçmiş ve
+desteklenen kota bulunur. Yeni bağlantılar kapalı eklenir; grupları inceleyip etkinleştirin.
+Hiçbir coding harness için ayrı eklenti kurmak zorunda değilsiniz.
 
 ## Sağlayıcı kapsamı
 
 | Adaptör | Mevcut kapsam | Sınır |
 |---|---|---|
 | Codex | ChatGPT giriş kontrolü, görev, canlı model/efor keşfi, kota | Gerçek uçtan uca kontrol yapıldı; user config devre dışı, native sandbox açık |
-| Claude | Headless JSONL, resmî CLI auth kontrolü, native izin modu | Yerel ayar/hook güveni `trustedSettings` ile ayrıca onaylanmalı; canlı görev doğrulanmadı |
-| Gemini / Qwen | Headless JSONL, plan modu | Deneysel; yazma kapalı, abonelik ayarları kullanıcı tarafından doğrulanmalı |
-| MiniMax mmx | Metin ve resmî kota komutu | Tam coding ajanı değildir; canlı plan doğrulaması yapılmadı |
+| Claude | Headless JSONL, resmî CLI auth kontrolü, native izin modu | Yalnızca `claude.ai` girişi ve Anthropic adresi kabul edilir; başka API adresine yönlendirme reddedilir. `trustedSettings` ayrıca onaylanmalı |
+| Qwen | Headless JSONL (`result` zarfı), plan modu | Deneysel; yazma kapalı, abonelik ayarları kullanıcı tarafından doğrulanmalı |
+| MiniMax mmx | Metin ve resmî kota komutu | Tam coding ajanı değildir; etkin token plan yoksa görev başlatılmaz |
 
 `billing: subscription` bir kullanıcı beyanıdır; Codex ve Claude ek CLI auth
 kontrolü yapar. Diğer adaptörlerde `trustedSettings: true` yalnızca sağlayıcı
@@ -122,9 +135,9 @@ ayarlarını evrensel olarak kapatabildiğini iddia etmez.
 - Otomatik tekrar ve yürütme başladıktan sonra otomatik fallback yoktur.
   Taze kota snapshot'ı limitli bağlantıyı seçimden çıkarır; bilinmeyen kota sayıya çevrilmez.
 
-Android için DSH web ekranı özel ağ/VPN üzerinden kullanılabilir. Public tunnel,
-port yönlendirmesi, Tailscale veya WireGuard kurulumu otomatik yapılmaz; gerçek
-Android/VPN erişimi henüz kabul edilmemiştir. Pool portunu internete açmayın.
+Ekran dar görünüm için tasarlanmıştır; ağ erişimi şu anda yalnızca loopback'tir.
+Android/VPN erişimi henüz kabul edilmemiştir. Public tunnel, port yönlendirmesi,
+Tailscale veya WireGuard kurulumu otomatik yapılmaz. Pool portunu internete açmayın.
 
 ## Kontroller
 

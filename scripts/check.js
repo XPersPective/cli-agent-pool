@@ -8,7 +8,7 @@ function files(directory) {
     return entry.isDirectory() ? files(filename) : filename.endsWith('.js') ? [filename] : [];
   });
 }
-for (const filename of ['src', 'bin', 'scripts', 'test', 'integrations'].flatMap(files)) {
+for (const filename of ['src', 'bin', 'scripts', 'test', 'web'].flatMap(files)) {
   const result = spawnSync(process.execPath, ['--check', filename], { stdio: 'inherit' });
   if (result.status !== 0) process.exit(result.status || 1);
 }

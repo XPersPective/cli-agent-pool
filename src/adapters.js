@@ -3,8 +3,8 @@ import path from 'node:path';
 import { capture, runProcess } from './process.js';
 import { PoolError, redact } from './config.js';
 
-const names = ['codex', 'claude', 'gemini', 'qwen', 'mmx'];
-const packages = { codex: '@openai/codex', claude: '@anthropic-ai/claude-code', gemini: '@google/gemini-cli', qwen: '@qwen-code/qwen-code', mmx: 'mmx-cli' };
+const names = ['codex', 'claude', 'qwen', 'mmx'];
+const packages = { codex: '@openai/codex', claude: '@anthropic-ai/claude-code', qwen: '@qwen-code/qwen-code', mmx: 'mmx-cli' };
 
 function npmEntry(directory, name) {
   try {
@@ -47,7 +47,7 @@ export function buildArguments(route, model, task) {
   if (route.adapter === 'codex') return [...argv, '-a', 'never', 'exec', '--ignore-user-config', '--ephemeral', '--skip-git-repo-check', '--json', '--sandbox', task.kind === 'write' ? 'workspace-write' : 'read-only', '-c', 'model_provider="openai"', '-m', model.id, ...(effort ? ['-c', `model_reasoning_effort=${JSON.stringify(effort)}`] : []), '-'];
   if (route.adapter === 'claude') return [...argv, '-p', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--permission-mode', task.kind === 'write' ? 'acceptEdits' : 'dontAsk', '--permission-prompts', 'none', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--disable-slash-commands', '--tools', task.kind === 'text' ? '' : task.kind === 'read' ? 'Read,Glob,Grep' : 'Read,Glob,Grep,Edit,Write', '--model', model.id, ...(effort ? ['--effort', effort] : [])];
   if (route.adapter === 'mmx') return [...argv, 'text', 'chat', '--model', model.id, '--messages-file', '-', '--output', 'json'];
-  if (route.adapter === 'gemini' || route.adapter === 'qwen') {
+  if (route.adapter === 'qwen') {
     if (task.kind === 'write') throw new PoolError('WRITE_NOT_SUPPORTED', 'Bu adaptörde yazma görevi henüz doğrulanmadı.');
     return [...argv, '--model', model.id, '--output-format', 'stream-json', '--approval-mode', 'plan'];
   }
@@ -66,7 +66,17 @@ export async function checkAuth(route, cwd, python) {
     let status;
     try { status = JSON.parse(result.output); } catch { /* Fail closed on CLI protocol drift. */ }
     if (result.code !== 0 || !status?.loggedIn || status.authMethod !== 'claude.ai') throw new PoolError('AUTH_REQUIRED', 'Claude Code içinde abonelik hesabınızla giriş yapın.');
-  } else if (!route.trustedSettings) throw new PoolError('SETTINGS_NOT_TRUSTED', 'Bu bağlantının abonelik ve CLI ayarları yerel olarak doğrulanmalı.');
+    // settings.json env can redirect a valid login to another endpoint; JSON apiProvider does not reveal it.
+    const text = await capture([...argv, 'auth', 'status', '--text'], cwd, python);
+    const endpoint = /base URL:\s*(\S+)/i.exec(text.output + text.stderr)?.[1];
+    if (text.code !== 0 || (endpoint && !/^https:\/\/api\.anthropic\.com\/?$/i.test(endpoint))) throw new PoolError('THIRD_PARTY_ENDPOINT', 'Claude Code başka bir API adresine yönlendirilmiş. Abonelik dışı faturalama riskine karşı görev başlatılmadı.');
+  } else {
+    if (!route.trustedSettings) throw new PoolError('SETTINGS_NOT_TRUSTED', 'Bu bağlantının abonelik ve CLI ayarları yerel olarak doğrulanmalı.');
+    if (route.adapter === 'mmx') {
+      const snapshot = await quota(route, cwd, python);
+      if (snapshot.subscription !== 'active') throw new PoolError('SUBSCRIPTION_REQUIRED', 'mmx için etkin token plan aboneliği doğrulanamadı. Ücretli API kullanımı başlatılmadı.');
+    }
+  }
 }
 
 export function execute(route, model, task, python, progress) {
@@ -84,11 +94,9 @@ export function execute(route, model, task, python, progress) {
         if (event.type === 'item.completed' && event.item?.type === 'agent_message') answer = event.item.text || '';
         if (event.type === 'turn.completed') sawResult = true;
         if (event.type === 'turn.failed' || event.type === 'error') productError = true;
-      } else if (route.adapter === 'claude') {
+      } else if (route.adapter === 'claude' || route.adapter === 'qwen') {
+        // Qwen Code 0.21 stream-json uses the same terminal `result` envelope as Claude Code.
         if (event.type === 'result') { answer = event.result || ''; productError = Boolean(event.is_error); sawResult = true; }
-      } else if (route.adapter === 'gemini' || route.adapter === 'qwen') {
-        if (event.type === 'message' && event.role === 'assistant') answer += event.content || '';
-        if (event.type === 'result') { sawResult = true; productError = event.status === 'error' || Boolean(event.error); }
       }
       // Persist lifecycle only: raw tool inputs, stderr and intermediate text stay out of events.
       if (['thread.started', 'turn.started', 'system', 'init'].includes(event.type)) progress('started');
@@ -115,10 +123,14 @@ export function execute(route, model, task, python, progress) {
 }
 
 export async function quota(route, cwd, python) {
-  if (route.adapter !== 'mmx') return { connection: route.id, status: 'unknown', windows: [], source: 'unsupported', observedAt: new Date().toISOString() };
+  const observedAt = new Date().toISOString();
+  if (route.adapter !== 'mmx') return { connection: route.id, status: 'unknown', windows: [], source: 'unsupported', observedAt };
   const result = await capture([...executableArgv(route.executable), 'quota', 'show', '--output', 'json'], cwd, python);
-  if (result.code !== 0) return { connection: route.id, status: 'unknown', windows: [], source: 'mmx', observedAt: new Date().toISOString() };
+  let body;
+  try { body = JSON.parse(result.output); } catch { /* Unknown output never proves an active plan. */ }
+  const failure = result.code !== 0 || !body || body.error || body.base_resp?.status_code;
+  // Only an explicit vendor statement marks a plan absent; other failures remain unknown.
+  const subscription = !failure ? 'active' : /no active (?:token )?plan/i.test(result.output + result.stderr) ? 'none' : 'unknown';
   // Preserve the vendor's units instead of guessing percentages from token usage.
-  try { return { connection: route.id, status: 'unknown', windows: [], source: 'mmx', vendor: redact(result.output), observedAt: new Date().toISOString() }; }
-  catch { throw new PoolError('INVALID_QUOTA', 'Kota yanıtı okunamadı.'); }
+  return { connection: route.id, status: 'unknown', subscription, windows: [], source: 'mmx', ...(failure ? {} : { vendor: redact(result.output) }), observedAt };
 }

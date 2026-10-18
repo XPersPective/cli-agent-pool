@@ -9,18 +9,20 @@ import { Store } from '../src/store.js';
 import { Pool } from '../src/pool.js';
 import { createServer } from '../src/server.js';
 import { codexControl } from '../src/codex-control.js';
+import { stdioBridge } from '../src/stdio.js';
 
 export async function main(args = process.argv.slice(2)) {
   const [command, ...rest] = args;
   const directory = dataDirectory();
   const print = value => console.log(JSON.stringify(value, null, 2));
   if (!command || command === 'help' || command === '--help') {
-    console.log('CLI Agent Pool\n\n  init                Create private local configuration\n  discover            Locate installed official CLIs; no login or model calls\n  validate            Validate local configuration\n  models <route>      Discover Codex models without starting a task\n  serve               Start authenticated MCP at 127.0.0.1\n  resolve <task-id>    Release an interrupted workspace after manual inspection\n\nConfiguration: ' + path.join(directory, 'config.json'));
+    console.log('CLI Agent Pool\n\n  init                    Create private local configuration\n  discover                Locate installed official CLIs; no login or model calls\n  validate                Validate local configuration\n  models <route>          Discover Codex models without starting a task\n  refresh-models <route>  Update catalog, preserving manual groups\n  serve                   Start independent dashboard and MCP\n  stdio                   Connect an MCP coding tool to the shared pool\n  resolve <task-id>        Release an interrupted workspace after manual inspection\n\nConfiguration: ' + path.join(directory, 'config.json'));
     return;
   }
   if (command === 'init') { initialize(directory); print({ configuration: path.join(directory, 'config.json'), tokenFile: path.join(directory, 'access-token'), next: 'Configure workspaceRoots and routes; secrets stay outside the repository.' }); return; }
   if (command === 'discover') { print(discover()); return; }
   const config = loadConfig(directory);
+  if (command === 'stdio') { await stdioBridge(directory, config); return; }
   if (command === 'validate') {
     for (const route of config.routes) executableArgv(route.executable);
     const python = await capture([config.python, '--version'], config.workspaceRoots[0] || directory, config.python);
@@ -71,7 +73,7 @@ export async function main(args = process.argv.slice(2)) {
   }
   try {
     const address = await app.listen();
-    print({ status: 'listening', endpoint: `http://127.0.0.1:${address.port}/mcp`, authentication: 'Bearer token from private access-token file' });
+    print({ status: 'listening', endpoint: `http://127.0.0.1:${address.port}/mcp`, dashboard: app.uiURL(), authentication: 'Bearer token from private access-token file; dashboard uses a separate HttpOnly browser session' });
     process.once('SIGINT', () => { void stop(); });
     process.once('SIGTERM', () => { void stop(); });
   } catch (error) { await stop(); throw error; }

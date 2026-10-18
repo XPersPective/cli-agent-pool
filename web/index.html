@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CLI Agent Pool</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#task-form">Görev formuna geç</a>
+  <header class="topbar">
+    <div class="brand"><span class="mark" aria-hidden="true">P</span><div><h1>CLI Agent Pool</h1><p>Yerel ajan havuzunuz</p></div></div>
+    <div class="header-actions"><span id="connection-state" class="badge">Bağlanıyor</span><button id="refresh" type="button">Yenile</button></div>
+  </header>
+  <main>
+    <div id="notice" class="notice" role="status" aria-live="polite">Yerel havuzun durumu yükleniyor…</div>
+    <section class="overview" aria-label="Havuz özeti">
+      <div class="metric"><span>Kurulu CLI</span><strong id="installed-count">—</strong></div>
+      <div class="metric"><span>Etkin model</span><strong id="model-count">—</strong></div>
+      <div class="metric"><span>Çalışan görev</span><strong id="running-count">—</strong></div>
+      <div class="metric"><span>İnceleme bekleyen</span><strong id="review-count">—</strong></div>
+    </section>
+    <div class="layout">
+      <section class="card task-card" aria-labelledby="task-heading">
+        <div class="section-heading"><div><p class="eyebrow">YENİ İŞ</p><h2 id="task-heading">Görev başlat</h2></div><span class="badge subtle">Yerel çalışma</span></div>
+        <form id="task-form">
+          <label for="task-kind">Görev türü</label>
+          <select id="task-kind"><option value="read">Kod incele / oku</option><option value="text">Metin üret</option><option value="write">Dosya değiştir</option></select>
+          <label for="task-model">Model</label><select id="task-model" required><option value="">Model seçin</option></select>
+          <p id="model-empty" class="hint">Modeller yükleniyor.</p>
+          <label for="task-workspace">Çalışma klasörü</label><input id="task-workspace" required autocomplete="off" placeholder="İzin verdiğiniz yerel klasör">
+          <label for="task-prompt">Görev tanımı</label><textarea id="task-prompt" required maxlength="100000" rows="6" placeholder="Ne yapılmasını ve hangi sonucu beklediğinizi yazın."></textarea>
+          <p id="write-warning" class="hint" hidden>Bu görev dosyaları değiştirebilir. Kesilen yazma görevinden sonra klasörün elle incelenmesi gerekir.</p>
+          <button id="submit" class="primary" type="submit" disabled>Görevi gönder <span aria-hidden="true">↗</span></button>
+          <p class="hint">Bağlantı kesilirse aynı isteği yeniden göndermek ikinci bir görev oluşturmaz.</p>
+        </form>
+      </section>
+      <div class="right-column">
+        <section class="card" aria-labelledby="providers-heading"><div class="section-heading"><div><p class="eyebrow">BİLGİSAYARINIZDA</p><h2 id="providers-heading">CLI bağlantıları</h2></div><button id="open-settings" type="button">Modeller ve gruplar</button></div><div id="providers" class="provider-list"><p class="hint">Bağlantılar yükleniyor.</p></div></section>
+        <section class="card" aria-labelledby="tasks-heading"><div class="section-heading"><div><p class="eyebrow">ÇALIŞMA GEÇMİŞİ</p><h2 id="tasks-heading">Son görevler</h2></div><span id="task-total" class="badge subtle">0</span></div><div id="tasks"><p class="empty">Henüz görev yok. İlk görevinizi soldaki formdan başlatın.</p></div></section>
+      </div>
+    </div>
+    <section id="settings" class="card" aria-labelledby="settings-heading" hidden>
+      <div class="section-heading"><div><p class="eyebrow">SİZİN KURALLARINIZ</p><h2 id="settings-heading">Modeller ve gruplar</h2></div><button id="close-settings" type="button">Kapat</button></div>
+      <p class="hint">Grupları siz belirlersiniz. Model gücü ve efor ayrı ayarlardır. Bağlantıyı kapatmak çalışan işleri durdurmaz.</p>
+      <label class="setting-field" for="workspace-roots">İzin verilen çalışma klasörleri (her satıra bir klasör)<textarea id="workspace-roots" rows="3" placeholder="Örnek: D:\repositories\my-project"></textarea></label>
+      <div id="settings-routes"></div>
+      <fieldset class="route-settings"><legend>Bağlantı ekle</legend>
+        <label class="setting-field" for="new-adapter">Kurulu CLI<select id="new-adapter"><option value="">CLI seçin</option></select></label>
+        <label class="setting-field" for="new-model">Model kimliği (Codex için boş bırakılabilir)<input id="new-model" maxlength="100" placeholder="CLI içinde kullandığınız gerçek model kimliği"></label>
+        <label class="route-header"><input id="subscription-confirmed" type="checkbox">Bu CLI’ın aboneliğimle yapılandırıldığını doğruladım.</label>
+        <button id="add-route" type="button">Bağlantıyı ekle</button>
+        <p class="hint">Yeni bağlantı kapalı eklenir. Codex model kataloğu CLI üzerinden bulunur; diğer CLI’lar için model kimliğini girin. Sağlayıcı anahtarları bu ekrana girilmez.</p>
+      </fieldset>
+      <button id="save-settings" class="primary" type="button">Ayarları kaydet</button>
+    </section>
+    <section id="detail" class="card" aria-labelledby="detail-heading" hidden><div class="section-heading"><h2 id="detail-heading">Görev / kota ayrıntısı</h2><button id="close-detail" type="button">Kapat</button></div><pre id="detail-content" tabindex="0"></pre></section>
+    <footer>Abonelik oturumları kendi CLI’larında kalır. Bu ekran yalnızca bilgisayarınızda çalışır.</footer>
+  </main>
+</body>
+</html>

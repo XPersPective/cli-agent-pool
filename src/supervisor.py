@@ -65,17 +65,19 @@ def main():
             pass
 
     def watch_parent():
-        if request.get("relay"):
-            for line in sys.stdin.buffer:
-                message = json.loads(line)
-                if message.get("close"):
-                    child.stdin.close()
-                else:
-                    child.stdin.write(message.get("input", "").encode("utf-8"))
-                    child.stdin.flush()
-        else:
-            sys.stdin.buffer.read()
-        cancel()
+        try:
+            if request.get("relay"):
+                for line in sys.stdin.buffer:
+                    message = json.loads(line)
+                    if message.get("close"):
+                        child.stdin.close()
+                    else:
+                        child.stdin.write(message.get("input", "").encode("utf-8"))
+                        child.stdin.flush()
+            else:
+                sys.stdin.buffer.read()
+        finally:
+            cancel()
 
     threading.Thread(target=watch_parent, daemon=True).start()
     try:
