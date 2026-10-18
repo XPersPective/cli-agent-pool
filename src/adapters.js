@@ -221,6 +221,10 @@ export function localModelsFor(adapter) {
     const cfg = readJsonSafe(path.join(home, '.claude', 'settings.json'));
     const envModel = cfg.env?.ANTHROPIC_MODEL || cfg.model;
     if (typeof envModel === 'string' && envModel.trim()) add(envModel.trim(), `${envModel.trim()} (Ayarlı)`, 'claude', ['low', 'medium', 'high']);
+    for (const family of ['OPUS', 'SONNET', 'HAIKU']) {
+      const pinned = cfg.env?.[`ANTHROPIC_DEFAULT_${family}_MODEL`];
+      if (typeof pinned === 'string' && pinned.trim()) add(pinned.trim(), pinned.trim(), 'claude', ['low', 'medium', 'high']);
+    }
     add('sonnet', 'Claude Sonnet', 'claude', ['low', 'medium', 'high']);
     add('opus', 'Claude Opus', 'claude', ['low', 'medium', 'high']);
     add('haiku', 'Claude Haiku', 'claude', ['low', 'medium', 'high']);
@@ -250,7 +254,7 @@ export function localModelsFor(adapter) {
   } else if (adapter === 'omniroute') {
     add('default', 'OmniRoute Varsayılan', 'omniroute', ['low', 'medium', 'high']);
   } else if (adapter === 'lmstudio' || adapter === 'ollama') {
-    add('default', `${adapter} Yerel Model`, 'local', [], ['text', 'read'], true);
+    // Installed CLI alone does not prove that a local model exists; read the live catalog on refresh.
   } else if (adapter === 'hermes' || adapter === 'aider' || adapter === 'kilocode') {
     add('default', `${adapter} Varsayılan`, adapter, [], ['text', 'read']);
   }
@@ -284,12 +288,14 @@ export function importDiscoveredRoutes(config) {
       addedRoutes++;
     }
     for (const model of cli.discoveredModels || []) {
+      if (cli.adapter === 'claude' && ['opus', 'sonnet', 'haiku'].includes(model.id) && route.models.some(existing => existing.id.startsWith(`claude-${model.id}-`))) continue;
       if (!route.models.some(existing => existing.id === model.id) && route.models.length < 100) {
         const { free, ...cleanModel } = model;
         route.models.push(cleanModel);
         addedModels++;
       }
     }
+    if (['lmstudio', 'ollama'].includes(cli.adapter)) route.models = route.models.filter(model => model.id !== 'default' || model.memberships?.length || ['high', 'medium', 'low'].includes(model.group));
   }
   return { config: cloned, addedRoutes, addedModels, discoveredCount: discovered.length };
 }
@@ -442,7 +448,7 @@ export function execute(route, model, task, python, progress, directory = dataDi
   let productError = false;
   let sawResult = false;
   const argv = buildArguments(route, model, task);
-  const extraEnv = routeEnvironment(route, directory, task.kind);
+  const extraEnv = { ...routeEnvironment(route, directory, task.kind), CLI_AGENT_POOL_WORKER: '1' };
   const usesStdin = route.promptStdin ?? !promptArgAdapters.has(route.adapter);
   const input = !usesStdin ? '' : route.adapter === 'mmx' ? JSON.stringify([{ role: 'user', content: task.prompt }]) : task.prompt;
   const process = runProcess({ argv, cwd: task.workspace, input, extraEnv, python, timeoutMs: task.timeoutSeconds * 1000,
@@ -474,6 +480,8 @@ export function execute(route, model, task, python, progress, directory = dataDi
           if (textPart) answer = textPart;
         }
       }
+      const reportedModel = event.message?.model || (['system', 'init', 'thread.started'].includes(event.type) ? event.model : null);
+      if (typeof reportedModel === 'string' && reportedModel.length <= 100 && !/[\u0000-\u001f]/.test(reportedModel)) progress(`model:${reportedModel}`);
       if (['thread.started', 'turn.started', 'system', 'init', 'step_start'].includes(event.type)) progress('started');
     },
   });
@@ -529,7 +537,64 @@ export async function opencodeCatalog(route, cwd, python) {
   return { connection: route.id, models: models.slice(0, 100), nextCursor: null };
 }
 
+export async function claudeCatalog(route, cwd, python) {
+  let response;
+  const handle = runProcess({ argv: [...executableArgv(route.executable), '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--tools', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--settings', '{"disableAllHooks":true}'], cwd, python, relay: true, timeoutMs: 20_000,
+    onLine(line) {
+      const message = JSON.parse(line);
+      if (message.type === 'control_response' && message.response?.request_id === 'pool-catalog') {
+        response = message.response;
+        handle.cancel('CONTROL_COMPLETE');
+      }
+    },
+  });
+  handle.send(JSON.stringify({ type: 'control_request', request_id: 'pool-catalog', request: { subtype: 'initialize', hooks: {} } }) + '\n');
+  await handle.done;
+  if (!Array.isArray(response?.response?.models)) throw new PoolError('DISCOVERY_FAILED', 'Claude model kataloğu alınamadı. CLI sürümünü ve giriş durumunu kontrol edin.');
+  const models = [];
+  for (const row of response.response.models) {
+    const id = row.resolvedModel || row.value;
+    if (typeof id !== 'string' || !id || id.length > 100 || /[\u0000-\u001f]/.test(id)) continue;
+    const existing = models.find(model => model.id === id);
+    if (existing) { if (row.value) existing.aliases.push(row.value); continue; }
+    models.push({ id, name: id, aliases: [row.value].filter(Boolean), efforts: (row.supportedEffortLevels || []).filter(value => typeof value === 'string').slice(0, 10), free: false });
+  }
+  return { connection: route.id, models: models.slice(0, 100), nextCursor: null };
+}
+
+export function mergeCatalogModels(route, catalog) {
+  let added = 0;
+  for (const item of catalog.models) {
+    const existing = route.models.find(model => model.id === item.id) || route.models.find(model => item.aliases?.includes(model.id));
+    if (existing) {
+      if (existing.memberships?.some(member => member.effort && !item.efforts.includes(member.effort))) throw new PoolError('CATALOG_EFFORT_CHANGED', 'Katalogda havuz eforu artık desteklenmiyor. Önce o modelin havuz eforunu düzenleyin.');
+      existing.id = item.id;
+      existing.alias = (item.name || item.id).slice(0, 100);
+      existing.efforts = item.efforts;
+      if (!item.efforts.includes(existing.defaultEffort)) delete existing.defaultEffort;
+    } else if (route.models.length < 100) {
+      route.models.push({ id: item.id, alias: (item.name || item.id).slice(0, 100), group: 'unassigned', memberships: [], enabled: true, efforts: item.efforts, kinds: route.adapter === 'mmx' ? ['text'] : route.adapter === 'qwen' ? ['text', 'read'] : ['text', 'read', 'write'] });
+      added++;
+    }
+  }
+  return added;
+}
+
 export async function routeCatalog(route, cwd, python) {
+  if (route.adapter === 'claude' && !route.api) return claudeCatalog(route, cwd, python);
+  if (['lmstudio', 'ollama'].includes(route.adapter)) {
+    const result = await capture([...executableArgv(route.executable), ...(route.adapter === 'lmstudio' ? ['ls', '--json'] : ['list'])], cwd, python);
+    if (result.code !== 0) throw new PoolError('DISCOVERY_FAILED', `${route.adapter === 'lmstudio' ? 'LM Studio' : 'Ollama'} model kataloğu alınamadı. Yerel uygulamanın kurulu ve çalışıyor olduğunu kontrol edin.`);
+    let entries;
+    if (route.adapter === 'lmstudio') {
+      let parsed;
+      try { parsed = JSON.parse(result.output); } catch { throw new PoolError('DISCOVERY_FAILED', 'LM Studio katalog biçimi tanınmadı.'); }
+      entries = Array.isArray(parsed) ? parsed : parsed.models;
+      if (!Array.isArray(entries)) throw new PoolError('DISCOVERY_FAILED', 'LM Studio model listesi tanınmadı.');
+      entries = entries.map(model => ({ id: model.modelKey || model.key || model.id, name: model.modelKey || model.key || model.id }));
+    } else entries = result.output.trim().split(/\r?\n/).slice(1).map(line => { const [id, digest] = line.trim().split(/\s+/); return { id, name: `${id} · ${digest}` }; });
+    return { connection: route.id, models: entries.filter(model => typeof model.id === 'string' && model.id && model.id.length <= 100).slice(0, 100).map(model => ({ ...model, efforts: [], free: true })), nextCursor: null };
+  }
   if (route.adapter === 'opencode' || route.adapter === 'mimo') {
     try {
       const live = await opencodeCatalog(route, cwd, python);
@@ -552,6 +617,18 @@ export async function routeCatalog(route, cwd, python) {
     models: discovered.map(m => ({ id: m.id, name: m.alias, free: Boolean(m.free), efforts: m.efforts || [], defaultEffort: null })),
     nextCursor: null,
   };
+}
+
+export function claudeQuotaWindows(usage) {
+  if (usage?.error) return [];
+  return ['five_hour', 'seven_day', 'opus'].flatMap(name => {
+      const raw = usage?.[name];
+      if (!raw) return [];
+      const used = Number.parseFloat(raw.used);
+      const remaining = Number.parseFloat(raw.remaining);
+      if (!Number.isFinite(used) && !Number.isFinite(remaining)) return [];
+      return [{ name, remainingPercent: Math.max(0, Math.min(100, Number.isFinite(remaining) ? remaining : 100 - used)), resetsAt: raw.resets_at || null, ...(name === 'opus' ? { models: ['opus'] } : {}) }];
+    });
 }
 
 let cclimitsCache = { at: 0, data: null };
@@ -579,6 +656,10 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
   }
   const argv = executableArgv(route.executable);
   if (route.adapter === 'claude') {
+    const cc = await readCclimitsCached(cwd, python);
+    const usage = cc?.claude;
+    const windows = claudeQuotaWindows(usage);
+    if (windows.length) return { ...base, status: 'available', scope: 'account', windows, source: 'cclimits-claude', observedAt: new Date(Date.now() - Math.max(0, Number(usage.source_age_seconds) || 0) * 1000).toISOString() };
     const statusRes = await capture([...argv, 'auth', 'status', '--json'], cwd, python);
     const textRes = await capture([...argv, 'auth', 'status', '--text'], cwd, python);
     let status = {};

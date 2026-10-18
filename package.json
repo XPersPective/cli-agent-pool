@@ -1,9 +1,16 @@
 {
   "name": "cli-agent-pool",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": false,
   "type": "module",
-  "files": ["bin", "src", "web", "skills", "README.md", "docs"],
+  "files": [
+    "bin",
+    "src",
+    "web",
+    "skills",
+    "README.md",
+    "docs"
+  ],
   "description": "Local task pool for authenticated AI CLIs",
   "engines": {
     "node": ">=24.7.0"

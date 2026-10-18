@@ -127,11 +127,11 @@ codex mcp add cli-agent-pool -- node D:\repositories\cli-agent-pool\bin\pool.js 
 Diğer MCP istemcilerinde komut `node`, argümanlar
 `["D:/repositories/cli-agent-pool/bin/pool.js", "stdio"]` olur.
 Bu bağlantı yeni bir havuz oluşturmaz; çalışan tek HTTP servisine bağlanır.
-Havuzu `serve` ile önce başlatın. İstemci yapılandırmasına sağlayıcı anahtarı,
+Stdio bağlantısı havuz kapalıysa otomatik başlatır. İstemci yapılandırmasına sağlayıcı anahtarı,
 abonelik tokenı veya Pool erişim anahtarı yazılması gerekmez.
 
 Araçlar: `pool_list_connections`, `pool_list_models`, `pool_get_policy`,
-`pool_select`, `pool_submit`, `pool_get_task`, `pool_list_tasks`,
+`pool_list_pools`, `pool_select`, `pool_assign_groups`, `pool_submit`, `pool_get_task`, `pool_list_tasks`,
 `pool_cancel_task`, `pool_get_quotas`.
 
 `pool_submit` için `prompt`, `workspace`, `kind` (`text`, `read`, `write`) ve
@@ -149,6 +149,79 @@ credential'ı, API anahtarı veya kalıcı MCP/yönetim anahtarı verilmez.
 Ekranda kurulu CLI'lar, CLI bağlantısı ekleme, Özel API / Token Planı ekleme (Anthropic
 veya OpenAI yuvası), izinli klasörler, manuel model grupları, ücretsiz model/plan rozetleri,
 model/efor seçimi, görev başlatma, iptal, geçmiş ve kota/giriş durumu bulunur.
+
+### Havuz ve çalışma alanı
+
+Açılış ekranındaki ana havuzlar **Yüksek / Orta / Hafif**. Bir havuza tıklayın;
+aşağıdaki **Codex, Claude, Qwen, ZCode…** sekmelerinden tam model kimliğini seçin,
+eforunu belirleyin ve **havuza ekle** düğmesini kullanın. Aynı model farklı
+havuzlara farklı eforlarla eklenebilir. Çıkar düğmesi yalnızca seçili havuzdaki
+üyeliği kaldırır. Araç kataloğu ve havuzlar ayrı hiyerarşilerdir.
+
+Modelin `memberships: [{ group: "high", effort: "high" }]` kaydı o üyelik için
+zorunlu efor tanımlar. İstemci farklı efor isteyerek bu kuralı aşamaz. Efor boşsa
+CLI varsayılanı kullanılır; bu bir model veya güç kategorisi değildir. Eski `group`
+ve `defaultEffort` kayıtları okunabilir; yeni üyelik listesi varsa o liste geçerlidir.
+
+**Benim havuzlarım · katı kurallar** (`selectionMode: "manual"`) açıkken her yeni
+seçim/gönderim `high`, `medium` veya `low` gruplarından birini ister. Açık model veya
+bağlantı seçimi de havuz üyeliğini aşamaz. **Otomatik · ajan seçsin** (`"auto"`)
+seçeneğinde ajan grup belirtmeden katalogdaki uygun modelleri de seçebilir. Grup
+belirtilirse o grup ve üyelik eforu her iki modda da bağlayıcıdır. Eski yapılandırma
+ve istemcilerle uyumluluk için `selectionMode` varsayılanı `auto`dur.
+
+Kullanıcı onayından sonra eklenen model ve bağlantısı etkinleşir; CLI ayarlarını
+inceleme, yerel oturum ve ücretli API otomatik seçim izinleri geçerliliğini korur.
+Ücretli API için mevcut açık `paid_api` / `autoSelect` kuralları aynen uygulanır.
+Bağlantı ayarları üstteki düğmeden pencere olarak açılır. Model kataloğu sayfalanır;
+masaüstünde uzun bir yönetim sayfasını aşağı kaydırmak gerekmez.
+
+Claude sürümleri, kullanıcı istemi göndermeden CLI kontrol protokolünün
+`resolvedModel` alanından alınır. `opus` gibi alias kayıtları kesin kimliklerle
+birleştirilir; mevcut havuz üyelikleri korunur. Diğer araçların da tam katalog
+kimlikleri gösterilir. Sağlayıcı sürüm bildirmiyorsa numara uydurulmaz. Görev
+ayrıntısı istenen kimlik, havuz ve eforu, CLI olaylarında bildirilmişse gerçek
+çalışan model kimliğini ayrı gösterir.
+
+Kullanım/kalan yüzdeleri ve yenilenme zamanı model satırındadır; hesap ortak kotası
+model başına ayrı bakiye gibi sunulmaz. Kota, kapalı bağlantılar için de okunabilir.
+Codex native app-server, Claude kurulu `cclimits` gözlemcisi üzerinden sorgulanır.
+Desteklenmeyen veya ulaşılamayan bilgiler açıkça belirtilir. Yeni işten önce uygun
+bağlantıların kotaları 15 saniyelik önbellekle yenilenir. Kota doluysa yeni iş aynı
+havuzdaki uygun alternatife atanabilir; başlamış iş otomatik tekrarlanmaz.
+
+**Modelleri tara** öncesinde kaydetmek gerekmez. Yeni katalog kalıcı olarak alınır;
+kaydedilmemiş havuz/efor/bağlantı seçimleri taslak olarak korunur ve kendiliğinden
+kaydedilmez. Sonrasında **Havuzu kaydet** kullanılır.
+
+Çalışma Alanı'nda projeler, seçili projenin görevleri ve bağımsız CLI görevleri
+bulunur. **Göz at / + Klasör**, Windows'un modern yerel klasör penceresini açar;
+iptal mevcut projeyi değiştirmez. Kaynak koddan küçük GUI yardımcısı Windows'un
+kurulu .NET derleyicisiyle yerel uygulama verisine derlenir; ek paket veya terminal
+penceresi gerekmez. Yardımcı süreç havuz supervisor'ı tarafından sahiplenilir.
+
+Giriş kutusunun kenarındaki mikrofon sesle yazmayı, ok düğmesi göndermeyi sağlar.
+Metin kullanıcı göndermeden çalıştırılmaz. Tarayıcı/mikrofon desteği veya izin
+bulunmazsa yazılı giriş kullanılabilir. Hedef ve en fazla 10 Markdown skill dosyası
+görev talimatlarına eklenir (dosya başına 64 KB, toplam görev 100.000 karakter).
+Skill kurulumu yapılmaz.
+
+Bağlı ajanlar için örnekler ve hata kodları: [Ajan API rehberi](docs/agent-api.md).
+
+### Project Brain ve Freebuff
+
+Project Brain 3.3.0+ ayrı skill olarak kalır; görev planını ve kalite kanıtlarını
+yönetir. Varsayılan ajan keşfi ve görev yürütmesi bu Pool'a bağlanır. Servis kapalıysa
+başlar; kullanıcının high/medium/low üyelikleri, sabit effort'u ve kota rezervleri
+uygulanır. Kayıp yanıt aynı istek anahtarıyla, başlamış görev mevcut kimliğiyle okunur.
+Başarısız yazma görevi otomatik tekrarlanmaz. Ek bir Project Brain bağımlılığı yoktur.
+
+`cli-agent-pool rpc`, stdin üzerinden `{tool, arguments}` JSON alır; editörden bağımsız
+11 ajan aracına erişim sağlar. `cli-agent-pool mcp-config` ise tokensız stdio bağlantı
+ayarını üretir. Freebuff Desktop/CLI bunu `~/.agents/mcp.json` üzerinden kullanabilir.
+Freebuff burada istemcidir; desteklenmeyen otomatik model yürütmesi uydurulmaz.
+
+Uygulama sürümü üst çubukta görünür; MCP ve CLI aynı paket sürümünü bildirir.
 
 ## Güvenli Çalışma
 

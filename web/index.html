@@ -4,13 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CLI Agent Pool</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/style.css">
-  <script src="/app.js" defer></script>
+  <script src="/app.js" type="module"></script>
 </head>
 <body>
   <a class="skip" href="#task-form">Görev formuna geç</a>
   <header class="topbar">
-    <div class="brand"><span class="mark" aria-hidden="true">P</span><div><h1>CLI Agent Pool</h1><p>Yerel ajan havuzunuz</p></div></div>
+    <div class="brand"><span class="mark" aria-hidden="true">P</span><div><h1>CLI Agent Pool</h1><p>Yerel ajan havuzunuz · <span id="app-version">sürüm yükleniyor</span></p></div></div>
     <div class="header-actions"><span id="connection-state" class="badge">Bağlanıyor</span><button id="refresh" type="button">Yenile</button></div>
   </header>
   <main>
@@ -21,30 +22,50 @@
       <div class="metric"><span>Çalışan görev</span><strong id="running-count">—</strong></div>
       <div class="metric"><span>İnceleme bekleyen</span><strong id="review-count">—</strong></div>
     </section>
-    <div class="layout">
+    <nav class="main-tabs" aria-label="Ana ekranlar">
+      <button id="pool-tab" type="button" aria-current="page">◈ Ajan Havuzu</button>
+      <button id="workspace-tab" type="button">▣ Çalışma Alanı</button>
+    </nav>
+    <section id="pool-panel" aria-label="Ajan havuzu">
+      <div class="pool-heading"><div><h2>Model havuzlarım</h2><p class="hint" id="selection-description">Bir havuz seçin, altındaki araçlardan model ekleyin.</p></div><div class="actions"><label class="mode-field" for="selection-mode">Seçim<select id="selection-mode"><option value="manual">Benim havuzlarım · katı kurallar</option><option value="auto">Otomatik · ajan seçsin</option></select></label><button id="open-settings" type="button">Bağlantı ayarları</button><button id="save-pool" class="primary" type="button">Havuzu kaydet</button></div></div>
+      <div id="group-summary" class="group-summary" aria-label="Havuzlar"></div>
+      <section class="card membership-panel" aria-labelledby="members-heading"><div class="compact-heading"><h3 id="members-heading">Yüksek havuzundaki modeller</h3><span class="hint">Efor seçtiğinizde bu model o havuzda seçtiğiniz eforla çalışır.</span></div><div id="pool-members"></div></section>
+      <section class="card catalog-panel" aria-labelledby="catalog-heading"><div class="catalog-toolbar"><h3 id="catalog-heading">Yüksek havuzuna model ekle</h3><input id="pool-search" type="search" aria-label="Katalogda model ara" placeholder="Model adı veya sürümü ara…"><button id="quick-scan-import" type="button">Modelleri tara</button><button id="refresh-quotas" type="button">Kullanım / limitleri yenile</button></div>
+        <div id="route-nav" class="route-nav" aria-label="Araçlar"></div>
+        <div id="catalog-status" class="catalog-status"></div>
+        <div id="pool-models" class="catalog-models"></div>
+        <div class="catalog-pagination"><button id="catalog-prev" type="button">← Önceki</button><span id="catalog-page" class="hint"></span><button id="catalog-next" type="button">Sonraki →</button></div>
+      </section>
+    </section>
+    <section id="workspace-panel" class="workspace-layout" aria-label="Çalışma alanı" hidden>
+      <aside class="card project-sidebar"><div class="section-heading"><h2>Projeler</h2><button id="add-project" type="button">+ Klasör</button></div><div id="projects"></div><p class="hint">Bir proje seçin veya çalışma klasörünü göz atarak ekleyin.</p></aside>
       <section class="card task-card" aria-labelledby="task-heading">
-        <div class="section-heading"><div><p class="eyebrow">YENİ İŞ</p><h2 id="task-heading">Görev başlat</h2></div><span class="badge subtle">Yerel çalışma</span></div>
+        <div class="section-heading"><div><p class="eyebrow">YENİ İŞ</p><h2 id="task-heading">Havuzdan bir ajan çalıştır</h2></div><button id="new-task" type="button">Yeni görev</button></div>
+        <div id="conversation" class="conversation" aria-live="polite"><p class="empty">Bir model veya güç grubu seçip görevinizi yazın.</p></div>
         <form id="task-form">
-          <label for="task-kind">Görev türü</label>
-          <select id="task-kind"><option value="read">Kod incele / oku</option><option value="text">Metin üret</option><option value="write">Dosya değiştir</option></select>
-          <label for="task-model">Model</label><select id="task-model" required><option value="">Model seçin</option></select>
+          <div class="task-options">
+            <label class="setting-field" for="task-kind">Görev türü<select id="task-kind"><option value="read">Kod incele / oku</option><option value="text">Metin üret</option><option value="write">Dosya değiştir</option></select></label>
+            <label class="setting-field" for="task-group">Havuz grubu<select id="task-group"><option value="">Tüm havuz</option></select></label>
+            <label class="setting-field" for="task-model">Model<select id="task-model"><option value="">Havuzdaki uygun model</option></select></label>
+            <label class="setting-field" for="task-effort">Efor<select id="task-effort"><option value="">CLI / model varsayılanı</option></select></label>
+          </div>
           <p id="model-empty" class="hint">Modeller yükleniyor.</p>
-          <label for="task-workspace">Çalışma klasörü</label><input id="task-workspace" required autocomplete="off" placeholder="İzin verdiğiniz yerel klasör">
-          <label for="task-prompt">Görev tanımı</label><textarea id="task-prompt" required maxlength="100000" rows="6" placeholder="Ne yapılmasını ve hangi sonucu beklediğinizi yazın."></textarea>
+          <label for="task-workspace">Çalışma klasörü</label><div class="path-row"><input id="task-workspace" required autocomplete="off" placeholder="Çalışma klasörünüz"><button id="browse-workspace" type="button">Göz at…</button></div>
+          <div class="composer"><label for="task-prompt" class="sr-only">Görev / komut</label><textarea id="task-prompt" required maxlength="100000" rows="4" placeholder="Bu projede ne yapmak istiyorsunuz?"></textarea><div class="composer-actions"><button id="attach-instructions" type="button" class="composer-attach" aria-label="Skill veya hedef ekle" title="Skill veya hedef ekle">＋</button><span class="composer-caption">Enter gönder · Shift+Enter yeni satır</span><button id="voice-input" type="button" class="icon-button" aria-label="Sesle yaz" title="Sesle yaz" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></svg></button><button id="submit" class="send-button" type="submit" aria-label="Görevi gönder" title="Görevi gönder" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 19V5m-6 6 6-6 6 6"/></svg></button></div></div>
+          <details id="task-instructions"><summary>Hedef ve skill talimatları</summary><label class="setting-field" for="task-goal">Hedef / tamamlanma koşulu<textarea id="task-goal" rows="2" maxlength="10000" placeholder="Görev hangi sonuç elde edilince tamamlanmış olacak?"></textarea></label><label class="setting-field" for="skill-files">Skill ekle (.md talimat dosyası)<input id="skill-files" type="file" accept=".md,text/markdown,text/plain" multiple></label><div id="attached-skills" class="actions"></div><p class="hint">Eklenen skill metni bu görevin talimatlarına eklenir. CLI’ın kendi skill ve izin ayarları da geçerlidir.</p></details>
           <p id="write-warning" class="hint" hidden>Bu görev dosyaları değiştirebilir. Kesilen yazma görevinden sonra klasörün elle incelenmesi gerekir.</p>
-          <button id="submit" class="primary" type="submit" disabled>Görevi gönder <span aria-hidden="true">↗</span></button>
-          <p class="hint">Bağlantı kesilirse aynı isteği yeniden göndermek ikinci bir görev oluşturmaz.</p>
+          <button id="preview-selection" class="preview-button" type="button">Seçilecek modeli ve alternatifleri göster</button>
+          <p id="voice-status" class="hint">Sesle yazma tarayıcı desteğine ve mikrofon iznine bağlıdır. Komutu göndermeden önce düzenleyebilirsiniz.</p>
         </form>
       </section>
-      <div class="right-column">
-        <section class="card" aria-labelledby="providers-heading"><div class="section-heading"><div><p class="eyebrow">BİLGİSAYARINIZDA GENEL TARAMA</p><h2 id="providers-heading">Bağlantılar, planlar ve kurulu CLI’lar</h2></div><div class="actions"><button id="quick-scan-import" type="button">Tüm kurulu CLI’ları aktar</button><button id="open-settings" type="button">Modeller ve bağlantılar</button></div></div><div id="providers" class="provider-list"><p class="hint">Bağlantılar yükleniyor.</p></div></section>
-        <section class="card" aria-labelledby="tasks-heading"><div class="section-heading"><div><p class="eyebrow">ÇALIŞMA GEÇMİŞİ</p><h2 id="tasks-heading">Son görevler</h2></div><span id="task-total" class="badge subtle">0</span></div><div id="tasks"><p class="empty">Henüz görev yok. İlk görevinizi soldaki formdan başlatın.</p></div></section>
-      </div>
-    </div>
-    <section id="settings" class="card" aria-labelledby="settings-heading" hidden>
+      <aside class="card history-sidebar" aria-labelledby="tasks-heading"><div class="section-heading"><h2 id="tasks-heading">Görevler</h2><span id="task-total" class="badge subtle">0</span></div><div id="tasks"></div></aside>
+    </section>
+    <dialog id="settings" class="card" aria-labelledby="settings-heading" hidden>
       <div class="section-heading"><div><p class="eyebrow">SİZİN KURALLARINIZ</p><h2 id="settings-heading">Modeller ve bağlantılar</h2></div><div class="actions"><button id="scan-import" type="button">Bilgisayarı tara ve tümünü havuza aktar</button><button id="close-settings" type="button">Kapat</button></div></div>
       <p class="hint">Bilgisayarınızdaki tüm AI CLI’ları (Codex, Claude, OpenCode, ZCode / Z.AI, Qwen, MiniMax mcode/mmx, Kimi, MiMo, Antigravity, OmniRoute, LM Studio, Ollama vb.), token planlarını, günlük ücretsiz kredileri ve özel API yuvalarını (Anthropic / OpenAI uyumlu) buradan yönetin.</p>
       <label class="setting-field" for="workspace-roots">İzin verilen çalışma klasörleri (her satıra bir klasör)<textarea id="workspace-roots" rows="3" placeholder="Örnek: D:\repositories\my-project"></textarea></label>
+      <label class="setting-field" for="grouping-mode">Ajan havuz üyeliklerini düzenleyebilsin mi?<select id="grouping-mode"><option value="manual">Hayır, yalnızca ben düzenlerim</option><option value="agent">Evet, bağlı ajan da düzenleyebilir</option></select></label>
+      <details><summary>Kurulu araçlar ve bağlantı durumu</summary><div id="providers"></div></details>
       <div id="settings-routes"></div>
       <fieldset class="route-settings"><legend>Kurulu CLI bağlantısı ekle</legend>
         <label class="setting-field" for="new-adapter">Kurulu CLI<select id="new-adapter"><option value="">CLI seçin</option></select></label>
@@ -73,8 +94,8 @@
         <button id="add-custom-cli" type="button">Özel CLI aracını ekle</button>
       </fieldset>
       <button id="save-settings" class="primary" type="button">Ayarları kaydet</button>
-    </section>
-    <section id="detail" class="card" aria-labelledby="detail-heading" hidden><div class="section-heading"><h2 id="detail-heading">Görev / kota ayrıntısı</h2><button id="close-detail" type="button">Kapat</button></div><pre id="detail-content" tabindex="0"></pre></section>
+    </dialog>
+    <dialog id="detail" class="card" aria-labelledby="detail-heading" hidden><div class="section-heading"><h2 id="detail-heading">Görev / kota ayrıntısı</h2><button id="close-detail" type="button">Kapat</button></div><pre id="detail-content" tabindex="0"></pre></dialog>
     <footer>Kimlik bilgileri ve API anahtarları yalnızca bilgisayarınızdaki yerel veri klasöründe tutulur.</footer>
   </main>
 </body>

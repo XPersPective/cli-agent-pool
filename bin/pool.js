@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import { dataDirectory, initialize, loadConfig, configView, saveConfig, PoolError } from '../src/config.js';
-import { discover, executableArgv, routeCatalog, importDiscoveredRoutes } from '../src/adapters.js';
+import { discover, executableArgv, routeCatalog, importDiscoveredRoutes, mergeCatalogModels } from '../src/adapters.js';
 import { capture } from '../src/process.js';
 import { Store } from '../src/store.js';
 import { Pool } from '../src/pool.js';
 import { createServer } from '../src/server.js';
 import { codexControl } from '../src/codex-control.js';
 import { stdioBridge } from '../src/stdio.js';
+import { rpcRequest } from '../src/rpc.js';
+import { version } from '../src/version.js';
 import { ensureInitialized, ensureDaemon, openDashboardWindow, withMcpClient, callPoolTool, runTaskFromCli, installDesktopAndSkills } from '../src/daemon.js';
 
 function parseFlags(args) {
@@ -39,12 +41,14 @@ export async function main(args = process.argv.slice(2)) {
   const print = value => console.log(JSON.stringify(value, null, 2));
   if (!command || command === 'help' || command === '--help') {
     console.log([
-      'CLI Agent Pool (v1.0.0)',
+      `CLI Agent Pool (v${version})`,
       '',
       '  install                 Set up local pool, scan CLIs, create Desktop shortcut & deploy skill',
       '  open                    Auto-start background service if needed and open desktop app window',
       '  ensure                  Ensure background pool service is running',
       '  status                  Show active connections, models and policy (auto-starts service)',
+      '  rpc                     Call one agent MCP tool using a JSON request on stdin (auto-starts service)',
+      '  mcp-config              Print credential-free stdio configuration for editors and Freebuff',
       '  select                  Select best available model (--kind read|write|text --group <g>)',
       '  run                     Execute a bounded task (--kind read|write|text --workspace <dir> --prompt <text>)',
       '  init                    Create private local configuration',
@@ -59,6 +63,10 @@ export async function main(args = process.argv.slice(2)) {
       '',
       'Configuration: ' + path.join(directory, 'config.json'),
     ].join('\n'));
+    return;
+  }
+  if (command === 'mcp-config') {
+    print({ mcpServers: { 'cli-agent-pool': { command: process.execPath, args: [fileURLToPath(import.meta.url), 'stdio'] } } });
     return;
   }
   if (command === 'install' || command === 'setup') {
@@ -82,8 +90,14 @@ export async function main(args = process.argv.slice(2)) {
       connections: await callPoolTool(client, 'pool_list_connections'),
       models: await callPoolTool(client, 'pool_list_models'),
       policy: await callPoolTool(client, 'pool_get_policy'),
+      pools: await callPoolTool(client, 'pool_list_pools'),
     }));
     print(out);
+    return;
+  }
+  if (command === 'rpc') {
+    const request = await rpcRequest(process.stdin);
+    print(await withMcpClient(directory, client => callPoolTool(client, request.tool, request.arguments)));
     return;
   }
   if (command === 'select') {
@@ -149,12 +163,7 @@ export async function main(args = process.argv.slice(2)) {
     if (command === 'refresh-models') {
       const view = configView(directory);
       const stored = view.config.routes.find(r => r.id === route.id);
-      const kinds = route.adapter === 'mmx' ? ['text'] : route.adapter === 'qwen' ? ['text', 'read'] : ['text', 'read', 'write'];
-      for (const model of catalog.models) {
-        const existing = stored.models.find(m => m.id === model.id);
-        if (existing) { existing.efforts = model.efforts; if (!model.efforts.includes(existing.defaultEffort)) delete existing.defaultEffort; }
-        else stored.models.push({ id: model.id, alias: model.name, group: model.free ? 'free' : 'unassigned', efforts: model.efforts, kinds });
-      }
+      mergeCatalogModels(stored, catalog);
       saveConfig(directory, view.config, view.revision);
       print({ updated: stored.id, models: stored.models.length, manualGroups: 'preserved', restart: 'Restart pool service if already running.' });
     } else print(catalog);
@@ -198,7 +207,8 @@ export async function main(args = process.argv.slice(2)) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch(error => {
-    console.error(JSON.stringify({ error: { code: error instanceof PoolError ? error.code : 'START_FAILED', message: error instanceof PoolError ? error.message : 'Havuz başlatılamadı. Servis zaten çalışıyor olabilir; yerel ayarları kontrol edin.' } }));
+    const report = process.argv[2] === 'rpc' ? console.log : console.error;
+    report(JSON.stringify({ error: { code: error instanceof PoolError ? error.code : 'START_FAILED', message: error instanceof PoolError ? error.message : 'Havuz başlatılamadı. Servis zaten çalışıyor olabilir; yerel ayarları kontrol edin.' } }));
     process.exitCode = 1;
   });
 }

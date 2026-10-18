@@ -3,12 +3,13 @@ import { timingSafeEqual } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
-import { PoolError } from './config.js';
+import { PoolError, configView } from './config.js';
 import { browserUI, managementOperation } from './web.js';
-import { taskSchema } from './pool.js';
+import { taskSchema, groupAssignmentSchema } from './pool.js';
+import { version } from './version.js';
 
 export function mcpServer(pool) {
-  const server = new McpServer({ name: 'cli-agent-pool', version: '1.0.0' });
+  const server = new McpServer({ name: 'cli-agent-pool', version });
   const register = (name, description, inputSchema, callback, readOnly = true) => server.registerTool(name, {
     description, inputSchema, annotations: { readOnlyHint: readOnly, destructiveHint: !readOnly, idempotentHint: readOnly, openWorldHint: !readOnly },
   }, async input => {
@@ -17,14 +18,17 @@ export function mcpServer(pool) {
       return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: { data: value } };
     } catch (error) {
       const known = error instanceof PoolError;
-      return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: { code: known ? error.code : 'INTERNAL_ERROR', message: known ? error.message : 'İşlem tamamlanamadı. Yerel servis durumunu kontrol edin.' } }) }] };
+      const invalid = error instanceof z.ZodError;
+      return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: { code: known ? error.code : invalid ? 'INVALID_REQUEST' : 'INTERNAL_ERROR', message: known ? error.message : invalid ? 'İstek alanları geçersiz. Araç şemasını kontrol edin.' : 'İşlem tamamlanamadı. Yerel servis durumunu kontrol edin.' } }) }] };
     }
   });
   register('pool_list_connections', 'List configured CLI and API routes without credentials or account identifiers.', {}, () => pool.config.routes.map(({ id, adapter, enabled, billing, autoSelect, api }) => ({ id, adapter, enabled, billing, autoSelect: autoSelect ?? (billing !== 'paid_api'), protocol: api?.protocol || null, baseUrl: api?.baseUrl || null, auth: 'unknown' })));
+  register('pool_list_pools', 'Read the three strength pools, their exact model IDs, mandatory effort rules and cached quota windows. In manual mode select a pool with group; do not override fixedEffort.', {}, () => pool.pools());
   register('pool_list_models', 'List configured models. Manual groups are authoritative.', {}, () => pool.models());
-  register('pool_get_policy', 'Read immutable admission policy. Agents cannot change it.', {}, () => ({ concurrency: pool.config.concurrency, automaticRetry: false, overlappingWorkspaces: 'serialized', unknownQuota: 'bounded-task', billing: 'explicit-route-billing', paidApiAutoSelect: 'opt-in', maxQueued: 100, maxTimeoutSeconds: 3600 }));
-  register('pool_select', 'Recommend an allowed model without starting a task.', { kind: z.enum(['text', 'read', 'write']), routeId: z.string().optional(), modelId: z.string().optional(), group: z.string().optional(), effort: z.string().optional() }, input => pool.select(input));
-  register('pool_submit', 'Start one bounded CLI task. Reuse the same idempotency key when retrying a lost response. Write tasks may change workspace files.', taskSchema.shape, input => pool.submit(input), false);
+  register('pool_get_policy', 'Read admission policy and owner-controlled grouping permission. Read revision before assigning groups.', {}, () => ({ concurrency: pool.config.concurrency, groupingMode: pool.config.groupingMode, selectionMode: pool.config.selectionMode, strengthPools: ["high", "medium", "low"], fixedEffort: "owner-pool-effort-is-mandatory", revision: configView(pool.directory).revision, automaticRetry: false, overlappingWorkspaces: 'serialized', unknownQuota: 'bounded-task', billing: 'explicit-route-billing', paidApiAutoSelect: 'opt-in', maxQueued: 100, maxTimeoutSeconds: 3600 }));
+  register('pool_assign_groups', 'Assign model groups only when the owner enabled agent grouping. Cannot change billing, permissions or routes. Preserve owner groups unless asked to reclassify. Use the current policy revision.', groupAssignmentSchema.shape, input => pool.assignGroups(input), false);
+  register('pool_select', 'Recommend an allowed model without starting a task. minRemainingPercent can raise the owner quota reserve, never lower it.', { kind: z.enum(['text', 'read', 'write']), routeId: z.string().optional(), modelId: z.string().optional(), group: z.string().optional(), effort: z.string().optional(), minRemainingPercent: z.number().min(0).max(100).optional() }, input => pool.selectLive(input));
+  register('pool_submit', 'Start one bounded CLI task. Reuse the same idempotency key when retrying a lost response. Write tasks may change workspace files.', taskSchema.shape, input => pool.submitLive(input), false);
   register('pool_get_task', 'Read task state, result and at most 100 events after a cursor.', { taskId: z.string().uuid(), after: z.number().int().min(0).default(0) }, ({ taskId, after }) => pool.get(taskId, after));
   register('pool_list_tasks', 'Read paginated local task history.', { limit: z.number().int().min(1).max(100).default(50), offset: z.number().int().min(0).max(1_000_000).default(0) }, ({ limit, offset }) => pool.list(limit, offset));
   register('pool_cancel_task', 'Request cancellation and wait for subsequent task state to confirm it.', { taskId: z.string().uuid() }, ({ taskId }) => pool.cancel(taskId), false);
@@ -71,7 +75,7 @@ export function createServer(pool, token, port = pool.config.port, management) {
           const value = browser
             ? await ui.operation(body)
             : body.operation === 'pair_ui'
-              ? { status: 'listening', endpoint: `http://127.0.0.1:${actualPort}/mcp`, dashboard: ui?.launchURL(actualPort) }
+              ? { status: 'listening', version, endpoint: `http://127.0.0.1:${actualPort}/mcp`, dashboard: ui?.launchURL(actualPort) }
               : managementOperation(pool, management, body);
           res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
           res.end(JSON.stringify(value));

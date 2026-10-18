@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { allowedWorkspace, overlaps, PoolError, activeBillings, nonMeteredBillings, dataDirectory } from './config.js';
+import { allowedWorkspace, overlaps, PoolError, activeBillings, nonMeteredBillings, dataDirectory, configView, saveConfig } from './config.js';
 import { checkAuth, execute, quota, loginCommands } from './adapters.js';
 import { codexControl } from './codex-control.js';
 
@@ -12,9 +12,20 @@ export const taskSchema = z.object({
   modelId: z.string().max(100).optional(),
   group: z.string().max(100).optional(),
   effort: z.string().max(100).optional(),
+  minRemainingPercent: z.number().min(0).max(100).optional(),
   timeoutSeconds: z.number().int().min(5).max(3600).default(300),
   idempotencyKey: z.string().min(8).max(128).regex(/^[a-zA-Z0-9_.:-]+$/),
 }).strict();
+
+export const groupAssignmentSchema = z.object({
+  revision: z.string().regex(/^[a-f0-9]{64}$/),
+  assignments: z.array(z.object({ routeId: z.string().min(1).max(100), modelId: z.string().min(1).max(100), group: z.enum(['high', 'medium', 'low']), effort: z.string().min(1).max(100).optional(), remove: z.boolean().optional() }).strict()).min(1).max(5000),
+}).strict();
+
+export function suggestGroup(name) {
+  // ponytail: model names only give starting suggestions; unknown families need owner/agent judgement or measured capability data.
+  return /\b(astra|opus)\b/i.test(name) ? 'high' : /\b(luna|haiku|flash|mini)\b/i.test(name) ? 'low' : /\b(sol|sonnet)\b/i.test(name) ? 'medium' : null;
+}
 
 export class Pool {
   constructor(config, store, dependencies = {}) {
@@ -29,8 +40,14 @@ export class Pool {
     this.pumping = false;
   }
   models() {
-    return this.config.routes.flatMap(route => route.models.map(model => ({
+    return this.config.routes.flatMap(route => route.models.flatMap(model => {
+      const memberships = model.memberships ?? [{ group: model.group, effort: model.defaultEffort }];
+      return (memberships.length ? memberships : [{ group: 'unassigned' }]).map(member => ({
       ...model,
+      group: member.group,
+      defaultEffort: member.effort,
+      fixedEffort: model.memberships ? member.effort : undefined,
+      suggestedGroup: suggestGroup(`${model.id} ${model.alias}`),
       routeId: route.id,
       adapter: route.adapter,
       enabled: route.enabled && model.enabled,
@@ -39,19 +56,48 @@ export class Pool {
       priority: route.priority,
       protocol: route.api?.protocol || null,
       baseUrl: route.api?.baseUrl || null,
-    })));
+    })); }));
+  }
+  pools() {
+    const models = this.models();
+    return { selectionMode: this.config.selectionMode, groupingMode: this.config.groupingMode, pools: ['high', 'medium', 'low'].map(group => ({ group, members: models.filter(model => model.group === group).map(model => {
+      const quota = this.store.quota(model.routeId);
+      return { ...model, quota: quota ? { status: quota.status, windows: quota.windows, observedAt: quota.observedAt, scope: quota.scope } : null };
+    }) })) };
+  }
+  assignGroups(input) {
+    const { revision, assignments } = groupAssignmentSchema.parse(input);
+    const view = configView(this.directory);
+    if (view.config.groupingMode !== 'agent') throw new PoolError('GROUPING_DENIED', 'Model gruplarını yalnızca kullanıcı yönetebilir. Ajan yetkisi kapalı.');
+    for (const { routeId, modelId, group, effort, remove } of assignments) {
+      const model = view.config.routes.find(route => route.id === routeId)?.models.find(model => model.id === modelId);
+      if (!model) throw new PoolError('NOT_FOUND', 'Gruplanacak model bulunamadı.');
+      model.memberships ??= ['high', 'medium', 'low'].includes(model.group) ? [{ group: model.group, ...(model.defaultEffort ? { effort: model.defaultEffort } : {}) }] : [];
+      model.group = group;
+      if (remove) model.memberships = model.memberships.filter(member => member.group !== group);
+      else {
+        let member = model.memberships.find(member => member.group === group);
+        if (!member) { member = { group }; model.memberships.push(member); }
+        if (effort) member.effort = effort;
+      }
+    }
+    this.config = saveConfig(this.directory, view.config, revision);
+    return { updated: assignments.length, revision: configView(this.directory).revision };
   }
   select(request) {
+    if (this.config.selectionMode === 'manual' && !['high', 'medium', 'low'].includes(request.group))
+      throw new PoolError('POOL_REQUIRED', 'Manuel modda Yüksek, Orta veya Hafif havuzlarından birini seçin.');
     const matches = this.models().filter(model => {
       const snapshot = this.store.quota(model.routeId);
       const route = this.config.routes.find(r => r.id === model.routeId);
       const fresh = snapshot && Date.now() - Date.parse(snapshot.observedAt) < 60_000;
       const missingPlan = snapshot?.subscription === 'none' && (route.billing === 'subscription' || route.billing === 'token_plan');
-      const quotaBlocked = fresh && (snapshot.status === 'rate_limited' || snapshot.status === 'auth_required' || missingPlan || snapshot.windows?.some(window => window.remainingPercent != null && window.remainingPercent <= route.minRemainingPercent));
+      const quotaBlocked = fresh && (snapshot.status === 'rate_limited' || snapshot.status === 'auth_required' || missingPlan || snapshot.windows?.some(window => (!window.models?.length || window.models.some(id => model.id.includes(id))) && window.remainingPercent != null && window.remainingPercent <= Math.max(route.minRemainingPercent, request.minRemainingPercent ?? 0)));
       const paidAllowed = model.billing !== 'paid_api' || Boolean(request.routeId) || Boolean(model.autoSelect);
       return !quotaBlocked && model.enabled && activeBillings.has(model.billing) && paidAllowed && model.kinds.includes(request.kind) &&
       (!request.routeId || model.routeId === request.routeId) && (!request.modelId || model.id === request.modelId) &&
-      (!request.group || model.group === request.group) && (!request.effort || model.efforts.includes(request.effort)); })
+      (!request.group || model.group === request.group) && (!request.effort || model.efforts.includes(request.effort)) &&
+      (!request.effort || !model.fixedEffort || request.effort === model.fixedEffort); })
       .sort((a, b) => {
         const tierA = nonMeteredBillings.has(a.billing) ? 0 : 1;
         const tierB = nonMeteredBillings.has(b.billing) ? 0 : 1;
@@ -77,6 +123,20 @@ export class Pool {
     this.quotaRequests.set(routeId, request);
     try { return await request; } finally { this.quotaRequests.delete(routeId); }
   }
+  async selectLive(request) {
+    const routes = new Set(this.models().filter(model => model.enabled && model.kinds.includes(request.kind) &&
+      (!request.group || model.group === request.group) && (!request.routeId || model.routeId === request.routeId) &&
+      (!request.modelId || model.id === request.modelId) && (model.billing !== 'paid_api' || request.routeId || model.autoSelect)).map(model => model.routeId));
+    // Unsupported/offline quota probes stay unknown; never invent a balance.
+    await Promise.allSettled([...routes].map(id => this.getQuota(id)));
+    return this.select(request);
+  }
+  async submitLive(input) {
+    const request = taskSchema.parse(input);
+    allowedWorkspace(request.workspace, this.config.workspaceRoots);
+    if (!this.store.byKey(request.idempotencyKey)) await this.selectLive(request);
+    return this.submit(input);
+  }
   submit(input) {
     if (this.closed) throw new PoolError('SHUTTING_DOWN', 'Havuz kapanıyor. Yeniden bağlanın.');
     const request = taskSchema.parse(input);
@@ -91,7 +151,8 @@ export class Pool {
     const model = this.select(request).selected;
     request.routeId = model.routeId;
     request.modelId = model.id;
-    request.effort ||= model.defaultEffort;
+    if (model.group !== 'unassigned') request.group = model.group;
+    request.effort = model.fixedEffort || request.effort || model.defaultEffort;
     const id = randomUUID();
     this.store.insert({ id, key: request.idempotencyKey, fingerprint, workspace: request.workspace, request });
     this.schedule();
@@ -101,7 +162,9 @@ export class Pool {
     const task = this.store.get(id);
     if (!task) throw new PoolError('NOT_FOUND', 'Görev bulunamadı. Görev kimliğini kontrol edin.');
     const request = JSON.parse(task.request);
-    return { id: task.id, state: task.state, routeId: request.routeId, modelId: request.modelId, kind: request.kind, created: task.created, updated: task.updated, result: task.result, error: task.error, events: this.store.events(id, after) };
+    const events = this.store.events(id, after);
+    const reportedModel = this.store.reportedModel(id);
+    return { id: task.id, state: task.state, routeId: request.routeId, modelId: request.modelId, reportedModel, group: request.group, effort: request.effort || null, kind: request.kind, workspace: request.workspace, prompt: request.prompt, created: task.created, updated: task.updated, result: task.result, error: task.error, events };
   }
   list(limit = 50, offset = 0) {
     return this.store.list(limit, offset);

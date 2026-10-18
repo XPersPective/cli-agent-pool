@@ -10,6 +10,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { initialize, loadConfig, configView, saveConfig, allowedWorkspace, PoolError } from './config.js';
 import { importDiscoveredRoutes } from './adapters.js';
 import { capture } from './process.js';
+import { version } from './version.js';
 
 const poolBinPath = fileURLToPath(new URL('../bin/pool.js', import.meta.url));
 const repoRootPath = fileURLToPath(new URL('..', import.meta.url));
@@ -19,14 +20,7 @@ export function ensureInitialized(directory, autoImport = true) {
   if (autoImport) {
     const view = configView(directory);
     const imported = importDiscoveredRoutes(view.config);
-    let changed = imported.addedRoutes > 0 || imported.addedModels > 0;
-    for (const route of imported.config.routes) {
-      if (route.billing !== 'paid_api' && (!route.enabled || !route.trustedSettings)) {
-        route.enabled = true;
-        route.trustedSettings = true;
-        changed = true;
-      }
-    }
+    const changed = imported.addedRoutes > 0 || imported.addedModels > 0;
     if (changed) {
       saveConfig(directory, imported.config, view.revision);
     }
@@ -54,29 +48,14 @@ export async function managementRequest(directory, config, body) {
   return response.json();
 }
 
-async function stopOutdatedDaemon(directory, config) {
-  const pidFile = path.join(directory, 'daemon.pid');
-  if (existsSync(pidFile)) {
-    const pid = Number(readFileSync(pidFile, 'utf8').trim());
-    if (Number.isInteger(pid) && pid > 0) {
-      try { process.kill(pid); await delay(300); } catch { /* ignore */ }
-    }
-  }
-  if (process.platform === 'win32') {
-    const ps = `Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort ${Number(config.port)} -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }`;
-    await capture(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', ps], directory, config.python);
-    await delay(300);
-  }
-}
-
 export async function ensureDaemon(directory, config = ensureInitialized(directory)) {
   try {
     const info = await managementRequest(directory, config, { operation: 'pair_ui' });
     return { ...info, started: false };
   } catch (error) {
-    if (error?.status === 409) {
-      await stopOutdatedDaemon(directory, config);
-    }
+    // A responding server may own active writes or even belong to another app.
+    // Startup never kills a PID or an arbitrary listener to claim the port.
+    if (error?.status) throw error;
   }
   const child = spawn(process.execPath, [poolBinPath, 'serve'], {
     cwd: directory,
@@ -152,7 +131,7 @@ export async function withMcpClient(directory, callback) {
   const config = ensureInitialized(directory);
   await ensureDaemon(directory, config);
   const token = readFileSync(path.join(directory, 'access-token'), 'utf8').trim();
-  const client = new Client({ name: 'cli-agent-pool-cli', version: '1.0.0' });
+  const client = new Client({ name: 'cli-agent-pool-cli', version });
   const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${config.port}/mcp`), {
     requestInit: { headers: { Authorization: `Bearer ${token}` } },
   });
@@ -208,7 +187,6 @@ export async function runTaskFromCli(directory, options) {
 
 export async function installDesktopAndSkills(directory) {
   const config = ensureInitialized(directory, true);
-  await stopOutdatedDaemon(directory, config);
   const daemonInfo = await ensureDaemon(directory, config);
   const appData = process.env.APPDATA || path.join(homedir(), 'AppData', 'Roaming');
   const globalPoolBin = path.join(appData, 'npm', 'node_modules', 'cli-agent-pool', 'bin', 'pool.js');
@@ -220,6 +198,7 @@ export async function installDesktopAndSkills(directory) {
     runtimePath: activeRoot,
     endpoint: daemonInfo.endpoint,
     routesConfigured: config.routes.length,
+    restartRequired: daemonInfo.version !== version,
     desktopShortcut: null,
     startMenuShortcut: null,
     skillsManager: null,
@@ -282,7 +261,7 @@ Write-Output (ConvertTo-Json @{ desktop = (Join-Path $desktop 'CLI Agent Pool.ln
     try {
       const skills = JSON.parse(listRes.output);
       alreadyInstalled = skills.some(s => s.name === 'cli-agent-pool');
-      const existing = skills.find(s => Array.isArray(s.deployed_to) && s.deployed_to.length > 0);
+      const existing = skills.find(s => s.name === 'cli-agent-pool' && Array.isArray(s.deployed_to) && s.deployed_to.length > 0);
       if (existing) agents = existing.deployed_to;
     } catch { /* use default agent list */ }
 

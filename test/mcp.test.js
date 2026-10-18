@@ -14,6 +14,8 @@ import { configSchema } from '../src/config.js';
 import { Store } from '../src/store.js';
 import { Pool } from '../src/pool.js';
 import { createServer } from '../src/server.js';
+import { ensureDaemon } from '../src/daemon.js';
+import { version } from '../src/version.js';
 
 async function application(t) {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-mcp-'));
@@ -21,7 +23,8 @@ async function application(t) {
   writeFileSync(executable, `if(process.argv.includes('login')){console.log('Logged in using ChatGPT')}else{process.stdin.resume();process.stdin.on('end',()=>{console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'verified result'}}));console.log(JSON.stringify({type:'turn.completed'}))})}`);
   const config = configSchema.parse({ workspaceRoots: [root], routes: [{ id: 'test', adapter: 'codex', executable, enabled: true, billing: 'subscription', models: [{ id: 'test-model', alias: 'Test', group: 'default', kinds: ['read'] }] }] });
   const store = new Store(path.join(root, 'pool.sqlite'));
-  const pool = new Pool(config, store);
+  const pool = new Pool(config, store, { directory: root });
+  store.saveQuota('test', { status: 'available', windows: [], observedAt: new Date().toISOString() });
   const token = randomBytes(32).toString('hex');
   const managementToken = randomBytes(32).toString('hex');
   writeFileSync(path.join(root, 'config.json'), JSON.stringify(config));
@@ -30,6 +33,7 @@ async function application(t) {
   config.port = address.port;
   writeFileSync(path.join(root, 'config.json'), JSON.stringify({ ...config, port: address.port }));
   writeFileSync(path.join(root, 'access-token'), token);
+  writeFileSync(path.join(root, 'management-token'), managementToken);
   t.after(async () => { app.server.close(); app.server.closeAllConnections(); await pool.close(); store.close(); rmSync(root, { recursive: true, force: true }); });
   return { root, pool, token, managementToken, app, url: new URL(`http://127.0.0.1:${address.port}/mcp`) };
 }
@@ -47,6 +51,17 @@ test('HTTP boundary rejects missing/wrong auth, foreign Host and browser Origin'
   assert.equal(foreignHost, 403);
   assert.equal((await fetch(url, { ...base, headers: { ...base.headers, Authorization: `Bearer ${token}` }, body: '{' })).status, 400);
   assert.equal((await fetch(url, { ...base, headers: { ...base.headers, Authorization: `Bearer ${token}` }, body: ' '.repeat(262_145) })).status, 413);
+});
+
+test('auto-start reuses the authenticated daemon and never kills a conflicting listener', async t => {
+  const { root, pool, app } = await application(t);
+  const active = await ensureDaemon(root, pool.config);
+  assert.equal(active.started, false);
+  assert.equal(active.version, version);
+  app.server.removeAllListeners('request');
+  app.server.on('request', (request, response) => { request.resume(); response.writeHead(409); response.end('{}'); });
+  await assert.rejects(ensureDaemon(root, pool.config), error => error.status === 409);
+  assert.ok(app.server.listening);
 });
 
 test('standalone dashboard uses one-time login, signed HttpOnly cookie and same-origin CSRF checks', async t => {
@@ -77,7 +92,7 @@ test('stdio MCP connector shares the HTTP owner without putting secrets in tool 
   const client = new Client({ name: 'stdio-test', version: '1.0.0' });
   await client.connect(new StdioClientTransport({ command: process.execPath, args: [fileURLToPath(new URL('../bin/pool.js', import.meta.url)), 'stdio'], env: { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => ['PATH', 'SystemRoot', 'SYSTEMROOT', 'TEMP', 'TMP'].includes(name))), CLI_AGENT_POOL_HOME: root }, stderr: 'pipe' }));
   t.after(() => client.close());
-  assert.equal((await client.listTools()).tools.length, 9);
+  assert.equal((await client.listTools()).tools.length, 11);
   const response = await client.callTool({ name: 'pool_submit', arguments: { prompt: 'Test through stdio', workspace: root, kind: 'read', idempotencyKey: 'stdio-test-123' } });
   assert.ok(!response.isError);
   assert.equal(pool.list()[0].id, response.structuredContent.data.id);
@@ -119,7 +134,7 @@ test('real MCP client discovers tools and executes shell-free fake CLI through p
   await client.connect(new StreamableHTTPClientTransport(url, { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
   t.after(() => client.close());
   const tools = await client.listTools();
-  assert.equal(tools.tools.length, 9);
+  assert.equal(tools.tools.length, 11);
   const input = { prompt: 'Read only', workspace: root, kind: 'read', idempotencyKey: 'mcp-request-123' };
   const first = await client.callTool({ name: 'pool_submit', arguments: input });
   assert.ok(!first.isError);
@@ -139,4 +154,30 @@ test('real MCP client discovers tools and executes shell-free fake CLI through p
   assert.ok(conflict.isError); assert.match(conflict.content[0].text, /IDEMPOTENCY_CONFLICT/);
   const denied = await client.callTool({ name: 'pool_submit', arguments: { ...input, workspace: tmpdir(), idempotencyKey: 'denied-request-123' } });
   assert.ok(denied.isError); assert.match(denied.content[0].text, /WORKSPACE_DENIED/);
+});
+
+test('MCP exposes grouping permission and only owner-enabled assignments can change groups', async t => {
+  const { url, token, managementToken } = await application(t);
+  const client = new Client({ name: 'grouping-test', version: '1.0.0' });
+  await client.connect(new StreamableHTTPClientTransport(url, { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
+  t.after(() => client.close());
+  let policy = (await client.callTool({ name: 'pool_get_policy', arguments: {} })).structuredContent.data;
+  assert.equal(policy.groupingMode, 'manual');
+  const assignments = [{ routeId: 'test', modelId: 'test-model', group: 'medium' }];
+  assert.ok((await client.callTool({ name: 'pool_assign_groups', arguments: { revision: policy.revision, assignments } })).isError);
+  const manage = async body => (await fetch(new URL('/manage', url), { method: 'POST', headers: { Authorization: `Bearer ${managementToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
+  const view = await manage({ operation: 'get' }); view.config.groupingMode = 'agent'; view.config.selectionMode = 'manual';
+  await manage({ operation: 'save', ...view });
+  policy = (await client.callTool({ name: 'pool_get_policy', arguments: {} })).structuredContent.data;
+  assert.equal(policy.groupingMode, 'agent');
+  const saved = await client.callTool({ name: 'pool_assign_groups', arguments: { revision: policy.revision, assignments } });
+  assert.equal(saved.structuredContent.data.updated, 1);
+  assert.equal((await client.callTool({ name: 'pool_list_models', arguments: {} })).structuredContent.data[0].group, 'medium');
+  const pools = (await client.callTool({ name: 'pool_list_pools', arguments: {} })).structuredContent.data;
+  assert.equal(pools.selectionMode, 'manual');
+  assert.equal(pools.pools[1].members[0].id, 'test-model');
+  const missingPool = await client.callTool({ name: 'pool_select', arguments: { kind: 'read' } });
+  assert.ok(missingPool.isError); assert.match(missingPool.content[0].text, /POOL_REQUIRED/);
+  const selected = await client.callTool({ name: 'pool_select', arguments: { kind: 'read', group: 'medium' } });
+  assert.equal(selected.structuredContent.data.selected.id, 'test-model');
 });

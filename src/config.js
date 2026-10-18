@@ -33,6 +33,8 @@ export const configSchema = z.object({
   python: z.string().min(1).default(process.platform === 'win32' ? 'python' : 'python3'),
   workspaceRoots: z.array(z.string().min(1)).max(50),
   concurrency: z.number().int().min(1).max(8).default(1),
+  groupingMode: z.enum(['manual', 'agent']).default('manual'),
+  selectionMode: z.enum(['manual', 'auto']).default('auto'),
   routes: z.array(z.object({
     id: label.regex(/^[a-zA-Z0-9_-]+$/),
     adapter: z.enum(adapterValues),
@@ -52,6 +54,7 @@ export const configSchema = z.object({
       enabled: z.boolean().default(true),
       efforts: z.array(label).max(10).default([]),
       defaultEffort: label.optional(),
+      memberships: z.array(z.object({ group: z.enum(['high', 'medium', 'low']), effort: label.optional() }).strict()).max(3).optional(),
       kinds: z.array(z.enum(['text', 'read', 'write'])).min(1),
     }).strict()).max(100),
   }).strict()).max(50),
@@ -67,6 +70,12 @@ export const configSchema = z.object({
       ctx.addIssue({ code: 'custom', message: 'Özel CLI (custom) bağlantısı için argsTemplate tanımlanmalıdır.' });
     if (route.models.some(m => m.defaultEffort && !m.efforts.includes(m.defaultEffort)))
       ctx.addIssue({ code: 'custom', message: 'Varsayılan efor desteklenen değerlerden biri olmalı.' });
+    for (const model of route.models) {
+      if (model.memberships?.some(member => member.effort && !model.efforts.includes(member.effort)))
+        ctx.addIssue({ code: 'custom', message: 'Havuz eforu modelin desteklediği değerlerden biri olmalı.' });
+      if (model.memberships && new Set(model.memberships.map(member => member.group)).size !== model.memberships.length)
+        ctx.addIssue({ code: 'custom', message: 'Model aynı havuza yalnızca bir kez eklenebilir.' });
+    }
     if (route.api) {
       if (route.api.protocol === 'anthropic' && route.adapter !== 'claude')
         ctx.addIssue({ code: 'custom', message: 'Anthropic uyumlu API yuvası claude adaptörünü kullanmalıdır.' });

@@ -1,5 +1,12 @@
 # Architecture and acceptance boundary
 
+Release 1.1.0 keeps Project Brain separate: its stdlib Python bridge invokes the
+Pool's bounded, agent-only JSON RPC stdin command. Normal Brain scans/selections
+and task dispatch use this backend; plans and evidence remain in Brain. Caller
+quota reserves can only raise owner minimums. Freebuff connects as an ordinary
+stdio MCP client through its supported `.agents/mcp.json` configuration. It is not
+a provider adapter without a verified headless execution/model-selection contract.
+
 One local Node process owns configuration, the SQLite task database, write-only
 custom API secret files, quota/plan snapshots, admission and its own web dashboard.
 MCP tools are equally available to Codex, Claude, Antigravity or any MCP client.
@@ -57,3 +64,43 @@ block `subscription` and `token_plan` routes but allow `free_credits` routes (su
   - Kimi Code (`kimi`), Xiaomi MiMoCode (`mimo`), Google Antigravity (`agy`), OmniRoute (`omniroute`), LM Studio (`lmstudio`), Ollama (`ollama`), and Custom CLI (`argsTemplate`) support.
   - Gemini CLI removed.
   - Standalone dashboard verified with one-click system scan/import (`scan-import`), CLI route setup, Custom API (Anthropic/OpenAI slot) setup, Custom CLI template setup, plan/credit badges, and CLI login guidance.
+
+## Pool grouping and workspace dashboard
+
+The three strength pools are the primary navigation. CLI/API catalogs are a
+secondary picker beneath the selected pool. A model can belong to several pools
+through `memberships`, with a separate optional mandatory effort on each membership.
+An empty membership list removes the model from all strength pools. Legacy group
+and default effort fields are read only when memberships are absent.
+
+`selectionMode: manual` requires a strength pool even for explicit route/model
+requests. Only its members are eligible. Fixed membership effort cannot be overridden
+by the requester. In `auto` mode ungrouped catalog selection is also permitted;
+explicit groups remain hard filters. Auto is the compatibility default.
+`groupingMode` separately controls whether agents may edit membership. Agents
+cannot change selection mode, billing, permission policy or workspace roots.
+
+Selection/admission refreshes quota snapshots before running the existing selector.
+Shared account windows and model-specific windows remain distinguishable. Numeric
+quota is never fabricated. Execution retains the existing no-retry/no-replay policy.
+Started task metadata records the selected group/effort and any model ID reported
+by CLI events. It never claims unreported runtime identity was verified.
+
+Claude catalogs come from its control initialization response without submitting a
+user message. Resolved model IDs replace ambiguous aliases while preserving owner
+memberships. The same merge routine serves CLI refresh and browser import. Owner
+drafts are merged against their original saved base after catalog scans, preserving
+unsaved changes independently of newly persisted catalog metadata.
+
+Only the authenticated owner UI may open the Windows folder picker. A content-hashed
+GUI helper is compiled from packaged C# using the inbox .NET Framework compiler into
+the private application data directory. It uses the Windows IFileDialog folder mode,
+returns only a validated selected path, and does not write recent-file history.
+Its compiler and GUI process use the existing supervisor/Job Object ownership and
+bounded output/timeout. No generated executable or runtime copy is committed to the repo.
+The C# source is shipped; generated executables and copies remain outside the repo.
+
+The workspace composer places dictation and submit controls inside the input box.
+Speech uses browser recognition only after user interaction. Project/task results
+and attached skill instructions are rendered with textContent. Settings are modal;
+model catalogs are paginated inside a viewport-sized desktop layout.

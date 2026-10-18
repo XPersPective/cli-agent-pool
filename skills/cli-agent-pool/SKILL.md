@@ -13,7 +13,10 @@ description: Dispatch bounded coding, review, analysis, or text tasks to the loc
 
 If the `cli-agent-pool` MCP server is connected in your environment, use its native tools directly:
 - `pool_list_connections` — List configured CLI and API routes with billing mode (`subscription`, `token_plan`, `free_credits`, `free`, `paid_api`).
+- `pool_list_pools` — Read high/medium/low memberships, exact model IDs, fixed effort and cached quota windows in one call.
 - `pool_list_models` — List all available models, manual groups, supported task kinds (`text`, `read`, `write`), and reasoning efforts.
+- `pool_get_policy` — Read owner grouping mode and current configuration revision.
+- `pool_assign_groups` — Only when `groupingMode` is `agent`, upsert memberships with `{ revision, assignments: [{ routeId, modelId, group, effort? }] }` or remove one with `remove: true`. Other memberships survive. This never grants permission to alter routes, billing or workspace roots.
 - `pool_get_quotas` — Inspect live remaining quota percentages and subscription/credit status for a `routeId`.
 - `pool_select` — Select the highest-priority available route/model for a task `kind` (`read`, `write`, `text`) without starting a task.
 - `pool_submit` — Submit a bounded task (`prompt`, `workspace`, `kind`, `idempotencyKey`, and optional `routeId`, `modelId`, `group`, `effort`).
@@ -31,9 +34,23 @@ cli-agent-pool status
 ### Recommend the Best Available Model
 ```bash
 cli-agent-pool select --kind read
-cli-agent-pool select --kind read --group free
+cli-agent-pool select --kind read --group medium
 cli-agent-pool select --kind write --route zcode-local
 ```
+
+### Strength groups and quota-aware selection
+
+Read `pool_list_pools` and `pool_get_policy` first. In `selectionMode: manual`, a strength group is mandatory even for a pinned route/model. Use the owner's existing memberships. Standard strength groups
+are `high`, `medium`, `low`; reasoning effort is a separate field. For a medium task,
+select/submit with `group: "medium"` (CLI: `--group medium`) and leave route/model
+unpinned so the pool can choose another eligible model in that group when a route's
+quota is exhausted. Selection and admission refresh quota snapshots using a short
+cache. Unknown quotas remain unknown. A membership’s `fixedEffort` is mandatory; omit request effort or use that exact value. Never replay a started task automatically. Exact versioned model IDs are distinct from family aliases. `pool_get_task` returns selected modelId, group, effort and reportedModel (null unless the CLI reported its runtime identity).
+
+Preserve the owner's classifications. If asked to classify and grouping is enabled,
+read `pool_get_policy`, then send only the requested model group assignments with
+its current revision. On conflict re-read policy and models before reconsidering.
+Do not treat model-name suggestions as measured capability scores.
 
 ### Run a Task on the Pool (Auto-Starts Service & Waits for Result)
 ```bash
@@ -62,3 +79,25 @@ cli-agent-pool open
    - `read`: Read-only analysis/review with file modification tools disabled.
    - `write`: Controlled workspace edits; if a write task fails or is interrupted, the workspace enters `needs_review` quarantine to prevent blind retries.
 3. **Never Expose Secrets:** Never read or print files inside `%LOCALAPPDATA%\cli-agent-pool\secrets` or `access-token` / `management-token`.
+
+Detailed MCP request examples, transport and error handling are documented in the packaged docs/agent-api.md.
+
+## Project Brain, editors and Freebuff
+
+Keep Project Brain separate. Brain 3.3.0+ owns task plans, local research, quality
+checks and evidence; it connects to this Pool for discovery and execution through
+`cli-agent-pool rpc`. Its normal L/M/H tasks select low/medium/high pools. Do not
+ask for a second model approval when the owner already configured Pool rules.
+Never weaken fixed effort or quota reserves, change billing/trust, or replay an
+interrupted write. Pool owns worker process containment and state recovery.
+
+`cli-agent-pool rpc` accepts `{ "tool": "pool_select", "arguments": {...} }` on
+stdin and returns one JSON result/error on stdout. Only agent MCP tools are allowed.
+`minRemainingPercent` optionally raises (never lowers) owner reserve for select/submit.
+Prompts need not appear in argv. The daemon starts automatically.
+
+`cli-agent-pool mcp-config` prints a credential-free stdio configuration for editors.
+Freebuff Desktop/CLI reads `~/.agents/mcp.json` and can call Pool as an MCP client.
+Preserve existing MCP entries and native trust prompts. Installed Freebuff 0.2.29
+has no supported headless model/effort execution contract, so do not represent its
+models as Pool workers or extract desktop credentials/private endpoints.
