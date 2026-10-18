@@ -1,0 +1,3 @@
+- insert:
+    - id: cli-agent-pool
+      name: cli-agent-pool

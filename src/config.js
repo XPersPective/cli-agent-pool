@@ -1,0 +1,121 @@
+import { randomBytes, createHash } from 'node:crypto';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, lstatSync, realpathSync, openSync, fsyncSync, closeSync, renameSync, unlinkSync } from 'node:fs';
+import { homedir } from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { z } from 'zod';
+
+export class PoolError extends Error {
+  constructor(code, message) { super(message); this.code = code; }
+}
+
+const label = z.string().min(1).max(100);
+export const configSchema = z.object({
+  port: z.number().int().min(1024).max(65535).default(43127),
+  python: z.string().min(1).default(process.platform === 'win32' ? 'python' : 'python3'),
+  workspaceRoots: z.array(z.string().min(1)).max(50),
+  concurrency: z.number().int().min(1).max(8).default(1),
+  routes: z.array(z.object({
+    id: label.regex(/^[a-zA-Z0-9_-]+$/),
+    adapter: z.enum(['codex', 'claude', 'gemini', 'qwen', 'mmx']),
+    executable: z.string().min(1),
+    enabled: z.boolean().default(false),
+    billing: z.enum(['subscription', 'unknown']).default('unknown'),
+    trustedSettings: z.boolean().default(false),
+    priority: z.number().int().min(0).max(1000).default(100),
+    maxConcurrent: z.number().int().min(1).max(8).default(1),
+    minRemainingPercent: z.number().min(0).max(100).default(0),
+    models: z.array(z.object({
+      id: label, alias: label, group: label,
+      efforts: z.array(label).max(10).default([]),
+      defaultEffort: label.optional(),
+      kinds: z.array(z.enum(['text', 'read', 'write'])).min(1),
+    }).strict()).max(100),
+  }).strict()).max(50),
+}).strict().superRefine((config, ctx) => {
+  if (new Set(config.routes.map(r => r.id)).size !== config.routes.length)
+    ctx.addIssue({ code: 'custom', message: 'Bağlantı kimlikleri benzersiz olmalı.' });
+  for (const route of config.routes) {
+    if (new Set(route.models.map(m => m.id)).size !== route.models.length)
+      ctx.addIssue({ code: 'custom', message: 'Bağlantıdaki model kimlikleri benzersiz olmalı.' });
+    if (route.adapter === 'mmx' && route.models.some(m => m.kinds.some(k => k !== 'text')))
+      ctx.addIssue({ code: 'custom', message: 'mmx yalnızca metin görevi destekler.' });
+    if (route.models.some(m => m.defaultEffort && !m.efforts.includes(m.defaultEffort)))
+      ctx.addIssue({ code: 'custom', message: 'Varsayılan efor desteklenen değerlerden biri olmalı.' });
+  }
+});
+
+export function dataDirectory() {
+  return process.env.CLI_AGENT_POOL_HOME || path.join(process.env.LOCALAPPDATA || path.join(homedir(), '.local', 'share'), 'cli-agent-pool');
+}
+
+export function initialize(directory) {
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  if (lstatSync(directory).isSymbolicLink()) throw new PoolError('UNSAFE_DATA_DIRECTORY', 'Veri klasörü bağlantı olamaz.');
+  if (process.platform === 'win32') {
+    const sid = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value'], { encoding: 'utf8', windowsHide: true });
+    if (sid.status !== 0 || !/^S-1-[\d-]+$/.test(sid.stdout.trim())) throw new PoolError('ACL_FAILED', 'Yerel veri klasörü izinleri doğrulanamadı.');
+    const acl = spawnSync('icacls.exe', [directory, '/inheritance:r', '/grant:r', `*${sid.stdout.trim()}:(OI)(CI)F`], { windowsHide: true, stdio: 'ignore' });
+    if (acl.status !== 0) throw new PoolError('ACL_FAILED', 'Yerel veri klasörü izinleri ayarlanamadı.');
+  }
+  const configPath = path.join(directory, 'config.json');
+  if (!existsSync(configPath)) writeFileSync(configPath, JSON.stringify({ workspaceRoots: [], routes: [] }, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+  for (const name of ['access-token', 'management-token']) {
+    const tokenPath = path.join(directory, name);
+    if (!existsSync(tokenPath)) writeFileSync(tokenPath, randomBytes(32).toString('hex'), { mode: 0o600, flag: 'wx' });
+  }
+}
+
+export function loadConfig(directory) {
+  try {
+    const config = configSchema.parse(JSON.parse(readFileSync(path.join(directory, 'config.json'), 'utf8')));
+    config.workspaceRoots = config.workspaceRoots.map(root => realpathSync(root));
+    return config;
+  } catch { throw new PoolError('INVALID_CONFIG', 'Yerel config.json geçersiz. Ayarları ve çalışma klasörlerini kontrol edin.'); }
+}
+
+export function configView(directory) {
+  const text = readFileSync(path.join(directory, 'config.json'), 'utf8');
+  return { config: configSchema.parse(JSON.parse(text)), revision: createHash('sha256').update(text).digest('hex') };
+}
+
+export function saveConfig(directory, input, revision) {
+  const config = configSchema.parse(input);
+  config.workspaceRoots = config.workspaceRoots.map(root => realpathSync(root));
+  if (configView(directory).revision !== revision) throw new PoolError('CONFIG_CONFLICT', 'Ayarlar başka bir yerde değişti. Yenileyip tekrar kaydedin.');
+  const filename = path.join(directory, 'config.json');
+  const temporary = `${filename}.${randomBytes(8).toString('hex')}.tmp`;
+  let descriptor;
+  try {
+    descriptor = openSync(temporary, 'wx', 0o600);
+    writeFileSync(descriptor, JSON.stringify(config, null, 2) + '\n');
+    fsyncSync(descriptor); closeSync(descriptor); descriptor = undefined;
+    renameSync(temporary, filename);
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+    if (existsSync(temporary)) unlinkSync(temporary);
+  }
+  return config;
+}
+
+export function allowedWorkspace(workspace, roots) {
+  let actual;
+  try { actual = realpathSync(workspace); } catch { throw new PoolError('INVALID_WORKSPACE', 'Çalışma klasörü bulunamadı.'); }
+  if (!lstatSync(actual).isDirectory() || !roots.some(root => {
+    const relative = path.relative(root, actual);
+    return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+  })) throw new PoolError('WORKSPACE_DENIED', 'Bu çalışma klasörü izin listesinde değil.');
+  return actual;
+}
+
+export function overlaps(a, b) {
+  const relative = path.relative(a, b);
+  const reverse = path.relative(b, a);
+  const inside = r => r === '' || (!r.startsWith(`..${path.sep}`) && r !== '..' && !path.isAbsolute(r));
+  return inside(relative) || inside(reverse);
+}
+
+export function redact(text) {
+  return String(text).replace(/\b(?:sk-(?:cp-|api-|ant-)?[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED]')
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+\/-]{16,}/gi, '$1[REDACTED]');
+}

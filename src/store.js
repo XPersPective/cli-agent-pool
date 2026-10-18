@@ -1,0 +1,45 @@
+import { DatabaseSync } from 'node:sqlite';
+
+export class Store {
+  constructor(filename) {
+    this.owner = new DatabaseSync(filename === ':memory:' ? ':memory:' : `${filename}.owner`);
+    try { this.owner.exec('PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE; CREATE TABLE IF NOT EXISTS owner_lock(id INTEGER);'); }
+    catch { this.owner.close(); throw new Error('POOL_ALREADY_RUNNING'); }
+    this.db = new DatabaseSync(filename);
+    this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;');
+    const version = this.db.prepare('PRAGMA user_version').get().user_version;
+    if (version > 1) { this.db.close(); this.owner.close(); throw new Error('Unsupported database version'); }
+    this.db.exec(`CREATE TABLE IF NOT EXISTS tasks (
+      id TEXT PRIMARY KEY, key TEXT NOT NULL UNIQUE, fingerprint TEXT NOT NULL,
+      state TEXT NOT NULL, workspace TEXT NOT NULL, request TEXT NOT NULL,
+      created TEXT NOT NULL, updated TEXT NOT NULL, result TEXT, error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS task_state ON tasks(state, created);
+    CREATE TABLE IF NOT EXISTS events (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL,
+      time TEXT NOT NULL, kind TEXT NOT NULL, detail TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS quotas (route_id TEXT PRIMARY KEY, snapshot TEXT NOT NULL);
+    PRAGMA user_version=1;`);
+    this.db.prepare("UPDATE tasks SET state='needs_review', error='INTERRUPTED', updated=? WHERE state IN ('starting','running','cancelling')").run(new Date().toISOString());
+  }
+  byKey(key) { return this.db.prepare('SELECT * FROM tasks WHERE key=?').get(key); }
+  get(id) { return this.db.prepare('SELECT * FROM tasks WHERE id=?').get(id); }
+  list(limit = 50, offset = 0) { return this.db.prepare("SELECT id,state,created,updated,error,json_extract(request,'$.routeId') AS routeId,json_extract(request,'$.modelId') AS modelId,json_extract(request,'$.kind') AS kind FROM tasks ORDER BY created DESC, id DESC LIMIT ? OFFSET ?").all(limit, offset); }
+  queued() { return this.db.prepare("SELECT * FROM tasks WHERE state='queued' ORDER BY created, id").all(); }
+  held() { return this.db.prepare("SELECT workspace FROM tasks WHERE state IN ('starting','running','cancelling','needs_review')").all(); }
+  insert(task) {
+    const now = new Date().toISOString();
+    this.db.prepare('INSERT INTO tasks(id,key,fingerprint,state,workspace,request,created,updated) VALUES(?,?,?,?,?,?,?,?)')
+      .run(task.id, task.key, task.fingerprint, 'queued', task.workspace, JSON.stringify(task.request), now, now);
+  }
+  update(id, state, result = null, error = null) {
+    this.db.prepare('UPDATE tasks SET state=?,result=?,error=?,updated=? WHERE id=?').run(state, result, error, new Date().toISOString(), id);
+    this.event(id, 'state', state);
+  }
+  event(id, kind, detail) { this.db.prepare('INSERT INTO events(task_id,time,kind,detail) VALUES(?,?,?,?)').run(id, new Date().toISOString(), kind, detail); }
+  events(id, after = 0) { return this.db.prepare('SELECT seq,time,kind,detail FROM events WHERE task_id=? AND seq>? ORDER BY seq LIMIT 100').all(id, after); }
+  quota(routeId) { const row = this.db.prepare('SELECT snapshot FROM quotas WHERE route_id=?').get(routeId); return row ? JSON.parse(row.snapshot) : null; }
+  saveQuota(routeId, snapshot) { this.db.prepare('INSERT INTO quotas(route_id,snapshot) VALUES(?,?) ON CONFLICT(route_id) DO UPDATE SET snapshot=excluded.snapshot').run(routeId, JSON.stringify(snapshot)); }
+  close() { this.db.close(); this.owner.close(); }
+}
