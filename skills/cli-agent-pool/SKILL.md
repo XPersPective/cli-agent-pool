@@ -82,6 +82,10 @@ cli-agent-pool open
 
 Detailed MCP request examples, transport and error handling are documented in the packaged docs/agent-api.md.
 
+The owner's dashboard uses a compact model **Ekle** action followed by an explicit
+destination-pool/effort picker; the currently viewed top pool is not changed by an
+addition. Light/dark/system themes are owner browser preferences, not agent policy.
+
 ## Project Brain, editors and Freebuff
 
 Keep Project Brain separate. Brain 3.3.0+ owns task plans, local research, quality

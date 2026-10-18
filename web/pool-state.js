@@ -29,3 +29,10 @@ export function mergeScanDraft(scanned, before, draft) {
   for (const key of ['selectionMode', 'groupingMode', 'workspaceRoots']) if (JSON.stringify(draft[key]) !== JSON.stringify(before[key])) merged[key] = structuredClone(draft[key]);
   return merged;
 }
+export function addMembership(model, group, effort = '') {
+  if (!['high', 'medium', 'low'].includes(group) || effort && !model.efforts.includes(effort)) throw new Error('Havuz veya efor seçimi geçersiz.');
+  model.memberships = memberships(model);
+  let member = model.memberships.find(item => item.group === group);
+  if (!member) { member = { group }; model.memberships.push(member); }
+  if (effort) member.effort = effort; else delete member.effort;
+}

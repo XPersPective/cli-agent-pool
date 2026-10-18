@@ -9,7 +9,22 @@ import { Store } from '../src/store.js';
 import { claudeCatalog, routeCatalog, claudeQuotaWindows, mergeCatalogModels, execute } from '../src/adapters.js';
 import { browserUI } from '../src/web.js';
 import { ensureInitialized } from '../src/daemon.js';
-import { memberships, mergeScanDraft } from '../web/pool-state.js';
+import { memberships, mergeScanDraft, addMembership } from '../web/pool-state.js';
+
+test('adding to an explicit target pool preserves other memberships and validates effort before mutation', () => {
+  const model = { group: 'high', defaultEffort: 'high', efforts: ['low', 'medium', 'high'] };
+  addMembership(model, 'medium', 'medium');
+  assert.deepEqual(model.memberships, [{ group: 'high', effort: 'high' }, { group: 'medium', effort: 'medium' }]);
+  assert.equal(model.group, 'high');
+  const before = structuredClone(model);
+  assert.throws(() => addMembership(model, 'other', 'high'));
+  assert.throws(() => addMembership(model, 'low', 'unsupported'));
+  assert.deepEqual(model, before);
+  addMembership(model, 'medium', '');
+  assert.deepEqual(model.memberships, [{ group: 'high', effort: 'high' }, { group: 'medium' }]);
+  addMembership(model, 'low', 'low');
+  assert.equal(model.memberships.length, 3);
+});
 
 test('manual pools enforce membership and per-pool effort at selection and execution', async t => {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-members-'));

@@ -33,3 +33,5 @@ kurulu model olduğu anlamına gelmez; LM Studio / Ollama gerçek katalogdan oku
 Son kontrol: 35 node:test başarılı; npm run check ve npm run secrets başarılı; npm audit açık bulmadı. Kurulu kopyada 13 araç sekmesi, Claude’un dört tam sürüm kimliği ve gerçek kullanım pencereleri doğrulandı; tarayıcı konsol hatası yok.
 
 - [x] Son kullanıcı düzeltmesi: geniş açılan satırlar yerine sıkı model ızgarası; 1440 px ekranda dört sütun ve yaklaşık 16 görünür model, sayfa başına 24 kayıt, katalog içinde dikey kaydırma, tek satır yatay araç sekmeleri ve kapalı başlayan kota ayrıntıları.
+
+- [x] Son düzeltme (1.1.1): küçük Ekle düğmesi → hedef havuz/efor penceresi; üst havuz görünümü değişmez, diğer üyelik/eforlar korunur. Açık / Koyu / Sistem teması ve tarayıcıda kalıcılık doğrulandı.

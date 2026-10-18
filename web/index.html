@@ -12,7 +12,7 @@
   <a class="skip" href="#task-form">Görev formuna geç</a>
   <header class="topbar">
     <div class="brand"><span class="mark" aria-hidden="true">P</span><div><h1>CLI Agent Pool</h1><p>Yerel ajan havuzunuz · <span id="app-version">sürüm yükleniyor</span></p></div></div>
-    <div class="header-actions"><span id="connection-state" class="badge">Bağlanıyor</span><button id="refresh" type="button">Yenile</button></div>
+    <div class="header-actions"><label class="theme-field"><span class="sr-only">Tema</span><select id="theme" aria-label="Tema"><option value="system">Sistem</option><option value="light">Açık</option><option value="dark">Koyu</option></select></label><span id="connection-state" class="badge">Bağlanıyor</span><button id="refresh" type="button">Yenile</button></div>
   </header>
   <main>
     <div id="notice" class="notice" role="status" aria-live="polite">Yerel havuzun durumu yükleniyor…</div>
@@ -96,6 +96,7 @@
       <button id="save-settings" class="primary" type="button">Ayarları kaydet</button>
     </dialog>
     <dialog id="detail" class="card" aria-labelledby="detail-heading" hidden><div class="section-heading"><h2 id="detail-heading">Görev / kota ayrıntısı</h2><button id="close-detail" type="button">Kapat</button></div><pre id="detail-content" tabindex="0"></pre></dialog>
+    <dialog id="add-pool-dialog" aria-labelledby="add-pool-heading"><div class="section-heading"><h2 id="add-pool-heading">Havuza ekle</h2><button id="close-add-pool" type="button" aria-label="Havuz seçimini kapat">×</button></div><p id="add-pool-model"></p><label class="setting-field" for="add-pool-effort">Efor<select id="add-pool-effort"></select></label><p class="hint">Eklemek istediğiniz havuzu seçin. Üstteki görünüm değişmez.</p><div id="add-pool-targets" class="actions"></div></dialog>
     <footer>Kimlik bilgileri ve API anahtarları yalnızca bilgisayarınızdaki yerel veri klasöründe tutulur.</footer>
   </main>
 </body>

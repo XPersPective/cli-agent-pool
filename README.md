@@ -153,8 +153,9 @@ model/efor seçimi, görev başlatma, iptal, geçmiş ve kota/giriş durumu bulu
 ### Havuz ve çalışma alanı
 
 Açılış ekranındaki ana havuzlar **Yüksek / Orta / Hafif**. Bir havuza tıklayın;
-aşağıdaki **Codex, Claude, Qwen, ZCode…** sekmelerinden tam model kimliğini seçin,
-eforunu belirleyin ve **havuza ekle** düğmesini kullanın. Aynı model farklı
+aşağıdaki **Codex, Claude, Qwen, ZCode…** sekmelerinden modeli bulun, küçük **Ekle**
+düğmesine basın; açılan pencerede eforu ve hedef havuzu seçin. Üstteki havuz görünümü
+değişmez. Aynı model farklı
 havuzlara farklı eforlarla eklenebilir. Çıkar düğmesi yalnızca seçili havuzdaki
 üyeliği kaldırır. Araç kataloğu ve havuzlar ayrı hiyerarşilerdir.
 
@@ -221,6 +222,7 @@ Başarısız yazma görevi otomatik tekrarlanmaz. Ek bir Project Brain bağıml�
 ayarını üretir. Freebuff Desktop/CLI bunu `~/.agents/mcp.json` üzerinden kullanabilir.
 Freebuff burada istemcidir; desteklenmeyen otomatik model yürütmesi uydurulmaz.
 
+Üstteki **Tema** menüsünden Açık / Koyu / Sistem seçilir; tercih bu tarayıcıda hatırlanır.
 Uygulama sürümü üst çubukta görünür; MCP ve CLI aynı paket sürümünü bildirir.
 
 ## Güvenli Çalışma

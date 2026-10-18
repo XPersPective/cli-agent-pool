@@ -1,4 +1,4 @@
-import { memberships, mergeScanDraft } from '/pool-state.js';
+import { memberships, mergeScanDraft, addMembership } from '/pool-state.js';
 const $ = id => document.getElementById(id);
 const labels = { queued: 'Sırada', starting: 'Başlatılıyor', running: 'Çalışıyor', succeeded: 'Tamamlandı', failed: 'Başarısız', timed_out: 'Süre doldu', cancelling: 'Durduruluyor', cancelled: 'Durduruldu', needs_review: 'Elle inceleme gerekli' };
 const billingLabels = { subscription: 'Abonelik', token_plan: 'Token planı', free_credits: 'Günlük / ücretsiz kredi', free: 'Ücretsiz', paid_api: 'Ücretli API', unknown: 'Doğrulanmadı' };
@@ -19,12 +19,20 @@ let selectedGroup = 'high';
 let catalogPage = 0;
 let quotasRefreshing = false;
 let quotaErrors = {};
-const catalogEfforts = new Map();
+let pendingPoolModel = null;
 const adapterLabels = { codex: 'Codex', claude: 'Claude', opencode: 'OpenCode', zcode: 'ZCode', qwen: 'Qwen', mcode: 'MiniMax Code', mmx: 'MiniMax CLI', kimi: 'Kimi', mimo: 'MiMo', agy: 'Antigravity', omniroute: 'OmniRoute', lmstudio: 'LM Studio', ollama: 'Ollama', hermes: 'Hermes', aider: 'Aider', kilocode: 'Kilo', custom: 'Özel araç' };
 const strengthGroups = ['high', 'medium', 'low'];
 
 const groupLabels = { high: 'Yüksek', medium: 'Orta', low: 'Hafif', unassigned: 'Sınıflandırılmamış' };
 const groupLabel = group => Object.hasOwn(groupLabels, group) ? groupLabels[group] : group;
+try { $('theme').value = localStorage.getItem('pool-theme') || 'system'; } catch { /* Storage may be disabled. */ }
+function applyTheme() {
+  const theme = ['light', 'dark'].includes($('theme').value) ? $('theme').value : 'system';
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.colorScheme = theme === 'system' ? 'light dark' : theme;
+}
+applyTheme();
+$('theme').addEventListener('change', () => { applyTheme(); try { localStorage.setItem('pool-theme', $('theme').value); } catch { /* Current-page theme still works. */ } });
 function dirty() { poolDirty = true; $('save-pool').textContent = 'Değişiklikleri kaydet'; }
 
 
@@ -433,7 +441,7 @@ function renderPool() {
     card.addEventListener('click', () => { selectedGroup = group; catalogPage = 0; renderPool(); }); return card;
   }));
   $('members-heading').textContent = `${groupLabel(selectedGroup)} havuzundaki modeller`;
-  $('catalog-heading').textContent = `${groupLabel(selectedGroup)} havuzuna model ekle`;
+  $('catalog-heading').textContent = 'Model kataloğu';
   const rows = [];
   for (const route of settings.config.routes) for (const model of route.models) {
     const member = memberships(model).find(item => item.group === selectedGroup);
@@ -478,23 +486,36 @@ function renderCatalog() {
     info.append(element('strong', model.id)); info.title = `${model.id}${model.alias !== model.id ? ` · ${model.alias}` : ''}`;
     if (model.alias !== model.id) info.append(element('small', model.alias));
     if (!/\d/.test(model.id)) info.append(element('small', 'Sürüm bildirilmedi · model sürümlerini al', 'version-unknown'));
-    const existing = memberships(model).find(item => item.group === selectedGroup);
-    const key = JSON.stringify([route.id, model.id, selectedGroup]); const value = catalogEfforts.has(key) ? catalogEfforts.get(key) : existing?.effort || '';
-    const effort = settingField('Havuza eklerken efor', value, next => { catalogEfforts.set(key, next); }, ['', ...model.efforts], false);
-    const add = button(existing ? 'Eklendi · eforu güncelle' : `${groupLabel(selectedGroup)} havuzuna ekle`, async () => {
-      if (!activeBillings.has(route.billing)) throw new Error('Bağlantı ayarlarından bu aracın plan türünü doğrulayın.');
-      model.memberships = memberships(model); let member = model.memberships.find(item => item.group === selectedGroup);
-      if (!member) { member = { group: selectedGroup }; model.memberships.push(member); }
-      const chosen = catalogEfforts.has(key) ? catalogEfforts.get(key) : existing?.effort || '';
-      if (chosen) member.effort = chosen; else delete member.effort;
-      model.enabled = true; route.enabled = true; dirty(); renderPool();
-    });
-    row.append(info, quotaCell(route, model), effort, add); return row;
+    const groups = memberships(model);
+    const tags = element('small', groups.length ? groups.map(member => groupLabel(member.group)).join(' · ') : 'Henüz bir havuzda değil', 'model-memberships');
+    const add = button('Ekle', async () => openPoolPicker(route, model)); add.classList.add('add-model'); add.dataset.modelId = model.id; add.setAttribute('aria-label', `${model.id} modelini havuza ekle`);
+    row.append(info, quotaCell(route, model), tags, add); return row;
   }));
   if (!models.length) $('pool-models').append(element('p', 'Eşleşen model yok. Model sürümlerini al düğmesini kullanın.', 'empty'));
   $('catalog-page').textContent = `${models.length} model · ${catalogPage + 1} / ${pageCount}`;
   for (const [id, locked] of [['catalog-prev', catalogPage === 0], ['catalog-next', catalogPage >= pageCount - 1]]) { $(id).disabled = locked || busy; $(id).dataset.locked = String(locked); }
 }
+function openPoolPicker(route, model) {
+  pendingPoolModel = { routeId: route.id, modelId: model.id };
+  $('add-pool-model').textContent = model.id;
+  $('add-pool-effort').replaceChildren(new Option('CLI varsayılanı', ''), ...model.efforts.map(effort => new Option(effort, effort)));
+  $('add-pool-targets').replaceChildren(...strengthGroups.map(group => {
+    const existing = memberships(model).find(member => member.group === group);
+    return button(`${groupLabel(group)}${existing ? ' · ekli' : ''}`, async () => {
+      const targetRoute = settings.config.routes.find(item => item.id === pendingPoolModel?.routeId);
+      const targetModel = targetRoute?.models.find(item => item.id === pendingPoolModel?.modelId);
+      if (!targetModel) throw new Error('Model kataloğu değişti. Modeli yeniden seçin.');
+      if (!activeBillings.has(targetRoute.billing)) throw new Error('Bağlantı ayarlarından bu aracın plan türünü doğrulayın.');
+      addMembership(targetModel, group, $('add-pool-effort').value);
+      targetModel.enabled = true; targetRoute.enabled = true; dirty(); $('add-pool-dialog').close(); renderPool();
+      [...$('pool-models').querySelectorAll('.add-model')].find(node => node.dataset.modelId === targetModel.id)?.focus();
+      notice(`${targetModel.id}, ${groupLabel(group)} havuzuna eklendi. Kalıcı olması için havuzu kaydedin.`);
+    });
+  }));
+  $('add-pool-dialog').showModal();
+}
+$('close-add-pool').addEventListener('click', () => $('add-pool-dialog').close());
+$('add-pool-dialog').addEventListener('close', () => { pendingPoolModel = null; });
 async function refreshQuotas(routeId) {
   if (quotasRefreshing) return;
   quotasRefreshing = true; $('refresh-quotas').textContent = 'Limitler sorgulanıyor…'; renderPool();
