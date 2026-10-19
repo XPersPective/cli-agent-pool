@@ -20,7 +20,7 @@ Güncel arayüz: Pool 1.3.0. Önceki sayfalama, kapalı kota ve ayar penceresi d
 - [x] Klavye ve erişilebilir adlar; açık/koyu/sistem teması; 1440×1000, 1280×720, 390×844 düzenleri.
 - [x] MCP/JSON ajan API'si; sahip politikası, otomatik başlatma ve bağımsız Project Brain bağlantısı.
 
-44 node:test kontrolü, sözdizimi, gizli bilgi taraması ve bağımlılık denetimi başarılı.
+45 node:test kontrolü, sözdizimi, gizli bilgi taraması ve bağımlılık denetimi başarılı.
 Tarayıcı kontrolleri: kota anahtarları, kaydırma, son model, tekrar ekleme, taslak kaydet/vazgeç,
 ayar sayfası, okunabilir kota, 24 üzeri modelin sayfasız görünmesi, açık proje seçimi ve görev sonucu.
 Önceki doğrulamalar: gerçek Windows klasör seçimi/iptali ve taklit SpeechRecognition olaylarıyla
@@ -37,3 +37,5 @@ sunulmaz. Yerel CLI bulunması kurulu model anlamına gelmez; LM Studio/Ollama k
 - [x] Giriş gerekli uyarısı; resmî CLI girişini açma ve önbelleksiz kontrol. Windows terminali sentetik CLI ile gerçekten açıldı; kullanıcı hesabıyla giriş yapılmadı.
 - [x] Manuel modda dolu ilk havuz, boş havuz açıklaması, proje seçimi sonrası başarılı sohbet gönderimi.
 - [x] 390→1440 ve 900→2560 genişliklerine dönüş; taşma yok, önceki genişlik geri geliyor. Yakınlaştırılmış CSS düzeninde de taşma kontrolü.
+
+Antigravity vendor-labelled quota windows are scoped to Gemini or Claude/GPT models; unrelated exhausted windows do not block other families. Unknown percentages stay unknown.

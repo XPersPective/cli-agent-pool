@@ -635,6 +635,14 @@ export async function routeCatalog(route, cwd, python) {
   };
 }
 
+export function antigravityQuotaWindows(groups) {
+  return groups.flatMap(group => {
+    // ponytail: explicit vendor labels scope shared groups; unknown labels stay account-wide until the CLI exposes model IDs.
+    const models = [...new Set(`${group.short_name || ''} ${group.name || ''}`.toLowerCase().match(/gemini|claude|gpt/g) || [])];
+    return Object.entries(group.buckets || {}).flatMap(([period,bucket]) => Number.isFinite(bucket.remaining_pct) ? [{ name: `${group.short_name || group.name}:${period}`, remainingPercent: Math.max(0,Math.min(100,bucket.remaining_pct)), resetsAt: bucket.reset_time || null, ...(models.length ? {models} : {}) }] : []);
+  });
+}
+
 export function claudeQuotaWindows(usage) {
   if (usage?.error) return [];
   return ['five_hour', 'seven_day', 'opus'].flatMap(name => {
@@ -699,11 +707,7 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
     const cc = await readCclimitsCached(cwd, python);
     const ag = cc?.antigravity;
     if (ag?.status === 'ok' && Array.isArray(ag.quota_groups)) {
-      const windows = ag.quota_groups.flatMap(g => Object.entries(g.buckets || {}).map(([k, v]) => ({
-        name: `${g.short_name || g.name}:${k}`,
-        remainingPercent: Number(v.remaining_pct),
-        resetsAt: v.reset_time || null,
-      })));
+      const windows = antigravityQuotaWindows(ag.quota_groups);
       return { ...base, status: 'available', auth: ag.subscription_tier || 'antigravity', windows, source: 'cclimits-antigravity' };
     }
     return { ...base, status: 'available', auth: 'configured', windows: [], source: 'antigravity' };

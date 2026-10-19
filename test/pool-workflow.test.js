@@ -7,7 +7,7 @@ import path from 'node:path';
 import { configSchema } from '../src/config.js';
 import { Pool } from '../src/pool.js';
 import { Store } from '../src/store.js';
-import { claudeCatalog, routeCatalog, claudeQuotaWindows, mergeCatalogModels, execute } from '../src/adapters.js';
+import { claudeCatalog, routeCatalog, claudeQuotaWindows, antigravityQuotaWindows, mergeCatalogModels, execute } from '../src/adapters.js';
 import { browserUI, openCliLogin } from '../src/web.js';
 import { ensureInitialized } from '../src/daemon.js';
 import { memberships, mergeScanDraft, addMembership, quotaWindows, effortLabel, modelFamily, modelIdentity, modelFiltered, sortModels, initialTaskGroup } from '../web/pool-state.js';
@@ -219,4 +219,12 @@ test('failed Codex quota control distinguishes missing login from an unknown quo
  pool.checkAuth=async()=>{};assert.equal((await pool.getQuota('codex')).status,'auth_required');assert.equal((await pool.getQuota('codex',true)).status,'unknown');
  store.saveQuota('codex',{status:'rate_limited',observedAt:new Date().toISOString(),windows:[{remainingPercent:0}]});
  assert.equal((await pool.getQuota('codex',true)).status,'rate_limited');assert.throws(()=>pool.select({kind:'text',group:'medium'}),{code:'NO_ROUTE'});
+});
+
+test('Antigravity vendor quota groups never block or display unrelated model families',()=>{
+ const windows=antigravityQuotaWindows([{short_name:'Gemini',buckets:{'5h':{remaining_pct:96}}},{short_name:'Claude/GPT',buckets:{'5h':{remaining_pct:0},weekly:{remaining_pct:50}}},{name:'Unknown',buckets:{'5h':{remaining_pct:null}}}]);
+ assert.deepEqual(quotaWindows({windows},'gemini-4-argon-low').map(w=>w.remaining),[96]);
+ assert.deepEqual(quotaWindows({windows},'claude-opus-5-5-high').map(w=>w.remaining),[0,50]);
+ assert.deepEqual(quotaWindows({windows},'gpt-oss-120b-medium').map(w=>w.remaining),[0,50]);
+ assert.equal(antigravityQuotaWindows([{name:'Shared',buckets:{'5h':{remaining_pct:120}}}])[0].remainingPercent,100);
 });
