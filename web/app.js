@@ -1,4 +1,4 @@
-import { memberships, mergeScanDraft, addMembership, quotaWindows, effortLabel, modelIdentity, modelFamily, modelFiltered, sortModels, initialTaskGroup, restoredWorkspace } from '/pool-state.js';
+import { memberships, mergeScanDraft, addMembership, modelSaveConfig, quotaWindows, effortLabel, modelIdentity, modelFamily, modelFiltered, sortModels, initialTaskGroup, restoredWorkspace } from '/pool-state.js';
 const $ = id => document.getElementById(id);
 const labels = { queued: 'Sırada', starting: 'Başlatılıyor', running: 'Çalışıyor', succeeded: 'Tamamlandı', failed: 'Başarısız', timed_out: 'Süre doldu', cancelling: 'Durduruluyor', cancelled: 'Durduruldu', needs_review: 'Elle inceleme gerekli' };
 const billingLabels = { subscription: 'Abonelik', token_plan: 'Token planı', free_credits: 'Günlük / ücretsiz kredi', free: 'Ücretsiz', paid_api: 'Ücretli API', unknown: 'Doğrulanmadı' };
@@ -65,6 +65,10 @@ function updateSave() {
   $('save-pool').hidden = !poolDirty;
   $('save-pool').disabled = busy || !poolDirty; $('save-pool').dataset.locked = String(!poolDirty);
   $('discard-settings').hidden = !poolDirty;
+  try {
+    if (poolDirty && baseConfig && settings) localStorage.setItem('pool-draft', JSON.stringify({ base: baseConfig, config: settings.config }));
+    else localStorage.removeItem('pool-draft');
+  } catch { /* Saving to the service remains available without browser storage. */ }
 }
 function dirty() { poolDirty = true; updateSave(); }
 
@@ -174,7 +178,20 @@ async function refresh(announce = false) {
     const wasOffline = $('connection-state').textContent === 'Bağlantı yok';
     snapshot = await call('snapshot');
     $('app-version').textContent = `v${snapshot.version || 'bilinmiyor'}`;
-    if (!settings || (!poolDirty && settings.revision !== snapshot.revision)) { settings = await call('settings'); renderPool(); if (!$('settings').hidden) renderSettings(); }
+    if (!settings || (!poolDirty && settings.revision !== snapshot.revision)) {
+      const firstLoad = !settings;
+      settings = await call('settings');
+      if (firstLoad) {
+        try {
+          const draft = JSON.parse(localStorage.getItem('pool-draft') || 'null');
+          if (draft?.base?.routes && draft?.config?.routes) {
+            settings.config = mergeScanDraft(settings.config, draft.base, draft.config);
+            dirty(); notice('Kaydedilmemiş değişiklikler geri yüklendi. Kaydedebilir veya vazgeçebilirsiniz.');
+          }
+        } catch { /* Invalid or unavailable browser drafts do not block the saved configuration. */ }
+      }
+      renderPool(); if (!$('settings').hidden) renderSettings();
+    }
     if (!$('task-workspace').value) { try { $('task-workspace').value = restoredWorkspace(localStorage.getItem('pool-project'), snapshot.workspaceRoots); } catch { /* Keep explicit project selection available. */ } }
     renderProjects();
     const previousGroup = $('task-group').value;
@@ -299,7 +316,7 @@ function renderSettings() {
       if (route.models.some(m => m.id === id)) throw new Error('Bu model zaten ekli.');
       const kinds = route.adapter === 'mmx' ? ['text'] : route.adapter === 'qwen' ? ['text', 'read'] : ['text', 'read', 'write'];
       route.models.push({ id, alias: id, group: route.billing === 'free' ? 'free' : 'unassigned', enabled: true, efforts: [], kinds });
-      newModelInput.value = ''; dirty(); renderSettings(); renderPool();
+      newModelInput.value = ''; await saveModel(route.id, id);
     });
     const manualModel = element('details'); manualModel.append(element('summary', 'Model kimliği ekle')); addModelRow.append(newModelInput, addModelBtn); manualModel.append(addModelRow); body.append(manualModel);
     const routeActions = element('div', null, 'actions');
@@ -331,6 +348,15 @@ $('close-detail').addEventListener('click', () => { $('detail').close(); $('deta
 $('open-settings').addEventListener('click', () => switchPage('settings'));
 async function saveSettings() {
   settings = await call('save', settings); poolDirty = false; renderSettings(); renderPool(); await refresh(); notice('Kaydedildi.');
+}
+async function saveModel(routeId, modelId, enableRoute = false) {
+  dirty();
+  const before = structuredClone(baseConfig), draft = structuredClone(settings.config);
+  const saved = await call('save', { ...settings, config: modelSaveConfig(before, draft, routeId, modelId, enableRoute) });
+  settings = { ...saved, config: mergeScanDraft(saved.config, before, draft) };
+  poolDirty = JSON.stringify(settings.config) !== JSON.stringify(saved.config);
+  updateSave(); renderPool(); if (!$('settings').hidden) renderSettings(); await refresh();
+  notice('Model değişikliği kaydedildi.');
 }
 $('save-pool').addEventListener('click', () => void action(saveSettings));
 $('settings').addEventListener('change', event => { if (event.target.id !== 'theme') dirty(); });
@@ -557,9 +583,9 @@ function modelCard(route,model,member) {
   if(!/\d/.test(model.id)) info.append(element('small','Sağlayıcı sürüm bildirmedi','version-unknown'));
   const footer=element('div',null,'model-footer');
   if(member) {
-    const effort=settingField('Efor',member.effort||'',value=>{model.memberships=memberships(model);const item=model.memberships.find(item=>item.group===selectedGroup);if(value)item.effort=value;else delete item.effort;dirty();},['',...model.efforts]);
+    const effort=settingField('Efor',member.effort||'',value=>void action(async()=>{model.memberships=memberships(model);const item=model.memberships.find(item=>item.group===selectedGroup);if(value)item.effort=value;else delete item.effort;await saveModel(route.id,model.id);}),['',...model.efforts],false);
     effort.querySelector('select').setAttribute('aria-label',`${model.id} · ${route.id} efor`);
-    const remove=button('Çıkar',async()=>{model.memberships=memberships(model).filter(item=>item.group!==selectedGroup);dirty();renderPool();});remove.setAttribute('aria-label',`${model.id} · ${route.id} modelini ${groupLabel(selectedGroup)} havuzundan çıkar`);footer.append(effort,remove);
+    const remove=button('Çıkar',async()=>{model.memberships=memberships(model).filter(item=>item.group!==selectedGroup);await saveModel(route.id,model.id);});remove.setAttribute('aria-label',`${model.id} · ${route.id} modelini ${groupLabel(selectedGroup)} havuzundan çıkar`);footer.append(effort,remove);
   } else {
     const groups=memberships(model);footer.append(element('small',groups.length?groups.map(item=>groupLabel(item.group)).join(' · '):'Henüz bir havuzda değil','model-memberships'));
     const actions=element('div',null,'model-actions'), hide=button('Gizle',async()=>openFilters(route,model)), add=button('Ekle',async()=>openPoolPicker(route,model));
@@ -603,7 +629,8 @@ function openPoolPicker(route, model) {
       const member = memberships(targetModel).find(item => item.group === group);
       const changed = addMembership(targetModel, group, $('add-pool-effort').value === 'preserve' ? member?.effort || '' : $('add-pool-effort').value);
       const enabled = targetModel.enabled && targetRoute.enabled;
-      targetModel.enabled = true; targetRoute.enabled = true; if (changed || !enabled) dirty(); $('add-pool-dialog').close(); renderPool();
+      targetModel.enabled = true; targetRoute.enabled = true; $('add-pool-dialog').close();
+      if (changed || !enabled || poolDirty) await saveModel(targetRoute.id, targetModel.id, true); else renderPool();
       [...$('pool-models').querySelectorAll('.add-model')].find(node => node.dataset.modelId === targetModel.id && node.dataset.routeId === targetRoute.id)?.focus();
       notice(`${targetModel.id}, ${groupLabel(group)} havuzunda.${snapshot?.quotas?.[targetRoute.id]?.status === 'auth_required' ? ' Kullanmak için Giriş yap düğmesiyle oturum açın.' : ''}`);
     });

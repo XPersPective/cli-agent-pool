@@ -39,6 +39,22 @@ export function addMembership(model, group, effort = '') {
   return true;
 }
 
+export function modelSaveConfig(base, draft, routeId, modelId, enableRoute = false) {
+  const config = structuredClone(base);
+  const route = config.routes.find(item => item.id === routeId);
+  const source = draft.routes.find(item => item.id === routeId);
+  const model = source?.models.find(item => item.id === modelId);
+  if (!route || !model) throw new Error('Önce modelin bağlantısını kaydedin.');
+  const previous = route.models.find(item => item.id === modelId);
+  if (previous) {
+    for (const key of ['memberships', 'group', 'enabled', 'defaultEffort']) {
+      if (model[key] === undefined) delete previous[key]; else previous[key] = structuredClone(model[key]);
+    }
+  } else route.models.push(structuredClone(model));
+  if (enableRoute) route.enabled = true;
+  return config;
+}
+
 export function quotaWindows(snapshot, modelId = '') {
   return (snapshot?.windows || []).filter(window => (!modelId || !window.models?.length || window.models.some(id => modelId.includes(id))) && Number.isFinite(window.remainingPercent)).map(window => {
     const remaining = Math.max(0, Math.min(100, window.remainingPercent));

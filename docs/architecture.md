@@ -144,3 +144,9 @@ Agent MCP schemas are unchanged. Brain 3.3.1 documents source-relative script re
 Codex keeps --ignore-user-config and native sandbox checks, explicitly selects its
 working root and Windows elevated sandbox backend when running on Windows. Workspace
 write scope is retained; no unrestricted sandbox or native trust bypass is enabled.
+
+Model edits save a model-scoped copy of the last owner configuration through the
+existing revision-checked save operation. Pending billing, trust and other settings
+stay in the browser draft, rebased onto the saved configuration. Browser storage
+retains pending config drafts across reloads; neither credentials nor task prompts
+are included. A failed save leaves the draft pending and reports the error.

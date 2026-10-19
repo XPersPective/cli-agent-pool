@@ -311,3 +311,8 @@ Bir mesaja en fazla 10 dosya, her dosyaya 64 KB sınırı uygulanır.
 Windows Codex çalıştırmaları çalışma kökünü ve yerel Windows sandbox backend'ini
 explicit seçer; yazma workspace-write, diğer görevler read-only sınırında kalır.
 Kullanıcı ayarlarını yüklememek Windows sandbox ayarını yanlışlıkla düşürmez.
+
+Model ekleme, havuza ekleme/çıkarma ve havuz eforu değişiklikleri hemen kaydedilir.
+Diğer ayarlardaki bekleyen değişiklikler bu işlemle kaydedilmez. Kaydedilmemiş
+ayar taslağı aynı tarayıcıda sayfa yeniden açıldığında geri yüklenir; kaydetme veya
+vazgeçme işlemi taslağı temizler.
