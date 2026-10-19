@@ -47,3 +47,5 @@ skill seçimi ve / kısayolu. Yeni skill okuma sınırları node:test ile doğru
 Gerçek Hafif havuz/Luna denemesi önce eksik Windows sandbox seçimini ortaya çıkardı;
 native backend açıkça seçildikten sonra gerçek dosya yazımı doğrulandı. Test projesi,
 istemler ve sonuçlar depo dışında tutulur; sentetik ve gerçek model testleri ayrı raporlanır.
+
+1.4.1: bounded pool flex children can shrink; member list scrolls inside the pool instead of painting quota/footer borders outside it. Browser checks at 1440×1000, 1280×720, 900×600 and 390×844 verify list containment and the bottom card/footer after scrolling, with catalog open and closed.
