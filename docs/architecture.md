@@ -128,3 +128,19 @@ native CLI terminal. It never receives credentials or runs a model prompt. Other
 platforms receive the official terminal command. Login checks can force quota
 refresh; transient Codex control failures retain known windows without extending
 their timestamp, and independently verified missing login is exposed explicitly.
+
+Pool 1.4 uses the same modelCard DOM factory in both catalogs and owner memberships.
+Browser preferences remember a validated project root; the server still validates
+all task paths. Project task messages are rendered as plain text, with model metadata
+in a disclosure; historical prompts are not implicitly replayed into new requests.
+
+Owner-only skills/skill operations enumerate bounded immediate SKILL.md directories
+in the selected authorized project and central Skills Manager library. Project roots
+that resolve outside the selected project, symlink files, oversized files and forged
+skill IDs are rejected or excluded. No skill executes during discovery. Explicit
+attachment sends text plus its source path as task instructions, without installation.
+Agent MCP schemas are unchanged. Brain 3.3.1 documents source-relative script resolution.
+
+Codex keeps --ignore-user-config and native sandbox checks, explicitly selects its
+working root and Windows elevated sandbox backend when running on Windows. Workspace
+write scope is retained; no unrestricted sandbox or native trust bypass is enabled.

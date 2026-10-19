@@ -1,6 +1,6 @@
 # Havuz ve çalışma alanı kabul listesi
 
-Güncel arayüz: Pool 1.3.0. Önceki sayfalama, kapalı kota ve ayar penceresi düzeninin yerini aşağıdaki davranışlar alır.
+Güncel arayüz: Pool 1.4.0. Önceki sayfalama, kapalı kota ve ayar penceresi düzeninin yerini aşağıdaki davranışlar alır.
 
 - [x] Yüksek / Orta / Hafif havuzları; sağlayıcılar ayrı katalog sekmeleri.
 - [x] Küçük Ekle düğmesiyle hedef havuz ve bağımsız efor seçimi; üst havuz görünümü değişmez.
@@ -20,7 +20,7 @@ Güncel arayüz: Pool 1.3.0. Önceki sayfalama, kapalı kota ve ayar penceresi d
 - [x] Klavye ve erişilebilir adlar; açık/koyu/sistem teması; 1440×1000, 1280×720, 390×844 düzenleri.
 - [x] MCP/JSON ajan API'si; sahip politikası, otomatik başlatma ve bağımsız Project Brain bağlantısı.
 
-45 node:test kontrolü, sözdizimi, gizli bilgi taraması ve bağımlılık denetimi başarılı.
+46 node:test kontrolü, sözdizimi, gizli bilgi taraması ve bağımlılık denetimi başarılı.
 Tarayıcı kontrolleri: kota anahtarları, kaydırma, son model, tekrar ekleme, taslak kaydet/vazgeç,
 ayar sayfası, okunabilir kota, 24 üzeri modelin sayfasız görünmesi, açık proje seçimi ve görev sonucu.
 Önceki doğrulamalar: gerçek Windows klasör seçimi/iptali ve taklit SpeechRecognition olaylarıyla
@@ -39,3 +39,11 @@ sunulmaz. Yerel CLI bulunması kurulu model anlamına gelmez; LM Studio/Ollama k
 - [x] 390→1440 ve 900→2560 genişliklerine dönüş; taşma yok, önceki genişlik geri geliyor. Yakınlaştırılmış CSS düzeninde de taşma kontrolü.
 
 Antigravity vendor-labelled quota windows are scoped to Gemini or Claude/GPT models; unrelated exhausted windows do not block other families. Unknown percentages stay unknown.
+
+1.4.0 kontrolleri: eşleşen havuz/katalog kartları, normal ağırlıkta kota metni, iki satıra
+sarılan sekmeler, yan yana menüler, yumuşak koyu tema, görünür artı ve yanındaki proje,
+altta sabit giriş, sade mesajlar, yeniden açılışta izinli proje/geçmiş, proje/kütüphane
+skill seçimi ve / kısayolu. Yeni skill okuma sınırları node:test ile doğrulanır.
+Gerçek Hafif havuz/Luna denemesi önce eksik Windows sandbox seçimini ortaya çıkardı;
+native backend açıkça seçildikten sonra gerçek dosya yazımı doğrulandı. Test projesi,
+istemler ve sonuçlar depo dışında tutulur; sentetik ve gerçek model testleri ayrı raporlanır.

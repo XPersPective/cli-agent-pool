@@ -91,6 +91,12 @@ Owner-hidden models/families are excluded from discovery imports and agent selec
 including explicitly pinned requests. Do not work around filters or change them via
 other tools. Missing login must be completed by the owner through the dashboard's
 native CLI login action; never request or copy their credentials.
+The workspace plus/slash picker attaches an authorized project/installed SKILL.md
+as instructions, including its absolute source path. This does not install skills,
+relax CLI permissions, or authorize a worker to recursively delegate. CLI turn success
+alone does not prove files were created; inspect artifacts and run task verification.
+On Windows, Codex explicitly selects its Windows sandbox backend and working root,
+while preserving workspace-write/read-only scope and ignoring unrelated user config.
 Family/source views, sorting and light/dark/system themes are owner browser preferences,
 not agent policy.
 

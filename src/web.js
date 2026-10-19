@@ -1,3 +1,4 @@
+import { workspaceSkills, readWorkspaceSkill } from './skills.js';
 import { randomBytes, timingSafeEqual, createHmac, createHash } from 'node:crypto';
 import { readFileSync, realpathSync, statSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -172,6 +173,8 @@ export function browserUI(pool, management) {
         if (!route) throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı.');
         return openCliLogin(route);
       }
+      if (operation === 'skills') return workspaceSkills(payload.workspace || '', pool.config.workspaceRoots);
+      if (operation === 'skill') return readWorkspaceSkill(payload.workspace || '', pool.config.workspaceRoots, payload.id);
       if (operation === 'select') return pool.selectLive(payload);
       if (operation === 'save') return managementOperation(pool, management, { ...payload, operation: 'save' });
       if (operation === 'scan_import') {

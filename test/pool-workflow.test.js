@@ -1,7 +1,8 @@
+import { workspaceSkills, readWorkspaceSkill } from '../src/skills.js';
 import { rm } from 'node:fs/promises';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { configSchema } from '../src/config.js';
@@ -10,7 +11,7 @@ import { Store } from '../src/store.js';
 import { claudeCatalog, routeCatalog, claudeQuotaWindows, antigravityQuotaWindows, mergeCatalogModels, execute } from '../src/adapters.js';
 import { browserUI, openCliLogin } from '../src/web.js';
 import { ensureInitialized } from '../src/daemon.js';
-import { memberships, mergeScanDraft, addMembership, quotaWindows, effortLabel, modelFamily, modelIdentity, modelFiltered, sortModels, initialTaskGroup } from '../web/pool-state.js';
+import { memberships, mergeScanDraft, addMembership, quotaWindows, effortLabel, modelFamily, modelIdentity, modelFiltered, sortModels, initialTaskGroup, restoredWorkspace } from '../web/pool-state.js';
 
 test('adding to an explicit target pool preserves other memberships and validates effort before mutation', () => {
   const model = { group: 'high', defaultEffort: 'high', efforts: ['low', 'medium', 'high'] };
@@ -227,4 +228,17 @@ test('Antigravity vendor quota groups never block or display unrelated model fam
  assert.deepEqual(quotaWindows({windows},'claude-opus-5-5-high').map(w=>w.remaining),[0,50]);
  assert.deepEqual(quotaWindows({windows},'gpt-oss-120b-medium').map(w=>w.remaining),[0,50]);
  assert.equal(antigravityQuotaWindows([{name:'Shared',buckets:{'5h':{remaining_pct:120}}}])[0].remainingPercent,100);
+});
+
+test('project skill picker confines reads to authorized project and central skill files',async t=>{
+ const root=mkdtempSync(path.join(tmpdir(),'pool-skills-')),project=path.join(root,'project'),library=path.join(root,'library');mkdirSync(project);mkdirSync(library);
+ const dir=path.join(project,'.agents','skills','demo');mkdirSync(dir,{recursive:true});const file=path.join(dir,'SKILL.md');writeFileSync(file,'---\nname: demo\ndescription: A local project skill\n---\nUse the local test command.');
+ const central=path.join(library,'shared');mkdirSync(central);writeFileSync(path.join(central,'SKILL.md'),'---\ndescription: >-\n  Shared instructions\n  across lines\n---\nNo network.');
+ const huge=path.join(library,'oversized');mkdirSync(huge);writeFileSync(path.join(huge,'SKILL.md'),'x'.repeat(65537));
+ t.after(()=>rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:100}));
+ const skills=workspaceSkills(project,[project],library);assert.equal(skills.length,2);assert.equal(skills.find(s=>s.name==='demo').source,'Proje');assert.equal(readWorkspaceSkill(project,[project],file,library).text.includes('local test command'),true);
+ assert.throws(()=>readWorkspaceSkill(project,[project],path.join(root,'secret.md'),library),{code:'INVALID_SKILL'});
+ assert.throws(()=>workspaceSkills(root,[project],library),{code:'WORKSPACE_DENIED'});
+ assert.equal(workspaceSkills('',[project],library).length,1);assert.equal(workspaceSkills('',[project],library)[0].description,'Shared instructions across lines');
+ assert.equal(restoredWorkspace(project,[project]),project);assert.equal(restoredWorkspace(root,[project]),'');assert.equal(restoredWorkspace(null,[project]),'');
 });

@@ -1,4 +1,4 @@
-# Pool 1.3.0 / Project Brain 3.3.0 delivery
+# Pool 1.4.0 / Project Brain 3.3.1 delivery
 
 The UI/workspace/model requirements remain tracked in [the UI checklist](ui-pool-checklist.md).
 This delivery keeps two repositories and two independently distributed skills.
@@ -13,18 +13,18 @@ This delivery keeps two repositories and two independently distributed skills.
 - [x] Freebuff standard MCP client configuration and transport check (11 tools and policy readback).
 - [x] Full source tests, syntax, secret scan and dependency audit.
 - [x] Compact catalog: no pagination, local scrolling to the final model, readable quota details open by default.
-- [x] Pool 1.3.0 installed; both managed skills updated across 40 targets each, all source hashes matched.
+- [x] Pool 1.4.0 installed; both managed skills updated across 40 targets each, all source hashes matched.
 - [x] Both repositories committed/pushed; remote main/master and Brain working branch read back at the release commits.
-- [x] Post-push: 45 Pool tests, complete Brain suite, installed synthetic-worker integration, real 13-route/65-model discovery, compact catalog wheel/end-of-catalog, installed browser and responsive checks all passed.
+- [x] Post-push: 46 Pool tests, complete Brain suite, installed synthetic-worker integration, real 13-route/65-model discovery, compact catalog wheel/end-of-catalog, installed browser and responsive checks all passed.
 
 Freebuff is connected as a supported MCP client. Its installed 0.2.29 CLI does not
 expose headless prompt/model/effort execution and is not advertised as a Pool model
 provider. Unsupported quota/version metadata stays unknown. Real speech hardware
 recognition has not been proven; browser speech/keyboard/error flows are covered.
 
-Pre-push verification: 45 Pool node:test checks, complete Brain offline suite, real installed-daemon synthetic worker integration (including nested-delegation refusal), Python 3.8 grammar parsing of 19 files, browser pool/workspace/voice-event/keyboard/dark/responsive flows and zero installed-console errors. Native Windows folder selection/cancellation were verified in the preceding UI pass.
+Pre-push verification: 46 Pool node:test checks, complete Brain offline suite, real installed-daemon synthetic worker integration (including nested-delegation refusal), Python 3.8 grammar parsing of 19 files, browser pool/workspace/voice-event/keyboard/dark/responsive flows and zero installed-console errors. Native Windows folder selection/cancellation were verified in the preceding UI pass.
 
-Both skills were updated via Skills Manager with IDs, Default preset and existing 40 deployment targets preserved. All 25 Brain files and the Pool skill matched the central library and every deployed target by SHA-256. The installed Pool reports 1.3.0; Brain reports 3.3.0. Freebuff uses its supported global MCP configuration; native trust/reload remains under Freebuff control.
+Both skills were updated via Skills Manager with IDs, Default preset and existing 40 deployment targets preserved. All 25 Brain files and the Pool skill matched the central library and every deployed target by SHA-256. The installed Pool reports 1.4.0; Brain reports 3.3.1. Freebuff uses its supported global MCP configuration; native trust/reload remains under Freebuff control.
 
 1.1.1 follow-up: the model card has a small Ekle action; its dialog chooses destination pool and effort without changing the top pool view. Explicit light/dark/system theme is persisted locally. The addition flow, independent efforts, theme persistence and OS override were browser-verified.
 
@@ -45,3 +45,9 @@ and placement; fluid resize restoration. Windows login launcher was executed wit
 synthetic CLI, without logging into user accounts. Existing Brain 3.3.0 remains separate.
 
 Antigravity vendor-labelled quota windows are scoped to Gemini or Claude/GPT models; unrelated exhausted windows do not block other families. Unknown percentages stay unknown.
+
+1.4.0 / Brain 3.3.1: unified cards, quieter dark theme and quota typography, wrapped
+navigation and inline menus, pinned composer with visible attachment/project chip,
+validated remembered project and task messages, installed/project skill picker and
+slash shortcut with source paths. Agent RPC shapes are unchanged. Brain references
+and plugin versions are aligned separately, with no repository merge.

@@ -234,7 +234,7 @@ Başarısız yazma görevi otomatik tekrarlanmaz. Ek bir Project Brain bağıml�
 ayarını üretir. Freebuff Desktop/CLI bunu `~/.agents/mcp.json` üzerinden kullanabilir.
 Freebuff burada istemcidir; desteklenmeyen otomatik model yürütmesi uydurulmaz.
 
-Üstteki **Tema** menüsünden Açık / Koyu / Sistem seçilir; tercih bu tarayıcıda hatırlanır.
+Ayarlar içindeki **Tema** menüsünden Açık / Koyu / Sistem seçilir; tercih bu tarayıcıda hatırlanır.
 Uygulama sürümü üst çubukta görünür; MCP ve CLI aynı paket sürümünü bildirir.
 
 ## Güvenli Çalışma
@@ -287,3 +287,27 @@ Daha sonra elle seçilen havuz korunur. Proje yolu giriş kutusunda, görev/mode
 seçenekleri altındadır. Gönderilemiyorsa eksik proje, boş havuz veya gerekli giriş
 kutunun yanında açıklanır. Tema Ayarlar'dadır; bağlantı noktası ve simgeli işlemler
 üst çubuğu sade tutar.
+
+### Çalışma Alanı ve kart düzeni (1.4.0)
+
+Varsayılan görünüm yumuşak koyu temadır; Açık/Sistem tercihleri Ayarlar'da korunur.
+Havuz ve katalog aynı kart bileşenini kullanır; kota metni normal ağırlıktadır.
+Aile/araç sekmeleri iki görünür satıra sarılır; çok dar ekranlarda dikey kaydırılabilir.
+Görünüm ve seçim menüleri masaüstünde aynı hizadadır. Havuz zemini katalogdan hafifçe ayrılır.
+
+Mesaj girişi altta kalır. Artı düğmesi ve seçili proje aynı giriş satırındadır;
+seçilen klasör adı görünür, tam yol düğmenin açıklamasındadır. Son açık proje yalnızca
+hâlâ izinli kökler içindeyse geri yüklenir. Kurulum dizini kendiliğinden seçilmez.
+Projenin son 50 görevinden mevcut olanlar yeniden açılışta mesaj olarak gösterilir;
+yeni mesajlar yukarı eklenir. Görevler ayrı CLI çalıştırmalarıdır; geçmiş mesajlar
+kendiliğinden yeni model istemine eklenmez.
+
+**＋ / mesaj başındaki `/`** ile proje (`.agents/skills`, `.codex/skills`, `.claude/skills`,
+`skills`) veya Skills Manager kütüphanesindeki SKILL.md dosyalarından seçim yapılır.
+Dosyadan ekleme de desteklenir. Seçilen metin ve yerel kaynak yolu bu mesaja eklenir;
+CLI kendi izinleriyle çalışır. Seçim kurulu skill'leri veya proje dosyalarını değiştirmez.
+Bir mesaja en fazla 10 dosya, her dosyaya 64 KB sınırı uygulanır.
+
+Windows Codex çalıştırmaları çalışma kökünü ve yerel Windows sandbox backend'ini
+explicit seçer; yazma workspace-write, diğer görevler read-only sınırında kalır.
+Kullanıcı ayarlarını yüklememek Windows sandbox ayarını yanlışlıkla düşürmez.

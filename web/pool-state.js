@@ -69,3 +69,5 @@ export function initialTaskGroup(models, mode, previous, initialized = false) {
   if (initialized && ['high','medium','low'].includes(previous)) return previous;
   return ['high','medium','low'].find(group => models.some(model => model.enabled && model.group === group)) || 'high';
 }
+
+export function restoredWorkspace(saved, roots) { return typeof saved === 'string' && roots.includes(saved) ? saved : ''; }

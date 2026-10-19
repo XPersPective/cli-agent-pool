@@ -1,4 +1,4 @@
-import { memberships, mergeScanDraft, addMembership, quotaWindows, effortLabel, modelIdentity, modelFamily, modelFiltered, sortModels, initialTaskGroup } from '/pool-state.js';
+import { memberships, mergeScanDraft, addMembership, quotaWindows, effortLabel, modelIdentity, modelFamily, modelFiltered, sortModels, initialTaskGroup, restoredWorkspace } from '/pool-state.js';
 const $ = id => document.getElementById(id);
 const labels = { queued: 'Sırada', starting: 'Başlatılıyor', running: 'Çalışıyor', succeeded: 'Tamamlandı', failed: 'Başarısız', timed_out: 'Süre doldu', cancelling: 'Durduruluyor', cancelled: 'Durduruldu', needs_review: 'Elle inceleme gerekli' };
 const billingLabels = { subscription: 'Abonelik', token_plan: 'Token planı', free_credits: 'Günlük / ücretsiz kredi', free: 'Ücretsiz', paid_api: 'Ücretli API', unknown: 'Doğrulanmadı' };
@@ -12,6 +12,7 @@ let submitted = null;
 let modelSignature = '';
 let selectedTask = null;
 let selectedTaskStamp = '';
+let conversationRoot = null;
 let skills = [];
 let poolDirty = false;
 let selectedRoute = '';
@@ -52,14 +53,14 @@ const strengthGroups = ['high', 'medium', 'low'];
 
 const groupLabels = { high: 'Yüksek', medium: 'Orta', low: 'Hafif', unassigned: 'Sınıflandırılmamış' };
 const groupLabel = group => Object.hasOwn(groupLabels, group) ? groupLabels[group] : groupLabels.unassigned;
-try { $('theme').value = localStorage.getItem('pool-theme') || 'system'; } catch { /* Storage may be disabled. */ }
+try { $('theme').value = localStorage.getItem('pool-theme-v2') || 'dark'; } catch { /* Storage may be disabled. */ }
 function applyTheme() {
-  const theme = ['light', 'dark'].includes($('theme').value) ? $('theme').value : 'system';
+  const theme = ['light', 'dark', 'system'].includes($('theme').value) ? $('theme').value : 'dark';
   document.documentElement.dataset.theme = theme;
   document.documentElement.style.colorScheme = theme === 'system' ? 'light dark' : theme;
 }
 applyTheme();
-$('theme').addEventListener('change', () => { applyTheme(); try { localStorage.setItem('pool-theme', $('theme').value); } catch { /* Current-page theme still works. */ } });
+$('theme').addEventListener('change', () => { applyTheme(); try { localStorage.setItem('pool-theme-v2', $('theme').value); } catch { /* Current-page theme still works. */ } });
 function updateSave() {
   $('save-pool').hidden = !poolDirty;
   $('save-pool').disabled = busy || !poolDirty; $('save-pool').dataset.locked = String(!poolDirty);
@@ -174,6 +175,7 @@ async function refresh(announce = false) {
     snapshot = await call('snapshot');
     $('app-version').textContent = `v${snapshot.version || 'bilinmiyor'}`;
     if (!settings || (!poolDirty && settings.revision !== snapshot.revision)) { settings = await call('settings'); renderPool(); if (!$('settings').hidden) renderSettings(); }
+    if (!$('task-workspace').value) { try { $('task-workspace').value = restoredWorkspace(localStorage.getItem('pool-project'), snapshot.workspaceRoots); } catch { /* Keep explicit project selection available. */ } }
     renderProjects();
     const previousGroup = $('task-group').value;
     $('task-group').replaceChildren(...(snapshot.selectionMode === 'auto' ? [new Option('Ajan otomatik seçsin', '')] : []), ...strengthGroups.map(group => new Option(groupLabel(group), group)));
@@ -185,6 +187,11 @@ async function refresh(announce = false) {
     $('review-count').textContent = snapshot.tasks.filter(task => task.state === 'needs_review').length;
     const projectTasks = snapshot.tasks.filter(task => task.workspace === $('task-workspace').value);
     $('task-total').textContent = projectTasks.length;
+    const currentRoot = $('task-workspace').value;
+    if (currentRoot && conversationRoot !== currentRoot) {
+      conversationRoot = currentRoot; $('conversation').replaceChildren();
+      for (const previous of [...projectTasks].reverse()) { if ($('task-workspace').value !== currentRoot) break; await openTask(previous.id, false); }
+    }
     const providerRows = [];
     for (const conn of snapshot.connections) {
       const row = element('div', null, 'provider');
@@ -404,7 +411,7 @@ $('task-form').addEventListener('submit', event => {
   event.preventDefault();
   void action(async () => {
     const request = selectionRequest();
-    request.prompt = [$('task-prompt').value, $('task-goal').value.trim() ? `Hedef / tamamlanma koşulu:\n${$('task-goal').value.trim()}` : '', ...skills.map(skill => `Skill: ${skill.name}\n${skill.text}`)].filter(Boolean).join('\n\n');
+    request.prompt = [$('task-prompt').value, $('task-goal').value.trim() ? `Hedef / tamamlanma koşulu:\n${$('task-goal').value.trim()}` : '', ...skills.map(skill => `Skill: ${skill.name}${skill.id ? `\nKaynak: ${skill.id}` : ''}\n${skill.text}`)].filter(Boolean).join('\n\n');
     request.workspace = $('task-workspace').value;
     request.timeoutSeconds = 300;
     if (request.prompt.length > 100000) throw new Error('Görev, hedef ve skill metni toplamı 100.000 karakteri aşamaz.');
@@ -497,12 +504,7 @@ function renderPool() {
   for (const {route,model} of entries) {
     const member = memberships(model).find(item => item.group === selectedGroup);
     if (!member) continue;
-    const row = element('div', null, 'membership-row');
-    const info = element('div'); info.append(element('strong', model.id), element('small', `${adapterLabels[route.adapter] || route.adapter} · ${route.id}${!route.enabled || model.enabled === false ? ' · Kapalı' : route.adapter !== 'codex' && !route.api && route.billing !== 'free' && !route.trustedSettings ? ' · Yerel ayar onayı bekliyor' : ''}${route.billing === 'paid_api' && !route.autoSelect ? ' · Ücretli API otomatik seçimi kapalı' : ''}`));
-    row.append(info, settingField('Efor', member.effort || '', value => { model.memberships = memberships(model); const item = model.memberships.find(item => item.group === selectedGroup); if (value) item.effort = value; else delete item.effort; dirty(); }, ['', ...model.efforts]), button('Çıkar', async () => { model.memberships = memberships(model).filter(item => item.group !== selectedGroup); dirty(); renderPool(); }));
-    row.setAttribute('role','group'); row.setAttribute('aria-label',`${model.id} · ${route.id}`); info.title=`${model.id} · ${route.id}`;
-    row.querySelector('select').setAttribute('aria-label',`${model.id} · ${route.id} efor`); row.querySelector('button').setAttribute('aria-label',`${model.id} · ${route.id} modelini ${groupLabel(selectedGroup)} havuzundan çıkar`);
-    row.append(quotaCell(route,model), loginNotice(route)); rows.push(row);
+    rows.push(modelCard(route,model,member));
   }
   $('pool-members').replaceChildren(...(rows.length ? rows : [element('p', `Bu havuz boş. Aşağıdan Codex, Claude veya başka bir araç seçip modelleri ekleyin.`, 'empty')]));
   $('pool-members').scrollLeft = memberScroll; $('pool-members').scrollTop = memberTop;
@@ -543,21 +545,27 @@ function renderCatalog() {
   $('catalog-status').replaceChildren(status);
   const search=$('pool-search').value.trim().toLocaleLowerCase('tr');
   const entries=sortModels(all.filter(({route,model})=>(byFamily ? modelFamily(model.id)===selectedFamily : route.id===selectedRoute) && `${model.id} ${model.alias} ${route.id}`.toLocaleLowerCase('tr').includes(search)), $('catalog-sort').value, byFamily);
-  $('pool-models').replaceChildren(...entries.map(({route,model})=>{
-    const row=element('div',null,'catalog-row'), info=element('div');row.setAttribute('role','group');row.setAttribute('aria-label',`${model.id} · ${route.id}`); row.dataset.routeId=route.id;row.dataset.modelId=model.id;
-    info.append(element('strong',model.id));info.title=model.id;
-    if (model.alias!==model.id) info.append(element('small',model.alias));
-    if (model.enabled === false) info.append(element('small','Kullanımı kapalı','version-unknown'));
-    if (byFamily) info.append(element('small',`${adapterLabels[route.adapter] || route.adapter} · ${route.id}`));
-    if (!/\d/.test(model.id)) info.append(element('small','Sağlayıcı sürüm bildirmedi','version-unknown'));
-    const groups=memberships(model), tags=element('small',groups.length?groups.map(member=>groupLabel(member.group)).join(' · '):'Henüz bir havuzda değil','model-memberships');
-    const actions=element('div',null,'model-actions');
-    const hide=button('Gizle',async()=>openFilters(route,model));hide.setAttribute('aria-label',`${model.id} için filtre ekle`);
-    const add=button('Ekle',async()=>openPoolPicker(route,model));add.classList.add('add-model');add.dataset.modelId=model.id;add.dataset.routeId=route.id;add.setAttribute('aria-label',`${model.id} modelini havuza ekle`);actions.append(hide,add);
-    row.append(info,quotaCell(route,model),tags,actions); if(byFamily) row.append(loginNotice(route));return row;
-  }));
+  $('pool-models').replaceChildren(...entries.map(({route,model})=>modelCard(route,model)));
   if(!entries.length) $('pool-models').append(element('p','Görünür model yok. Filtreleri kontrol edin veya Ayarlar → Modelleri tara seçeneğini kullanın.','empty'));
   $('catalog-count').textContent=`${entries.length} model`;$('pool-models').scrollTop=scroll;updateQuotaToggle();
+}
+function modelCard(route,model,member) {
+  const row=element('div',null,`model-card ${member?'membership-row':'catalog-row'}`), info=element('div',null,'model-info');
+  row.setAttribute('role','group');row.setAttribute('aria-label',`${model.id} · ${route.id}`);row.dataset.routeId=route.id;row.dataset.modelId=model.id;
+  info.append(element('strong',model.id),element('small',`${adapterLabels[route.adapter] || route.adapter} · ${route.id}`));info.title=`${model.id} · ${route.id}`;
+  if(model.enabled===false || !route.enabled) info.append(element('small','Kullanımı kapalı','version-unknown'));
+  if(!/\d/.test(model.id)) info.append(element('small','Sağlayıcı sürüm bildirmedi','version-unknown'));
+  const footer=element('div',null,'model-footer');
+  if(member) {
+    const effort=settingField('Efor',member.effort||'',value=>{model.memberships=memberships(model);const item=model.memberships.find(item=>item.group===selectedGroup);if(value)item.effort=value;else delete item.effort;dirty();},['',...model.efforts]);
+    effort.querySelector('select').setAttribute('aria-label',`${model.id} · ${route.id} efor`);
+    const remove=button('Çıkar',async()=>{model.memberships=memberships(model).filter(item=>item.group!==selectedGroup);dirty();renderPool();});remove.setAttribute('aria-label',`${model.id} · ${route.id} modelini ${groupLabel(selectedGroup)} havuzundan çıkar`);footer.append(effort,remove);
+  } else {
+    const groups=memberships(model);footer.append(element('small',groups.length?groups.map(item=>groupLabel(item.group)).join(' · '):'Henüz bir havuzda değil','model-memberships'));
+    const actions=element('div',null,'model-actions'), hide=button('Gizle',async()=>openFilters(route,model)), add=button('Ekle',async()=>openPoolPicker(route,model));
+    hide.setAttribute('aria-label',`${model.id} için filtre ekle`);add.classList.add('add-model');add.dataset.modelId=model.id;add.dataset.routeId=route.id;add.setAttribute('aria-label',`${model.id} modelini havuza ekle`);actions.append(hide,add);footer.append(actions);
+  }
+  row.append(info,quotaCell(route,model),footer,loginNotice(route));return row;
 }
 function openFilters(route, model) {
   const filters=settings.config.modelFilters ||= [];
@@ -613,10 +621,16 @@ async function refreshQuotas(routeId) {
   finally { quotasRefreshing = false; $('refresh-quotas').textContent = 'Kotaları yenile'; renderPool(); }
 }
 $('refresh-quotas').addEventListener('click', () => { void refreshQuotas(); });
+function rememberProject(root) {
+  $('task-workspace').value=root;
+  try { localStorage.setItem('pool-project',root); } catch { /* Selection works without persistence. */ }
+  selectedTask=null;selectedTaskStamp='';conversationRoot=null;$('conversation').replaceChildren();
+}
 function renderProjects() {
   const roots = snapshot?.workspaceRoots || [];
+  const root = $('task-workspace').value; $('browse-workspace').textContent = root ? root.split(/[\\/]/).filter(Boolean).at(-1) : 'Proje seç'; $('browse-workspace').title = root || 'Proje klasörü seçin';
   $('projects').replaceChildren(...roots.map(root => {
-    const node = button(root.split(/[\\/]/).filter(Boolean).at(-1) || root, async () => { $('task-workspace').value = root; selectedTask = null; selectedTaskStamp = ''; renderProjects(); $('conversation').replaceChildren(element('p', 'Bu projede yeni bir görev başlatın.', 'empty')); await refresh(); });
+    const node = button(root.split(/[\\/]/).filter(Boolean).at(-1) || root, async () => { rememberProject(root); renderProjects(); await refresh(); });
     node.title = root; node.className = 'project-button'; node.classList.toggle('selected', root === $('task-workspace').value); return node;
   }));
 }
@@ -630,7 +644,7 @@ async function openFolders() {
   const saved = await call('save', view);
   if (settings && poolDraft) { settings.config.workspaceRoots = [...new Set([...settings.config.workspaceRoots, result.path])]; settings.revision = saved.revision; poolDirty = true; }
   else settings = saved;
-  $('task-workspace').value = result.path; selectedTask = null; selectedTaskStamp = ''; $('conversation').replaceChildren(element('p', 'Bu projede yeni bir görev başlatın.', 'empty')); await refresh(); renderPool(); notice('Proje klasörü seçildi.');
+  rememberProject(result.path); await refresh(); renderPool(); notice('Proje klasörü seçildi.');
 }
 let poolDraft = false;
 function chooseWindowsFolder() { poolDraft = poolDirty; void action(openFolders); }
@@ -641,14 +655,36 @@ async function openTask(id, force = true) {
   const stamp = `${id}:${summary?.updated}`;
   if (!force && stamp === selectedTaskStamp) return;
   const task = await call('task', { taskId: id }); selectedTask = id; selectedTaskStamp = stamp;
-  const content = [element('p', `Seçilen: ${task.modelId} · ${task.routeId} · ${groupLabel(task.group || 'unassigned')} · Efor: ${effortLabel(task.effort)} · ${labels[task.state]}`, 'badge subtle'), element('p', task.reportedModel ? `Araç tarafından bildirilen model: ${task.reportedModel}` : 'Çalıştırıcı sürüm kimliğini ayrıca bildirmedi.', 'hint')];
-  if (task.prompt) { const prompt = element('details', null, 'user-message'); prompt.append(element('summary', `Görev: ${task.prompt.split('\n\n')[0].slice(0, 200)}`), element('pre', task.prompt)); content.push(prompt); }
-  content.push(element('pre', task.result || task.error || task.events?.at(-1)?.detail || labels[task.state], 'agent-message'));
-  $('conversation').replaceChildren(...content);
-  if (force || task.state === 'succeeded') $('conversation').scrollTop = $('conversation').scrollHeight;
+  const content=[];
+  const meta=element('details',null,'message-meta');meta.append(element('summary',`${adapterLabels[snapshot?.connections.find(route=>route.id===task.routeId)?.adapter] || task.routeId} · ${task.modelId} · ${labels[task.state]}`),element('p',`${task.routeId} · ${groupLabel(task.group || 'unassigned')} · Efor: ${effortLabel(task.effort)}${task.reportedModel ? ` · Bildirilen: ${task.reportedModel}` : ''}`));
+  if(task.prompt) content.push(element('div',task.prompt.split(/\n\n(?:Hedef \/ tamamlanma koşulu:|Skill:)/)[0],'user-message'));
+  content.push(element('div',task.result || task.error || task.events?.at(-1)?.detail || labels[task.state],'agent-message'),meta);
+  const existing=[...$('conversation').children].find(node=>node.dataset.taskId===task.id), nearBottom=$('conversation').scrollHeight-$('conversation').scrollTop-$('conversation').clientHeight<60;
+  const article=element('article',null,'message-pair');article.dataset.taskId=task.id;article.append(...content);
+  if(existing)existing.replaceWith(article);else{$('conversation').querySelector('.empty')?.remove();$('conversation').append(article);}
+  if(force || nearBottom) $('conversation').scrollTop=$('conversation').scrollHeight;
 }
-$('attach-instructions').addEventListener('click', () => { $('task-instructions').open = !$('task-instructions').open; });
-$('new-task').addEventListener('click', () => { selectedTask = null; selectedTaskStamp = ''; submitted = null; $('task-prompt').value = ''; $('task-goal').value = ''; skills = []; renderSkills(); $('conversation').replaceChildren(element('p', 'Yeni görevinizi yazın.', 'empty')); $('task-prompt').focus(); updateSubmit(); });
+let availableSkills=[];
+async function openSkillPicker(query='') {
+  $('skill-search').value=query;$('skill-list').replaceChildren(element('p','Skill’ler yükleniyor…','hint'));
+  if(!$('skill-dialog').open)$('skill-dialog').showModal();$('skill-search').focus();
+  try { availableSkills=await call('skills',{workspace:$('task-workspace').value});renderSkillPicker(); } catch(error){$('skill-list').replaceChildren(element('p',error.message,'hint'));}
+}
+function renderSkillPicker(){
+  const query=$('skill-search').value.toLocaleLowerCase('tr');
+  $('skill-list').replaceChildren(...availableSkills.filter(skill=>`${skill.name} ${skill.description}`.toLocaleLowerCase('tr').includes(query)).map(skill=>{
+    const item=button('',async()=>{if(skills.length>=10)throw Error('Bir mesaja en fazla 10 skill ekleyebilirsiniz.');if(!skills.some(item=>item.id===skill.id)){const attached=await call('skill',{workspace:$('task-workspace').value,id:skill.id});skills.push(attached);renderSkills();}if(/^\/[^\s]*$/.test($('task-prompt').value))$('task-prompt').value='';$('skill-dialog').close();$('task-prompt').focus();updateSubmit();});item.append(element('strong',skill.name),element('small',`${skill.source}${skill.description ? ` · ${skill.description}`:''}`));return item;
+  }));
+  if(!$('skill-list').children.length)$('skill-list').append(element('p','Eşleşen skill yok. Projenizde .agents/skills/<ad>/SKILL.md kullanabilir veya dosyadan ekleyebilirsiniz.','hint'));
+}
+$('attach-instructions').addEventListener('click',()=>void openSkillPicker());
+$('task-prompt').addEventListener('input',()=>{if(/^\/[^\s]*$/.test($('task-prompt').value))void openSkillPicker($('task-prompt').value.slice(1));});
+$('skill-search').addEventListener('input',renderSkillPicker);
+$('close-skills').addEventListener('click',()=>$('skill-dialog').close());
+$('skill-dialog').addEventListener('close',()=>$('task-prompt').focus());
+$('upload-skill').addEventListener('click',()=>{$('skill-dialog').close();$('skill-files').click();});
+$('add-goal').addEventListener('click',()=>{$('skill-dialog').close();$('task-instructions').open=true;$('task-goal').focus();});
+$('new-task').addEventListener('click', () => { selectedTask = null; selectedTaskStamp = ''; submitted = null; $('task-prompt').value = ''; $('task-goal').value = ''; skills = []; renderSkills(); $('conversation').replaceChildren(); $('task-prompt').focus(); updateSubmit(); });
 $('preview-selection').addEventListener('click', () => void action(async () => {
   const result = await call('select', selectionRequest()); await refresh();
   const rows = [result.selected, ...result.alternatives].map((model, index) => element('p', `${index ? 'Alternatif' : 'Seçilen'}: ${model.alias} · ${model.routeId} · ${groupLabel(model.group)}`));

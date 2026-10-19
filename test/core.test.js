@@ -145,6 +145,9 @@ test('no inherited API secrets and shell-free Codex/Claude arguments', t => {
   const { config, request } = fixture(t);
   const argv = buildArguments(config.routes[0], config.routes[0].models[0], { ...request, effort: 'low' });
   assert.ok(argv.includes('--ignore-user-config')); assert.ok(argv.includes('read-only'));
+  assert.equal(argv[argv.indexOf('-C')+1], request.workspace);
+  if(process.platform === 'win32') assert.ok(argv.includes('windows.sandbox="elevated"'));
+  const writeArgs=buildArguments(config.routes[0],config.routes[0].models[0],{...request,kind:'write'}); assert.ok(writeArgs.includes('workspace-write')); assert.ok(!writeArgs.includes('danger-full-access'));
   assert.ok(!argv.includes(request.prompt));
   assert.ok(!argv.some(a => a.includes('dangerously')));
   assert.equal(redact('Bearer ' + 'a'.repeat(30)), 'Bearer [REDACTED]');
