@@ -1,6 +1,7 @@
 # CLI Agent Pool
 
 Read README.md and docs/architecture.md before changing behavior.
+For continuing maintenance, read docs/maintenance-plan.md; keep its checklist and evidence current.
 The product is standalone. No DeepSeek Harness/Hermes or other host integration is required.
 Reuse installed official CLI authentication; never copy credential contents.
 Runtime state belongs outside this repository in the local application data directory.
