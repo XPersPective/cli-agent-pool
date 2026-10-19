@@ -1,8 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { mkdirSync, mkdtempSync, lstatSync } from 'node:fs';
+import path from 'node:path';
 import { z } from 'zod';
 import { allowedWorkspace, overlaps, PoolError, activeBillings, nonMeteredBillings, dataDirectory, configView, saveConfig } from './config.js';
 import { checkAuth, execute, quota, loginCommands } from './adapters.js';
-import { modelFiltered } from '../web/pool-state.js';
+import { modelFiltered, quotaApplies } from '../web/pool-state.js';
 import { codexControl } from './codex-control.js';
 
 export const taskSchema = z.object({
@@ -13,6 +15,7 @@ export const taskSchema = z.object({
   modelId: z.string().max(100).optional(),
   group: z.string().max(100).optional(),
   effort: z.string().max(100).optional(),
+  clientLabel: z.string().trim().min(1).max(100).refine(value=>!/[\u0000-\u001f]/.test(value)).optional(),
   minRemainingPercent: z.number().min(0).max(100).optional(),
   timeoutSeconds: z.number().int().min(5).max(3600).default(300),
   idempotencyKey: z.string().min(8).max(128).regex(/^[a-zA-Z0-9_.:-]+$/),
@@ -39,6 +42,8 @@ export class Pool {
     this.quotaRequests = new Map();
     this.closed = false;
     this.pumping = false;
+    this.historyTimer=setInterval(()=>{try{this.store.pruneHistory();}catch{/* Retain evidence and retry at the next interval. */}},3600_000);
+    this.historyTimer.unref();
   }
   models() {
     return this.config.routes.flatMap(route => route.models.filter(model => !modelFiltered(this.config.modelFilters, route.id, model.id)).flatMap(model => {
@@ -93,7 +98,7 @@ export class Pool {
       const route = this.config.routes.find(r => r.id === model.routeId);
       const fresh = snapshot && Date.now() - Date.parse(snapshot.observedAt) < 60_000;
       const missingPlan = snapshot?.subscription === 'none' && (route.billing === 'subscription' || route.billing === 'token_plan');
-      const quotaBlocked = fresh && (snapshot.status === 'rate_limited' || snapshot.status === 'auth_required' || missingPlan || snapshot.windows?.some(window => (!window.models?.length || window.models.some(id => model.id.includes(id))) && window.remainingPercent != null && window.remainingPercent <= Math.max(route.minRemainingPercent, request.minRemainingPercent ?? 0)));
+      const quotaBlocked = fresh && (snapshot.status === 'rate_limited' || snapshot.status === 'auth_required' || missingPlan || snapshot.windows?.some(window => quotaApplies(window,model.id) && window.remainingPercent != null && window.remainingPercent <= Math.max(route.minRemainingPercent, request.minRemainingPercent ?? 0)));
       const paidAllowed = model.billing !== 'paid_api' || Boolean(request.routeId) || Boolean(model.autoSelect);
       return !quotaBlocked && model.enabled && activeBillings.has(model.billing) && paidAllowed && model.kinds.includes(request.kind) &&
       (!request.routeId || model.routeId === request.routeId) && (!request.modelId || model.id === request.modelId) &&
@@ -141,16 +146,23 @@ export class Pool {
     await Promise.allSettled([...routes].map(id => this.getQuota(id)));
     return this.select(request);
   }
-  async submitLive(input) {
-    const request = taskSchema.parse(input);
-    allowedWorkspace(request.workspace, this.config.workspaceRoots);
-    if (!this.store.byKey(request.idempotencyKey)) await this.selectLive(request);
-    return this.submit(input);
+  async probeModel(input) {
+    if (!input || typeof input.routeId!=='string' || typeof input.modelId!=='string' || Object.keys(input).some(key=>!['routeId','modelId','group','effort'].includes(key))) throw new PoolError('INVALID_REQUEST','Geçerli bir model seçin.');
+    const root=path.join(this.directory,'probes');mkdirSync(root,{recursive:true});
+    if(lstatSync(root).isSymbolicLink())throw new PoolError('UNSAFE_DATA_DIRECTORY','Test klasörü bağlantı olamaz.');
+    const workspace=mkdtempSync(path.join(root,'model-'));
+    return this.submitLive({...input,prompt:'Reply with exactly OK. Do not use tools or modify files.',workspace,kind:'text',timeoutSeconds:45,clientLabel:'Model testi',idempotencyKey:`probe-${randomUUID()}`},true);
   }
-  submit(input) {
+  async submitLive(input, probe = false) {
+    const request = taskSchema.parse(input);
+    allowedWorkspace(request.workspace, probe?[path.join(this.directory,'probes')]:this.config.workspaceRoots);
+    if (!this.store.byKey(request.idempotencyKey)) await this.selectLive(request);
+    return this.submit(input,probe);
+  }
+  submit(input, probe = false) {
     if (this.closed) throw new PoolError('SHUTTING_DOWN', 'Havuz kapanıyor. Yeniden bağlanın.');
     const request = taskSchema.parse(input);
-    request.workspace = allowedWorkspace(request.workspace, this.config.workspaceRoots);
+    request.workspace = allowedWorkspace(request.workspace, probe?[path.join(this.directory,'probes')]:this.config.workspaceRoots);
     const fingerprint = createHash('sha256').update(JSON.stringify(request)).digest('hex');
     const existing = this.store.byKey(request.idempotencyKey);
     if (existing) {
@@ -163,6 +175,7 @@ export class Pool {
     request.modelId = model.id;
     if (model.group !== 'unassigned') request.group = model.group;
     request.effort = model.fixedEffort || request.effort || model.defaultEffort;
+    if(probe)request.probe=true;
     const id = randomUUID();
     this.store.insert({ id, key: request.idempotencyKey, fingerprint, workspace: request.workspace, request });
     this.schedule();
@@ -174,10 +187,10 @@ export class Pool {
     const request = JSON.parse(task.request);
     const events = this.store.events(id, after);
     const reportedModel = this.store.reportedModel(id);
-    return { id: task.id, state: task.state, routeId: request.routeId, modelId: request.modelId, reportedModel, group: request.group, effort: request.effort || null, kind: request.kind, workspace: request.workspace, prompt: request.prompt, created: task.created, updated: task.updated, result: task.result, error: task.error, events };
+    return { id: task.id, state: task.state, routeId: request.routeId, modelId: request.modelId, reportedModel, group: request.group, effort: request.effort || null, clientLabel:request.clientLabel || null, historyExpired:Boolean(request.historyExpired), kind: request.kind, workspace: request.workspace, prompt: request.prompt || null, created: task.created, updated: task.updated, result: task.result, error: task.error, events };
   }
-  list(limit = 50, offset = 0) {
-    return this.store.list(limit, offset);
+  list(limit = 50, offset = 0, activeFirst = false) {
+    return this.store.list(limit, offset, activeFirst);
   }
   cancel(id) {
     const task = this.store.get(id);
@@ -218,7 +231,7 @@ export class Pool {
   }
   async run(task, request, route, handle) {
     try {
-      request.workspace = allowedWorkspace(request.workspace, this.config.workspaceRoots);
+      request.workspace = allowedWorkspace(request.workspace, request.probe?[path.join(this.directory,'probes')]:this.config.workspaceRoots);
       const model = this.select(request).selected;
       await this.checkAuth(route, request.workspace, this.config.python, this.directory);
       if (handle.cancelled || this.closed) { this.store.update(task.id, 'cancelled', null, 'CANCELLED'); return; }
@@ -241,6 +254,7 @@ export class Pool {
   }
   async close() {
     this.closed = true;
+    clearInterval(this.historyTimer);
     const pending = [...this.active.values()];
     for (const handle of pending) { handle.cancelled = true; handle.run?.cancel('CANCELLED'); }
     await Promise.allSettled(pending.map(handle => handle.done));

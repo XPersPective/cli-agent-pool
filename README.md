@@ -200,21 +200,16 @@ havuzdaki uygun alternatife atanabilir; başlamış iş otomatik tekrarlanmaz.
 kaydedilmemiş havuz/efor/bağlantı seçimleri taslak olarak korunur ve kendiliğinden
 kaydedilmez. Sonrasında **Havuzu kaydet** kullanılır.
 
-Çalışma Alanı'nda projeler, seçili projenin görevleri ve bağımsız CLI görevleri
-bulunur. **Göz at / + Klasör**, Windows'un modern yerel klasör penceresini açar;
-iptal mevcut projeyi değiştirmez. Kaynak koddan küçük GUI yardımcısı Windows'un
-kurulu .NET derleyicisiyle yerel uygulama verisine derlenir; ek paket veya terminal
-penceresi gerekmez. Yardımcı süreç havuz supervisor'ı tarafından sahiplenilir.
+**Çağrılar** ekranı çalışan işleri ve son 50 tamamlanan isteği okunabilir biçimde
+izletir. Model kartındaki **Test et**, izole çalışma klasöründe kısa metin testi
+başlatır; kota, plan, etkinlik ve manuel havuz kuralları geçerlidir. İstemci adı
+bildirilmediyse tahmin edilmez. Sohbet/composer ve proje seçimi bu ekrandan kaldırıldı;
+ajanlar çalışma kökünü MCP/CLI üzerinden göndermeye devam eder.
 
-Giriş kutusunun kenarındaki mikrofon sesle yazmayı, ok düğmesi göndermeyi sağlar.
-Metin kullanıcı göndermeden çalıştırılmaz. Tarayıcı/mikrofon desteği veya izin
-bulunmazsa yazılı giriş kullanılabilir. Hedef ve en fazla 10 Markdown skill dosyası
-görev talimatlarına eklenir (dosya başına 64 KB, toplam görev 100.000 karakter).
-Skill kurulumu yapılmaz.
-
-Proje başlangıçta otomatik seçilmez; **Projeler** listesinden veya yerel klasör
-seçicisinden seçilir. Ayarlarda kurulum/veri dizini ya da çok satırlı kök klasör
-girişi yoktur. İzin verilen proje kökleri yine sunucuda doğrulanır.
+Tamamlanan çağrı gövdeleri 7 gün veya en son 500 tamamlanan kayıt sınırında tutulur.
+Saatlik temizlik yalnızca gövdeleri/olayları siler; idempotency kayıtları ve inceleme
+karantinası korunur. Resmî web sohbeti bağlantıları Ayarlar'dadır; tarayıcı oturumu
+otomatik CLI çalışanı veya ücretsiz API erişimi sayılmaz.
 
 **Kaydet** yalnızca değişiklik olduğunda etkinleşir; **Vazgeç** kaydedilmemiş
 havuz/ayar değişikliklerini geri alır. Aynı üyeliği tekrar eklemek çoğaltmaz ve
@@ -284,31 +279,22 @@ terminalde açar. Giriş kullanıcı tarafından tamamlanır; **Kontrol et** ön
 beklemeden durumu yeniden sorgular. API bağlantıları anahtar ayarlarına yönlenir.
 Bilinmeyen oturum bilgisi giriş yapılmış gibi sunulmaz; Ayarlar'da giriş eylemi de vardır.
 
-Çalışma Alanı metin/sohbet ile başlar; manuel modda ilk uygun dolu havuz seçilir.
+Kart testleri manuel modda sahibin mevcut havuz üyeliği ve sabit eforunu kullanır.
 Daha sonra elle seçilen havuz korunur. Proje yolu giriş kutusunda, görev/model/efor
 seçenekleri altındadır. Gönderilemiyorsa eksik proje, boş havuz veya gerekli giriş
 kutunun yanında açıklanır. Tema Ayarlar'dadır; bağlantı noktası ve simgeli işlemler
 üst çubuğu sade tutar.
 
-### Çalışma Alanı ve kart düzeni (1.4.0)
+### Kartlar ve çağrı izleme (1.5.0)
 
-Varsayılan görünüm yumuşak koyu temadır; Açık/Sistem tercihleri Ayarlar'da korunur.
-Havuz ve katalog aynı kart bileşenini kullanır; kota metni normal ağırlıktadır.
-Aile/araç sekmeleri iki görünür satıra sarılır; çok dar ekranlarda dikey kaydırılabilir.
-Görünüm ve seçim menüleri masaüstünde aynı hizadadır. Havuz zemini katalogdan hafifçe ayrılır.
+Havuz ve katalog aynı kart düzenini, farklı yakın zemin tonlarını kullanır.
+İç model kaydırması yerine sayfa aşağı uzar; panellerin okları açık/kapalı durumunu
+gösterir. Gizleme/gösterme kuralları hemen ve diğer taslak ayarlardan bağımsız kaydedilir.
 
-Mesaj girişi altta kalır. Artı düğmesi ve seçili proje aynı giriş satırındadır;
-seçilen klasör adı görünür, tam yol düğmenin açıklamasındadır. Son açık proje yalnızca
-hâlâ izinli kökler içindeyse geri yüklenir. Kurulum dizini kendiliğinden seçilmez.
-Projenin son 50 görevinden mevcut olanlar yeniden açılışta mesaj olarak gösterilir;
-yeni mesajlar yukarı eklenir. Görevler ayrı CLI çalıştırmalarıdır; geçmiş mesajlar
-kendiliğinden yeni model istemine eklenmez.
-
-**＋ / mesaj başındaki `/`** ile proje (`.agents/skills`, `.codex/skills`, `.claude/skills`,
-`skills`) veya Skills Manager kütüphanesindeki SKILL.md dosyalarından seçim yapılır.
-Dosyadan ekleme de desteklenir. Seçilen metin ve yerel kaynak yolu bu mesaja eklenir;
-CLI kendi izinleriyle çalışır. Seçim kurulu skill'leri veya proje dosyalarını değiştirmez.
-Bir mesaja en fazla 10 dosya, her dosyaya 64 KB sınırı uygulanır.
+Antigravity'de aynı sürümün efor varyantları tek modelde toplanır; gerçek native CLI
+kimlikleri efor eşlemesinde korunur. Çakışan eski havuz eforları sessizce silinmez.
+Sağlayıcının açıkça Argon'a bağlamadığı Gemini kotası Argon kotası olarak gösterilmez.
+Native CLI credential dosyası bulunması tek başına çalışan oturum kanıtı değildir.
 
 Windows Codex çalıştırmaları çalışma kökünü ve yerel Windows sandbox backend'ini
 explicit seçer; yazma workspace-write, diğer görevler read-only sınırında kalır.

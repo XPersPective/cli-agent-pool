@@ -1,7 +1,7 @@
 # Başlangıç → geliştirme → yayın: bağımsız protokol önerisi
 
-19 Ekim 2026. Tasarım önerisidir; yeni skill, otomatik yayın veya Brain değişikliği
-uygulanmadı. Mevcut bakım işleri [maintenance-plan.md](maintenance-plan.md) içindedir.
+19 Ekim 2026. İlk tasarım ve sonraki uygulama kaydıdır. Project Forge ve Release Harbor ayrı
+özel depolarda uygulandı; otomatik mağaza yayını veya genel Brain değişikliği yapılmadı. Mevcut bakım işleri [maintenance-plan.md](maintenance-plan.md) içindedir.
 
 ## Sorumluluk sınırı
 
@@ -27,7 +27,7 @@ yazmak gerekmiyor: iki bağımsız skill ve projeye ait küçük bir profil yete
 
 ## 1. Başlangıç skill'i
 
-Önerilen ad: `napp-project-start` (kullanıcıyla kesinleştirilecek). Mevcut
+Uygulanan ad: `project-forge`. Mevcut
 `D:/repositories/napp_app_template/tool/new_app.dart` üreticisini kullanır. Template
 deposuna uygulama yazmaz; yeni hedefte üretir. Kaynak README'sinin mevcut güvenlik
 ve parametre sözleşmesini değiştirmeden kullanır.
@@ -83,7 +83,7 @@ edilir, sonra yayımlanır. Test kendi çalıştırdığı skill dosyasını ort
 
 ## 4. Ayrı yayın skill'i
 
-Önerilen ad: `app-store-publish`. Kullanıcı "yayına hazırla/yayınla; bu protokolü
+Uygulanan ad: `release-harbor`. Kullanıcı "yayına hazırla/yayınla; bu protokolü
 kullan" dediğinde çalışır. Başlangıç skill'i kullanılmış olması şart değildir;
 mevcut Flutter/Android/iOS/Windows projesinden profili keşfedebilir, eksikleri sorar.
 
@@ -125,8 +125,8 @@ Windows'taki bir skill bunu bir metin talimatıyla ortadan kaldıramaz.
 - İki farklı uygulama aynı yayıncı kimliğini kullanırken reklam/SKU/signing/store
   kimlikleri birbirine geçmez; bir Flutter ve bir Flutter dışı proje ile test edilir.
 - İlk gerçek yayından önce dry-run + sandbox/test kanalı kanıtı elde edilir.
-- Kullanıcı başlangıç/yayın skill'leri için bu aşamada analiz istedi: iki skill henüz yaratılmayacak,
-  dağıtılmayacak, yeni reklam/mağaza hesabı veya uygulama kaydı açılmayacak.
+- Sonraki kullanıcı isteğiyle iki skill ayrı depolarda oluşturuldu. Gerçek mağaza
+  yayını, yeni reklam/mağaza hesabı veya uygulama kaydı bu geliştirme testlerinde açılmadı.
 
 ## Başvuru kaynakları
 

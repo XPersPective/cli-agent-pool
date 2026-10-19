@@ -165,3 +165,41 @@ ile kimlik doğrulama değişimini aynı doğrulanamaz paket halinde birleştirm
 `npm audit` geçti (0 açık). Yalnızca plan/tasarım ve AGENTS devralma bağlantısı
 değiştirildi; yeni paket sürümü veya kurulum gerekmedi. Mevcut testlerin geçmesi,
 yukarıdaki gerçek CLI oturumlarının veya bildirilen hataların çözüldüğünü kanıtlamaz.
+
+
+## 1.5.0 uygulama kontrol noktası
+
+Uygulandı ve runnable kontrollerle doğrulandı: Antigravity canonical model/efor
+kataloğu ve atomik üyelik taşıması; `-p` argümanının sonraki bayrağı mesaj sanması
+kök hatası; gerçek native ID ile düşük efor Gemini Flash kısa çağrısı (yanıt alındı).
+Ortak Gemini grubunun açıkça kapsamadığı Argon bakiyesi uydurulmaz; gerçek Argon
+etiketli grup varsa onun haftalık penceresi kullanılır. MiMo'nun uydurulmuş eski
+fallback kimliği artık keşfe eklenmez; gerçek Xiaomi native katalog kimlikleri alınır.
+Sahte `available` yerine credential varlığı/oturum bilinmezliği ayrılır.
+
+Sohbet UI kaldırıldı; Çağrılar ekranı, aktif kart durumu, sabit text kart testi,
+bağımsız kalıcı gizleme, yakın ama farklı panel zeminleri ve okunabilir hatalar
+uygulandı. Gövde temizliği 7 gün/500 tamamlanan kayıt; admission anahtarları ve
+karantina korunur. Salt web sohbeti bağlantıları eklendi; otomatik web worker yok.
+
+Gerçek kurulum bulguları: 43127'deki eski servis varsayılan runtime kimliğiyle
+uyuşmuyordu. Kullanıcı tek örnek kararını yetkilendirdi; aktif çocuk süreç ve görev
+olmadığı doğrulanarak tanınan Pool servisi yeniden başlatıldı. Brain scan tekrar
+çalıştı. Her browser penceresi için ayrı servis başlatılmıyor. Gelecek kimlik
+çakışmalarında kod key değiştirmez/başka listener öldürmez; açık hata verir.
+
+Açık, tamamlanmış sayılamayacak işler: her sağlayıcının gerçek hesap/planıyla
+uçtan uca çalıştığı kanıtlanmadı. OpenCode ücretsiz native testinde sağlayıcı
+`free tier can only be used from within OpenCode` kısıtı döndü; başka ücretli
+rota denenmedi. Credential listesi login/abonelik kanıtı değildir. MiMo'nun gerçek `xiaomi/mimo-v2.6-flash` kısa native çağrısı kota/bakiye sınırıyla
+sonuçlandı (`QUOTA_EXHAUSTED`); bu oturum hatası diye sunulmuyor. Kimi/MinMax/
+Claude/ZCode/OmniRoute/Hermes ve yerel uygulama hazır oluşu için adaptör bazlı
+sonuç/engel matrisi tamamlanmalı. Özellikle ZCode headless CLI seçenekleri ve seçilen
+modelin gerçekten uygulanması, Hermes/OmniRoute per-call sözleşmeleri ayrıca
+doğrulanmadan başarılı ilan edilmemeli. Otomatik tarayıcı sohbet worker'ı eklenmedi.
+
+İki yeni skill'in geliştirmesinde Brain yalnızca dışarıdan takip aracı olarak
+kullanıldı. Genel Brain kaynakları değişmedi, lifecycle hook/protokol bekleme eklenmedi.
+İlk yüksek model alt ajanları kullanıcının kota uyarısıyla durduruldu; kalan işler
+kısa, geçmişsiz düşük model görevlerine ayrıldı. Windows junction regresyonları
+Project Forge (10 test) ve Release Harbor (11 test) üzerinde çalıştırıldı.

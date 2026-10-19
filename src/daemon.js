@@ -40,7 +40,7 @@ export async function managementRequest(directory, config, body) {
   });
   if (!response.ok) {
     const text = await response.text();
-    const err = new PoolError('MANAGE_FAILED', `Yönetim isteği başarısız (${response.status}): ${text}`);
+    const err = new PoolError(response.status===401?'DAEMON_IDENTITY_CONFLICT':'MANAGE_FAILED', response.status===401?'Bu porttaki servis bu kurulumun veri diziniyle eşleşmiyor. Açık başka havuz örneğini kontrol edin; çalışan servis otomatik kapatılmadı.':`Yönetim isteği başarısız (${response.status}): ${text}`);
     err.status = response.status;
     err.body = text;
     throw err;

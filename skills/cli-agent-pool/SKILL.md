@@ -82,19 +82,19 @@ cli-agent-pool open
 
 Detailed MCP request examples, transport and error handling are documented in the packaged docs/agent-api.md.
 
-The owner's dashboard uses a compact model **Ekle** action followed by an explicit
-destination-pool/effort picker; the currently viewed top pool is not changed by an
-addition. Quotas open by default, with individual/global controls; the catalog
-scrolls without pagination. Settings is a separate page; unsaved changes support
-Save/Discard. Workspace tasks require an explicitly selected project.
+The owner's dashboard uses compact model cards, explicit destination-pool/effort
+selection and a readable Calls monitor. Per-card tests use fixed short text probes,
+owner policy and isolated runtime workspaces; there is no chat composer. Model and
+filter edits persist immediately without committing unrelated settings drafts.
 Owner-hidden models/families are excluded from discovery imports and agent selection,
-including explicitly pinned requests. Do not work around filters or change them via
-other tools. Missing login must be completed by the owner through the dashboard's
-native CLI login action; never request or copy their credentials.
-The workspace plus/slash picker attaches an authorized project/installed SKILL.md
-as instructions, including its absolute source path. This does not install skills,
-relax CLI permissions, or authorize a worker to recursively delegate. CLI turn success
-alone does not prove files were created; inspect artifacts and run task verification.
+including explicitly pinned requests. Never work around filters. Missing login uses
+native CLI login; credential presence alone does not prove a valid session. Provider
+restrictions are not authentication failures and never authorize a paid fallback.
+Antigravity variants share one canonical model with supported efforts and native ID
+mappings. Use the catalog IDs/efforts, not invented suffixes. Provider quota scopes
+apply only to the stated model families; unavailable Argon quota remains unknown.
+The owner monitor retains bounded completed payloads; admission keys and quarantine
+remain durable. A CLI turn alone never proves files were created; inspect artifacts.
 On Windows, Codex explicitly selects its Windows sandbox backend and working root,
 while preserving workspace-write/read-only scope and ignoring unrelated user config.
 Family/source views, sorting and light/dark/system themes are owner browser preferences,

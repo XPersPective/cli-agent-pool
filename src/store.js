@@ -22,10 +22,11 @@ export class Store {
     CREATE TABLE IF NOT EXISTS quotas (route_id TEXT PRIMARY KEY, snapshot TEXT NOT NULL);
     PRAGMA user_version=1;`);
     this.db.prepare("UPDATE tasks SET state='needs_review', error='INTERRUPTED', updated=? WHERE state IN ('starting','running','cancelling')").run(new Date().toISOString());
+    this.pruneHistory();
   }
   byKey(key) { return this.db.prepare('SELECT * FROM tasks WHERE key=?').get(key); }
   get(id) { return this.db.prepare('SELECT * FROM tasks WHERE id=?').get(id); }
-  list(limit = 50, offset = 0) { return this.db.prepare("SELECT id,state,created,updated,error,workspace,json_extract(request,'$.routeId') AS routeId,json_extract(request,'$.modelId') AS modelId,json_extract(request,'$.kind') AS kind FROM tasks ORDER BY created DESC, rowid DESC LIMIT ? OFFSET ?").all(limit, offset); }
+  list(limit = 50, offset = 0, activeFirst = false) { return this.db.prepare("SELECT id,state,created,updated,error,workspace,json_extract(request,'$.routeId') AS routeId,json_extract(request,'$.modelId') AS modelId,json_extract(request,'$.kind') AS kind,json_extract(request,'$.group') AS 'group',json_extract(request,'$.effort') AS effort,json_extract(request,'$.clientLabel') AS clientLabel FROM tasks ORDER BY "+(activeFirst?"state IN ('queued','starting','running','cancelling') DESC, ":'')+"created DESC, rowid DESC LIMIT ? OFFSET ?").all(limit, offset); }
   queued() { return this.db.prepare("SELECT * FROM tasks WHERE state='queued' ORDER BY created, rowid").all(); }
   held() { return this.db.prepare("SELECT workspace FROM tasks WHERE state IN ('starting','running','cancelling','needs_review')").all(); }
   insert(task) {
@@ -42,5 +43,14 @@ export class Store {
   reportedModel(id) { return this.db.prepare("SELECT detail FROM events WHERE task_id=? AND kind='progress' AND detail LIKE 'model:%' ORDER BY seq DESC LIMIT 1").get(id)?.detail.slice(6) || null; }
   quota(routeId) { const row = this.db.prepare('SELECT snapshot FROM quotas WHERE route_id=?').get(routeId); return row ? JSON.parse(row.snapshot) : null; }
   saveQuota(routeId, snapshot) { this.db.prepare('INSERT INTO quotas(route_id,snapshot) VALUES(?,?) ON CONFLICT(route_id) DO UPDATE SET snapshot=excluded.snapshot').run(routeId, JSON.stringify(snapshot)); }
+  pruneHistory(before = new Date(Date.now()-7*86400_000).toISOString()) {
+    // Keep admission keys/fingerprints and quarantine; only completed payloads expire.
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare("UPDATE tasks SET request=json_set(json_remove(request,'$.prompt'),'$.historyExpired',json('true')), result=NULL WHERE state IN ('succeeded','failed','timed_out','cancelled') AND (updated<? OR id IN (SELECT id FROM tasks WHERE state IN ('succeeded','failed','timed_out','cancelled') ORDER BY updated DESC,rowid DESC LIMIT -1 OFFSET 500))").run(before);
+      this.db.prepare("DELETE FROM events WHERE task_id IN (SELECT id FROM tasks WHERE json_extract(request,'$.historyExpired')=1)").run();
+      this.db.exec('COMMIT');
+    } catch(error){this.db.exec('ROLLBACK');throw error;}
+  }
   close() { this.db.close(); this.owner.close(); }
 }

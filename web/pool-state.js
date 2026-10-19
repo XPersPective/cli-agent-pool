@@ -16,11 +16,18 @@ export function mergeScanDraft(scanned, before, draft) {
     }
     for (const model of route.models) {
       const old = original.models.find(item => item.id === model.id);
-      const resolved = target.models.find(item => item.id === model.id) || target.models.find(item => ['opus', 'sonnet', 'haiku'].includes(model.id) && item.id.startsWith(`claude-${model.id}-`));
+      const resolved = target.models.find(item => item.id === model.id) || target.models.find(item => Object.values(item.variants || {}).includes(model.id)) || target.models.find(item => ['opus', 'sonnet', 'haiku'].includes(model.id) && item.id.startsWith(`claude-${model.id}-`));
       if (!old) { if (!resolved) target.models.push(structuredClone(model)); continue; }
       if (!resolved) continue;
       for (const key of ['memberships', 'group', 'enabled', 'defaultEffort', 'alias']) {
         if (JSON.stringify(model[key]) !== JSON.stringify(old[key])) {
+          if(resolved.variants && resolved.id!==model.id && ['memberships','group','defaultEffort'].includes(key)) {
+            const inferred=Object.entries(resolved.variants).find(([,id])=>id===model.id)?.[0];
+            const previous=memberships(old), desired=memberships(model);
+            const others=memberships(resolved).filter(member=>!previous.some(item=>item.group===member.group));
+            resolved.memberships=[...others,...desired.map(member=>({...member,...(!member.effort && inferred?{effort:inferred}:{})}))];
+            continue;
+          }
           if (model[key] === undefined) delete resolved[key]; else resolved[key] = structuredClone(model[key]);
         }
       }
@@ -56,10 +63,15 @@ export function modelSaveConfig(base, draft, routeId, modelId, enableRoute = fal
 }
 
 export function quotaWindows(snapshot, modelId = '') {
-  return (snapshot?.windows || []).filter(window => (!modelId || !window.models?.length || window.models.some(id => modelId.includes(id))) && Number.isFinite(window.remainingPercent)).map(window => {
+  return (snapshot?.windows || []).filter(window => quotaApplies(window,modelId) && Number.isFinite(window.remainingPercent)).map(window => {
     const remaining = Math.max(0, Math.min(100, window.remainingPercent));
     return { ...window, remaining, used: 100 - remaining };
   });
+}
+
+export function quotaApplies(window, modelId = '') {
+  const id=modelId.toLowerCase();
+  return !id || !window.models?.length || window.models.some(scope => ['gemini-flash','gemini-pro'].includes(scope) ? id.includes('gemini') && id.includes(scope.slice(7)) : id.includes(scope.toLowerCase()));
 }
 
 export function effortLabel(value) {

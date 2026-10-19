@@ -54,6 +54,7 @@ export const configSchema = z.object({
       id: label, alias: label, group: label,
       enabled: z.boolean().default(true),
       efforts: z.array(label).max(10).default([]),
+      variants: z.record(label, label).optional(),
       defaultEffort: label.optional(),
       memberships: z.array(z.object({ group: z.enum(['high', 'medium', 'low']), effort: label.optional() }).strict()).max(3).optional(),
       kinds: z.array(z.enum(['text', 'read', 'write'])).min(1),
@@ -72,6 +73,8 @@ export const configSchema = z.object({
     if (route.models.some(m => m.defaultEffort && !m.efforts.includes(m.defaultEffort)))
       ctx.addIssue({ code: 'custom', message: 'Varsayılan efor desteklenen değerlerden biri olmalı.' });
     for (const model of route.models) {
+      if (model.variants && (route.adapter !== 'agy' || Object.keys(model.variants).some(effort => !model.efforts.includes(effort))))
+        ctx.addIssue({ code: 'custom', message: 'Model varyantları yalnızca Antigravity tarafından bildirilen eforlarla eşleşmeli.' });
       if (model.memberships?.some(member => member.effort && !model.efforts.includes(member.effort)))
         ctx.addIssue({ code: 'custom', message: 'Havuz eforu modelin desteklediği değerlerden biri olmalı.' });
       if (model.memberships && new Set(model.memberships.map(member => member.group)).size !== model.memberships.length)

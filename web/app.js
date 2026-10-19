@@ -1,4 +1,4 @@
-import { memberships, mergeScanDraft, addMembership, modelSaveConfig, quotaWindows, effortLabel, modelIdentity, modelFamily, modelFiltered, sortModels, initialTaskGroup, restoredWorkspace } from '/pool-state.js';
+import { memberships, mergeScanDraft, addMembership, modelSaveConfig, quotaWindows, effortLabel, modelIdentity, modelFamily, modelFiltered, sortModels } from '/pool-state.js';
 const $ = id => document.getElementById(id);
 const labels = { queued: 'Sırada', starting: 'Başlatılıyor', running: 'Çalışıyor', succeeded: 'Tamamlandı', failed: 'Başarısız', timed_out: 'Süre doldu', cancelling: 'Durduruluyor', cancelled: 'Durduruldu', needs_review: 'Elle inceleme gerekli' };
 const billingLabels = { subscription: 'Abonelik', token_plan: 'Token planı', free_credits: 'Günlük / ücretsiz kredi', free: 'Ücretsiz', paid_api: 'Ücretli API', unknown: 'Doğrulanmadı' };
@@ -8,19 +8,14 @@ let settings = null;
 let baseConfig = null;
 let busy = false;
 let refreshing = false;
-let submitted = null;
-let modelSignature = '';
 let selectedTask = null;
 let selectedTaskStamp = '';
-let conversationRoot = null;
-let skills = [];
 let poolDirty = false;
 let selectedRoute = '';
 let selectedGroup = 'high';
 let quotasOpen = true;
 const quotaStates = new Map();
 let noticeTimer;
-let taskGroupInitialized = false;
 let selectedFamily = '';
 let viewPreferences = {};
 try { viewPreferences = JSON.parse(localStorage.getItem('pool-view') || '{}'); if (!viewPreferences || typeof viewPreferences !== 'object' || Array.isArray(viewPreferences)) viewPreferences = {}; } catch { /* Browser defaults remain usable. */ }
@@ -105,47 +100,12 @@ async function action(operation) {
   finally {
     busy = false;
     document.querySelectorAll('input,select,textarea,button').forEach(node => { node.disabled = node.dataset.locked === 'true'; });
-    updateSubmit();
     updateSave();
   }
 }
-function availableModels() { return (snapshot?.models || []).filter(model => !modelFiltered(settings?.config.modelFilters, model.routeId, model.id) && model.enabled && activeBillings.has(model.billing) && model.kinds.includes($('task-kind').value) && (!$('task-group').value || model.group === $('task-group').value)); }
-function updateSubmit() {
-  const reason = !$('task-workspace').value ? 'Başlamak için proje klasörünü seçin.' : !availableModels().length ? poolDirty ? 'Havuz değişikliklerini üstteki ✓ düğmesiyle kaydedin.' : 'Bu görev için seçilen havuzda etkin model yok. Başka havuz seçin veya Modeller ekranından ekleyin.' : availableModels().every(model => snapshot?.quotas?.[model.routeId]?.status === 'auth_required') ? 'Giriş gerekli. Modeller ekranında bağlantınızın Giriş yap düğmesini kullanın.' : $('voice-input').getAttribute('aria-pressed') === 'true' ? 'Sesle yazmayı tamamlayın.' : '';
-  $('submit').disabled = busy || Boolean(reason) || !$('task-prompt').value.trim();
-  $('model-empty').textContent = reason; $('model-empty').hidden = !reason;
-  $('submit').title = reason || 'Görevi gönder';
-}
-$('task-prompt').addEventListener('input', updateSubmit);
-$('task-prompt').addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); if (!$('submit').disabled) $('task-form').requestSubmit(); } });
-function updateModels() {
-  const previous = $('task-model').value;
-  const models = availableModels();
-  const signature = JSON.stringify(models);
-  if (signature !== modelSignature) {
-    modelSignature = signature;
-    $('task-model').replaceChildren(new Option('Havuzdaki uygun model', ''), ...models.map(model => new Option(`${model.id} · ${adapterLabels[model.adapter] || model.adapter} · ${groupLabel(model.group)}`, JSON.stringify([model.routeId, model.id, model.group]))));
-    if (models.some(model => JSON.stringify([model.routeId, model.id, model.group]) === previous)) $('task-model').value = previous;
-  }
-  updateEfforts();
-  updateSubmit();
-
-  $('write-warning').hidden = $('task-kind').value !== 'write';
-}
-function updateEfforts() {
-  const models = availableModels();
-  const selected = models.find(model => JSON.stringify([model.routeId, model.id, model.group]) === $('task-model').value);
-  const locked = snapshot?.selectionMode === 'manual' || Boolean(selected?.fixedEffort);
-  const efforts = locked ? [] : [...new Set((selected ? [selected] : models).flatMap(model => model.efforts))];
-  const previous = $('task-effort').value;
-  $('task-effort').replaceChildren(new Option(selected?.fixedEffort ? `${effortLabel(selected.fixedEffort)} · havuz kuralı` : 'Havuzdaki efor kurallarını uygula', selected?.fixedEffort || ''), ...efforts.map(effort => new Option(effortLabel(effort), effort)));
-  if (!locked && efforts.includes(previous)) $('task-effort').value = previous;
-  $('task-effort').closest('label').hidden = snapshot?.selectionMode === 'manual';
-  $('task-effort').disabled = locked || busy; $('task-effort').dataset.locked = String(locked);
-}
 function showDetail(value) {
-  $('detail-heading').textContent = value.windows ? 'Kota bilgisi' : 'Görev bilgisi';
-  $('detail-content').replaceChildren(...(value.windows ? [quotaBody(value)] : [element('p', labels[value.state] || 'Görev'), element('p', value.modelId || ''), element('pre', value.result || value.error || '')]));
+  $('detail-heading').textContent = value.windows ? 'Kota bilgisi' : 'Çağrı bilgisi';
+  $('detail-content').replaceChildren(...(value.windows ? [quotaBody(value)] : taskDetails(value)));
   $('detail').hidden = false; if (!$('detail').open) $('detail').showModal(); $('detail-heading').tabIndex = -1; $('detail-heading').focus();
 }
 function button(text, operation) { const node = element('button', text); node.type = 'button'; node.disabled = busy; node.addEventListener('click', () => void action(operation)); return node; }
@@ -192,23 +152,11 @@ async function refresh(announce = false) {
       }
       renderPool(); if (!$('settings').hidden) renderSettings();
     }
-    if (!$('task-workspace').value) { try { $('task-workspace').value = restoredWorkspace(localStorage.getItem('pool-project'), snapshot.workspaceRoots); } catch { /* Keep explicit project selection available. */ } }
-    renderProjects();
-    const previousGroup = $('task-group').value;
-    $('task-group').replaceChildren(...(snapshot.selectionMode === 'auto' ? [new Option('Ajan otomatik seçsin', '')] : []), ...strengthGroups.map(group => new Option(groupLabel(group), group)));
-    $('task-group').value = initialTaskGroup(snapshot.models.filter(model => activeBillings.has(model.billing) && model.kinds.includes($('task-kind').value)), snapshot.selectionMode, previousGroup, taskGroupInitialized); taskGroupInitialized = true;
     $('connection-state').textContent = 'Bağlı'; $('connection-state').dataset.connected = 'true'; $('connection-state').title = 'Bağlı';
     $('installed-count').textContent = snapshot.installed.filter(cli => cli.status === 'installed').length;
     $('model-count').textContent = new Set(snapshot.models.filter(model => model.enabled && (snapshot.selectionMode === 'auto' || strengthGroups.includes(model.group))).map(model => `${model.routeId}/${model.id}`)).size;
     $('running-count').textContent = snapshot.tasks.filter(task => ['starting', 'running', 'cancelling'].includes(task.state)).length;
     $('review-count').textContent = snapshot.tasks.filter(task => task.state === 'needs_review').length;
-    const projectTasks = snapshot.tasks.filter(task => task.workspace === $('task-workspace').value);
-    $('task-total').textContent = projectTasks.length;
-    const currentRoot = $('task-workspace').value;
-    if (currentRoot && conversationRoot !== currentRoot) {
-      conversationRoot = currentRoot; $('conversation').replaceChildren();
-      for (const previous of [...projectTasks].reverse()) { if ($('task-workspace').value !== currentRoot) break; await openTask(previous.id, false); }
-    }
     const providerRows = [];
     for (const conn of snapshot.connections) {
       const row = element('div', null, 'provider');
@@ -232,18 +180,8 @@ async function refresh(announce = false) {
       providerRows.push(row);
     }
     $('providers').replaceChildren(...providerRows);
-    const focusedId = document.activeElement?.id;
-    $('tasks').replaceChildren(...(projectTasks.length ? projectTasks.map(task => {
-      const row = element('div', null, 'task');
-      const title = element('div', null, 'task-title'); title.append(element('strong', `Seçilen: ${task.modelId} · ${task.routeId}`), element('span', labels[task.state] || task.state, 'badge subtle'));
-      const actions = element('div', null, 'actions');
-      const resultButton = button('Sonucu görüntüle', async () => { await openTask(task.id); }); resultButton.id = `result-${task.id}`; actions.append(resultButton);
-      if (['queued', 'starting', 'running'].includes(task.state)) { const cancelButton = button('Durdur', async () => { showDetail(await call('cancel', { taskId: task.id })); await refresh(); }); cancelButton.id = `cancel-${task.id}`; actions.append(cancelButton); }
-      row.append(title, element('small', `${task.workspace || ''} · ${new Date(task.created).toLocaleString('tr-TR')}`), actions); return row;
-    }) : [element('p', 'Henüz görev yok. İlk görevinizi formdan başlatın.', 'empty')]));
-    if (focusedId?.startsWith('result-') || focusedId?.startsWith('cancel-')) $(focusedId)?.focus({ preventScroll: true });
-    updateModels();
-    if (selectedTask) await openTask(selectedTask, false);
+    renderCalls(); updateCardActivity();
+    if (selectedTask && $('detail').open) await openTask(selectedTask, false);
     if (wasOffline) notice('Bağlantı yeniden kuruldu.');
   } catch (error) { $('connection-state').textContent = 'Bağlantı yok'; $('connection-state').dataset.connected = 'false'; $('connection-state').title = 'Bağlantı yok'; notice(error.message, true); }
   finally { refreshing = false; }
@@ -341,10 +279,9 @@ $('new-adapter').addEventListener('change', () => {
   const cli = snapshot?.installed?.find(item => item.adapter === adapter);
   if (cli?.defaultBilling) $('new-billing').value = cli.defaultBilling;
 });
-$('task-kind').addEventListener('change', updateModels);
 $('refresh').addEventListener('click', () => void action(async () => { await refresh(); await refreshQuotas(); }));
 $('scan-import').addEventListener('click', () => void action(runScanImport));
-$('close-detail').addEventListener('click', () => { $('detail').close(); $('detail').hidden = true; ($('workspace-panel').hidden ? $('pool-tab') : $('task-prompt')).focus(); });
+$('close-detail').addEventListener('click', () => { $('detail').close(); $('detail').hidden = true; selectedTask = null; selectedTaskStamp = ''; $('calls-tab').focus(); });
 $('open-settings').addEventListener('click', () => switchPage('settings'));
 async function saveSettings() {
   settings = await call('save', settings); poolDirty = false; renderSettings(); renderPool(); await refresh(); notice('Kaydedildi.');
@@ -433,43 +370,19 @@ $('add-custom-cli').addEventListener('click', () => void action(async () => {
   $('custom-cli-id').value = ''; $('custom-cli-exe').value = ''; $('custom-cli-args').value = ''; $('custom-cli-models').value = '';
   renderSettings(); renderPool(); await refresh(); notice(`${id} özel CLI bağlantısı eklendi.`);
 }));
-$('task-form').addEventListener('submit', event => {
-  event.preventDefault();
-  void action(async () => {
-    const request = selectionRequest();
-    request.prompt = [$('task-prompt').value, $('task-goal').value.trim() ? `Hedef / tamamlanma koşulu:\n${$('task-goal').value.trim()}` : '', ...skills.map(skill => `Skill: ${skill.name}${skill.id ? `\nKaynak: ${skill.id}` : ''}\n${skill.text}`)].filter(Boolean).join('\n\n');
-    request.workspace = $('task-workspace').value;
-    request.timeoutSeconds = 300;
-    if (request.prompt.length > 100000) throw new Error('Görev, hedef ve skill metni toplamı 100.000 karakteri aşamaz.');
-    const fingerprint = JSON.stringify(request);
-    if (submitted?.fingerprint !== fingerprint) submitted = { fingerprint, key: crypto.randomUUID() };
-    const task = await call('submit', { ...request, idempotencyKey: submitted.key });
-    await openTask(task.id); $('task-prompt').value = ''; $('task-goal').value = ''; skills = []; renderSkills(); $('task-instructions').open = false; updateSubmit(); await refresh(); notice('Görev kaydedildi. Durumu ve sonucu çalışma alanında güncellenir.');
-  });
-});
-
-function selectionRequest() {
-  const request = { kind: $('task-kind').value };
-  if ($('task-group').value) request.group = $('task-group').value;
-  if ($('task-model').value) { const [routeId, modelId, group] = JSON.parse($('task-model').value); Object.assign(request, { routeId, modelId }); if (group !== 'unassigned') request.group = group; }
-  if ($('task-effort').value) request.effort = $('task-effort').value;
-  return request;
-}
 function switchPage(page) {
-  $('pool-panel').hidden = page !== 'pool'; $('workspace-panel').hidden = page !== 'workspace'; $('settings').hidden = page !== 'settings';
+  $('pool-panel').hidden = page !== 'pool'; $('calls-panel').hidden = page !== 'calls'; $('settings').hidden = page !== 'settings';
   if (page === 'pool') renderPool();
+  if (page === 'calls') renderCalls();
   if (page === 'settings' && settings) renderSettings();
-  $('detail').close(); $('detail').hidden = true;
-  for (const [id, target] of [['pool-tab', 'pool'], ['workspace-tab', 'workspace'], ['open-settings', 'settings']]) {
+  $('detail').close(); $('detail').hidden = true; selectedTask = null; selectedTaskStamp = '';
+  for (const [id, target] of [['pool-tab', 'pool'], ['calls-tab', 'calls'], ['open-settings', 'settings']]) {
     if (page === target) $(id).setAttribute('aria-current', 'page'); else $(id).removeAttribute('aria-current');
   }
 }
-
-document.querySelector('.skip').addEventListener('click', () => { switchPage('workspace'); $('task-prompt').focus(); updateSubmit(); });
+document.querySelector('.skip').addEventListener('click', () => { switchPage('pool'); $('toggle-pool').focus(); });
 $('pool-tab').addEventListener('click', () => switchPage('pool'));
-$('workspace-tab').addEventListener('click', () => switchPage('workspace'));
-$('task-group').addEventListener('change', updateModels);
-$('task-model').addEventListener('change', () => { updateEfforts(); updateSubmit(); });
+$('calls-tab').addEventListener('click', () => switchPage('calls'));
 $('pool-search').addEventListener('input', () => { $('pool-models').scrollTop = 0; renderCatalog(); });
 $('selection-mode').addEventListener('change', () => { settings.config.selectionMode = $('selection-mode').value; dirty(); renderPool(); });
 $('grouping-mode').addEventListener('change', () => { settings.config.groupingMode = $('grouping-mode').value; dirty(); });
@@ -597,7 +510,22 @@ function modelCard(route,model,member) {
     const actions=element('div',null,'model-actions'), hide=button('Gizle',async()=>openFilters(route,model)), add=button('Ekle',async()=>openPoolPicker(route,model));
     hide.setAttribute('aria-label',`${model.id} için filtre ekle`);add.classList.add('add-model');add.dataset.modelId=model.id;add.dataset.routeId=route.id;add.setAttribute('aria-label',`${model.id} modelini havuza ekle`);actions.append(hide,add);footer.append(actions);
   }
-  row.append(info,quotaCell(route,model),footer);return row;
+  const controls = element('div', null, 'model-test-controls');
+  const test = button('Test et', async () => {
+    const savedRoute = baseConfig.routes.find(item => item.id === route.id), savedModel = savedRoute?.models.find(item => item.id === model.id);
+    if (!savedModel) throw new Error('Modeli test etmeden önce kaydedin.');
+    const member = memberships(savedModel).find(item => item.group === selectedGroup) || memberships(savedModel)[0];
+    if (baseConfig.selectionMode === 'manual' && !member) throw new Error('Test etmek için modeli önce bir havuza ekleyin. Havuzlarım kuralı testlerde de geçerlidir.');
+    const task = await call('probe_model', {routeId:route.id, modelId:model.id, ...(member ? {group:member.group} : {})});
+    await refresh(); await openTask(task.id);
+  });
+  test.setAttribute('aria-label', `${model.id} · ${route.id} modelini test et`);
+  test.title = 'Kısa bir metin çağrısı gönderir; bağlantının mevcut kota ve izin kuralları geçerlidir.';
+  const link = button('', async () => { if (link.dataset.taskId) await openTask(link.dataset.taskId); }); link.className = 'model-call'; link.hidden = true;
+  controls.append(test, link); row.append(info,quotaCell(route,model),footer,controls);
+  const task = snapshot?.tasks.find(task => task.routeId === route.id && task.modelId === model.id);
+  if (task) { row.classList.toggle('is-active', activeStates.has(task.state)); link.hidden = false; link.textContent = activeStates.has(task.state) ? '● Çalışıyor' : `Son çağrı: ${labels[task.state] || task.state}`; link.dataset.taskId = task.id; }
+  return row;
 }
 function openFilters(route, model) {
   const filters=settings.config.modelFilters ||= [];
@@ -605,21 +533,39 @@ function openFilters(route, model) {
   if(route&&model) {
     $('filter-heading').textContent=model.id;
     const rules=[['Bu bağlantıda gizle',{match:'model',value:model.id,routeId:route.id}],['Bu modeli her yerde gizle',{match:'model',value:modelIdentity(model.id)}],[`${familyLabel(modelFamily(model.id))} ailesini gizle`,{match:'family',value:modelFamily(model.id)}]];
-    for(const [label,rule] of rules) $('filter-actions').append(button(label,async()=>{if(!filters.some(item=>JSON.stringify(item)===JSON.stringify(rule))){filters.push(rule);dirty();}renderPool();openFilters();}));
+    for(const [label,rule] of rules) $('filter-actions').append(button(label,async()=>{if(!filters.some(item=>JSON.stringify(item)===JSON.stringify(rule))){filters.push(rule);await saveFilters();}renderPool();openFilters();}));
   } else $('filter-heading').textContent='Gizlenen modeller';
-  $('filter-list').replaceChildren(...filters.map((rule,index)=>{const row=element('div',null,'filter-row');row.append(element('span',`${rule.match==='family'?familyLabel(rule.value)+' ailesi':rule.value} · ${rule.routeId||'Tüm bağlantılar'}`),button('Göster',async()=>{filters.splice(index,1);dirty();renderPool();openFilters();}));return row;}));
+  $('filter-list').replaceChildren(...filters.map((rule,index)=>{const row=element('div',null,'filter-row');row.append(element('span',`${rule.match==='family'?familyLabel(rule.value)+' ailesi':rule.value} · ${rule.routeId||'Tüm bağlantılar'}`),button('Göster',async()=>{filters.splice(index,1);await saveFilters();renderPool();openFilters();}));return row;}));
   if(!filters.length) $('filter-list').append(element('p','Gizlenen model yok. Model kartındaki Gizle düğmesiyle filtre ekleyin.','hint'));
   if(!$('model-filter-dialog').open) $('model-filter-dialog').showModal(); else $('close-filters').focus();
 }
 $('open-filters').addEventListener('click',()=>openFilters());
 $('close-filters').addEventListener('click',()=>$('model-filter-dialog').close());
 $('model-filter-dialog').addEventListener('close',()=>$('open-filters').focus());
+async function saveFilters() {
+  dirty();
+  const before = structuredClone(baseConfig), draft = structuredClone(settings.config);
+  const config = { ...before, modelFilters: structuredClone(draft.modelFilters || []) };
+  const saved = await call('save', { ...settings, config });
+  settings = { ...saved, config: mergeScanDraft(saved.config, before, draft) };
+  poolDirty = JSON.stringify(settings.config) !== JSON.stringify(saved.config);
+  updateSave(); renderPool(); if (!$('settings').hidden) renderSettings(); await refresh();
+}
+function routeSettings(route) {
+  switchPage('settings');
+  const section = [...$('settings-routes').children].find(node => node.dataset.routeId === route.id);
+  if (section) { section.open = true; section.scrollIntoView({block:'nearest'}); }
+}
 function loginNotice(route, compact=false) {
-  const q=snapshot?.quotas?.[route.id], box=element('div',null,`login-notice${compact?' model-connection':''}`);
-  if(q?.status!=='auth_required') return box;
-  box.append(element('span','Giriş gerekli'));
-  box.append(button(route.api?'Anahtar ayarları':'Giriş yap',async()=>{if(route.api){switchPage('settings');return;}const result=await call('login',{routeId:route.id});notice(result.message);}));
-  const check=button(compact?'↻':'Kontrol et',async()=>{await refreshQuotas(route.id);await refresh();renderPool();});check.setAttribute('aria-label',`${route.id} giriş durumunu kontrol et`);check.title='Giriş durumunu kontrol et';box.append(check);return box;
+  const q = snapshot?.quotas?.[route.id], box = element('div', null, `login-notice${compact ? ' model-connection' : ''}`);
+  const native = !route.api && !['custom','lmstudio','ollama','omniroute'].includes(route.adapter);
+  const unverified = !q || ['auth_required','unknown','error'].includes(q.status) || q.auth === 'unknown';
+  if (!unverified && !(route.adapter !== 'codex' && !route.api && !route.trustedSettings)) return box;
+  box.append(element('span', q?.status === 'auth_required' ? 'Giriş gerekli' : 'Oturum doğrulanmadı'));
+  if (native) box.append(button('Giriş yap', async () => { const result = await call('login', {routeId:route.id}); notice(result.message); }));
+  if (route.api || (route.adapter !== 'codex' && !route.trustedSettings)) box.append(button('Ayarlar', async () => routeSettings(route)));
+  const check = button(compact ? '↻' : 'Kontrol et', async () => { await refreshQuotas(route.id); await refresh(); renderPool(); });
+  check.setAttribute('aria-label', `${route.id} giriş durumunu kontrol et`); check.title = 'Giriş durumunu kontrol et'; box.append(check); return box;
 }
 function openPoolPicker(route, model) {
   pendingPoolModel = { routeId: route.id, modelId: model.id };
@@ -654,100 +600,52 @@ async function refreshQuotas(routeId) {
   finally { quotasRefreshing = false; $('refresh-quotas').textContent = 'Kotaları yenile'; renderPool(); }
 }
 $('refresh-quotas').addEventListener('click', () => { void refreshQuotas(); });
-function rememberProject(root) {
-  $('task-workspace').value=root;
-  try { localStorage.setItem('pool-project',root); } catch { /* Selection works without persistence. */ }
-  selectedTask=null;selectedTaskStamp='';conversationRoot=null;$('conversation').replaceChildren();
-}
-function renderProjects() {
-  const roots = snapshot?.workspaceRoots || [];
-  const root = $('task-workspace').value; $('browse-workspace').textContent = root ? root.split(/[\\/]/).filter(Boolean).at(-1) : 'Proje seç'; $('browse-workspace').title = root || 'Proje klasörü seçin';
-  $('projects').replaceChildren(...roots.map(root => {
-    const node = button(root.split(/[\\/]/).filter(Boolean).at(-1) || root, async () => { rememberProject(root); renderProjects(); await refresh(); });
-    node.title = root; node.className = 'project-button'; node.classList.toggle('selected', root === $('task-workspace').value); return node;
-  }));
-}
-async function openFolders() {
-  notice('Windows klasör seçme penceresi açılıyor…');
-  const result = await call('pick_folder', { path: $('task-workspace').value || '' });
-  if (!result.path) { notice('Klasör seçimi iptal edildi.'); return; }
-  // Save only the selected project root, keeping any unrelated pool draft in memory.
-  const view = await call('settings');
-  if (!view.config.workspaceRoots.includes(result.path)) view.config.workspaceRoots.push(result.path);
-  const saved = await call('save', view);
-  if (settings && poolDraft) { settings.config.workspaceRoots = [...new Set([...settings.config.workspaceRoots, result.path])]; settings.revision = saved.revision; poolDirty = true; }
-  else settings = saved;
-  rememberProject(result.path); await refresh(); renderPool(); notice('Proje klasörü seçildi.');
-}
-let poolDraft = false;
-function chooseWindowsFolder() { poolDraft = poolDirty; void action(openFolders); }
-$('browse-workspace').addEventListener('click', chooseWindowsFolder);
-$('add-project').addEventListener('click', chooseWindowsFolder);
-async function openTask(id, force = true) {
-  const summary = snapshot?.tasks.find(task => task.id === id);
-  const stamp = `${id}:${summary?.updated}`;
-  if (!force && stamp === selectedTaskStamp) return;
-  const task = await call('task', { taskId: id }); selectedTask = id; selectedTaskStamp = stamp;
-  const content=[];
-  const meta=element('details',null,'message-meta');meta.append(element('summary',`${adapterLabels[snapshot?.connections.find(route=>route.id===task.routeId)?.adapter] || task.routeId} · ${task.modelId} · ${labels[task.state]}`),element('p',`${task.routeId} · ${groupLabel(task.group || 'unassigned')} · Efor: ${effortLabel(task.effort)}${task.reportedModel ? ` · Bildirilen: ${task.reportedModel}` : ''}`));
-  if(task.prompt) content.push(element('div',task.prompt.split(/\n\n(?:Hedef \/ tamamlanma koşulu:|Skill:)/)[0],'user-message'));
-  content.push(element('div',task.result || task.error || task.events?.at(-1)?.detail || labels[task.state],'agent-message'),meta);
-  const existing=[...$('conversation').children].find(node=>node.dataset.taskId===task.id), nearBottom=$('conversation').scrollHeight-$('conversation').scrollTop-$('conversation').clientHeight<60;
-  const article=element('article',null,'message-pair');article.dataset.taskId=task.id;article.append(...content);
-  if(existing)existing.replaceWith(article);else{$('conversation').querySelector('.empty')?.remove();$('conversation').append(article);}
-  if(force || nearBottom) $('conversation').scrollTop=$('conversation').scrollHeight;
-}
-let availableSkills=[];
-async function openSkillPicker(query='') {
-  $('skill-search').value=query;$('skill-list').replaceChildren(element('p','Skill’ler yükleniyor…','hint'));
-  if(!$('skill-dialog').open)$('skill-dialog').showModal();$('skill-search').focus();
-  try { availableSkills=await call('skills',{workspace:$('task-workspace').value});renderSkillPicker(); } catch(error){$('skill-list').replaceChildren(element('p',error.message,'hint'));}
-}
-function renderSkillPicker(){
-  const query=$('skill-search').value.toLocaleLowerCase('tr');
-  $('skill-list').replaceChildren(...availableSkills.filter(skill=>`${skill.name} ${skill.description}`.toLocaleLowerCase('tr').includes(query)).map(skill=>{
-    const item=button('',async()=>{if(skills.length>=10)throw Error('Bir mesaja en fazla 10 skill ekleyebilirsiniz.');if(!skills.some(item=>item.id===skill.id)){const attached=await call('skill',{workspace:$('task-workspace').value,id:skill.id});skills.push(attached);renderSkills();}if(/^\/[^\s]*$/.test($('task-prompt').value))$('task-prompt').value='';$('skill-dialog').close();$('task-prompt').focus();updateSubmit();});item.append(element('strong',skill.name),element('small',`${skill.source}${skill.description ? ` · ${skill.description}`:''}`));return item;
-  }));
-  if(!$('skill-list').children.length)$('skill-list').append(element('p','Eşleşen skill yok. Projenizde .agents/skills/<ad>/SKILL.md kullanabilir veya dosyadan ekleyebilirsiniz.','hint'));
-}
-$('attach-instructions').addEventListener('click',()=>void openSkillPicker());
-$('task-prompt').addEventListener('input',()=>{if(/^\/[^\s]*$/.test($('task-prompt').value))void openSkillPicker($('task-prompt').value.slice(1));});
-$('skill-search').addEventListener('input',renderSkillPicker);
-$('close-skills').addEventListener('click',()=>$('skill-dialog').close());
-$('skill-dialog').addEventListener('close',()=>$('task-prompt').focus());
-$('upload-skill').addEventListener('click',()=>{$('skill-dialog').close();$('skill-files').click();});
-$('add-goal').addEventListener('click',()=>{$('skill-dialog').close();$('task-instructions').open=true;$('task-goal').focus();});
-$('new-task').addEventListener('click', () => { selectedTask = null; selectedTaskStamp = ''; submitted = null; $('task-prompt').value = ''; $('task-goal').value = ''; skills = []; renderSkills(); $('conversation').replaceChildren(); $('task-prompt').focus(); updateSubmit(); });
-$('preview-selection').addEventListener('click', () => void action(async () => {
-  const result = await call('select', selectionRequest()); await refresh();
-  const rows = [result.selected, ...result.alternatives].map((model, index) => element('p', `${index ? 'Alternatif' : 'Seçilen'}: ${model.alias} · ${model.routeId} · ${groupLabel(model.group)}`));
-  $('conversation').replaceChildren(...rows, element('p', result.reason, 'hint'));
-}));
-function renderSkills() {
-  $('attached-skills').replaceChildren(...skills.map((skill, index) => button(`${skill.name} ×`, async () => { skills.splice(index, 1); renderSkills(); })));
-  $('skill-files').value = '';
-}
-$('skill-files').addEventListener('change', () => void action(async () => {
-  const additions = [];
-  for (const file of $('skill-files').files) {
-    if (!file.name.toLowerCase().endsWith('.md') || file.size > 65536) throw new Error('Her skill .md dosyası olmalı ve en fazla 64 KB olabilir.');
-    additions.push({ name: file.name, text: await file.text() });
+const activeStates = new Set(['queued', 'starting', 'running', 'cancelling']);
+function taskDetails(task) {
+  const metadata = element('dl', null, 'call-metadata');
+  for (const [label, value] of [['Durum', labels[task.state] || task.state], ['İstemci', task.clientLabel || 'Bilinmeyen istemci'], ['Bağlantı', task.routeId], ['Model', task.modelId], ['Havuz', groupLabel(task.group)], ['Efor', effortLabel(task.effort)], ['Başlangıç', new Date(task.created).toLocaleString('tr-TR')], ['Çalışma klasörü', task.workspace], ['CLI’ın bildirdiği model', task.reportedModel]]) {
+    if (value) metadata.append(element('dt', label), element('dd', value));
   }
-  if (skills.length + additions.length > 10) throw new Error('Bir göreve en fazla 10 skill ekleyebilirsiniz.');
-  skills.push(...additions); renderSkills();
-}));
-const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-if (SpeechRecognition) {
-  const recognition = new SpeechRecognition(); recognition.lang = 'tr-TR'; recognition.interimResults = false;
-  recognition.onresult = event => { $('task-prompt').value += `${$('task-prompt').value ? ' ' : ''}${event.results[0][0].transcript}`; updateSubmit(); };
-  recognition.onerror = event => { const reason = ({ 'not-allowed': 'Mikrofon izni verilmedi', 'audio-capture': 'Mikrofon bulunamadı', network: 'Konuşma tanıma hizmetine ulaşılamadı', 'no-speech': 'Ses algılanmadı' })[event.error] || 'Sesle yazma kullanılamadı'; $('voice-status').textContent = `${reason}. Komutunuzu yazarak girebilirsiniz.`; };
-  recognition.onend = () => { $('voice-input').classList.remove('listening'); $('voice-input').setAttribute('aria-label', 'Sesle yaz'); $('voice-input').setAttribute('aria-pressed', 'false'); updateSubmit(); if ($('voice-status').textContent.startsWith('Dinleniyor')) $('voice-status').textContent = 'Sesle yazma tamamlandı. Metni kontrol edip gönderebilirsiniz.'; };
-  $('voice-input').addEventListener('click', () => {
-    if ($('voice-input').getAttribute('aria-pressed') === 'true') { recognition.stop(); return; }
-    try { recognition.start(); $('voice-input').classList.add('listening'); $('voice-input').setAttribute('aria-label', 'Dinlemeyi durdur'); $('voice-input').setAttribute('aria-pressed', 'true'); updateSubmit(); $('voice-status').textContent = 'Dinleniyor… Sesiniz tarayıcınızın konuşma tanıma hizmetiyle metne çevrilir.'; }
-    catch (error) { notice(error.message, true); }
+  const errors={AUTH_REQUIRED:'CLI oturumu veya sağlayıcı anahtarı doğrulanamadı. Giriş durumunu kontrol edin.',PROVIDER_RESTRICTION:'Sağlayıcı bu CLI erişim yolunu kabul etmiyor. Ücretli başka bir yola otomatik geçilmedi.',QUOTA_EXHAUSTED:'Sağlayıcı kota veya bakiye sınırı bildirdi.',MODEL_UNAVAILABLE:'Seçilen model bu sağlayıcıda kullanılamıyor. Kataloğu yenileyin.',PERMISSION_REQUIRED:'CLI çalışma alanı veya izin onayı gerekiyor.',SETTINGS_NOT_TRUSTED:'Yerel CLI ayarları henüz doğrulanmadı. Bağlantı ayarlarını kontrol edin.',CLI_FAILED:'CLI çağrısı başarısız oldu; sağlayıcı veya CLI kurulumunu kontrol edin.'};
+  const result = task.historyExpired?'Bu çağrının ayrıntıları saklama süresi dolduğu için temizlendi.':task.result || errors[task.error] || task.error || (activeStates.has(task.state) ? 'Çağrı devam ediyor; sonuç burada güncellenecek.' : 'Bu çağrı sonuç metni bildirmedi.');
+  const nodes = [metadata, element('h3', 'İstek'), element('div', task.prompt || 'İstek metni bulunmuyor.', 'call-text'), element('h3', 'Yanıt'), element('div', result, `call-text${task.error ? ' call-error' : ''}`)];
+  if (task.events?.length) {
+    const events = element('details', null, 'call-events'); events.append(element('summary', 'İşlem adımları'));
+    for (const event of task.events) events.append(element('p', `${event.created ? new Date(event.created).toLocaleTimeString('tr-TR') + ' · ' : ''}${labels[event.state] || event.state || event.type || 'Bilgi'}${event.detail ? ' · ' + event.detail : ''}`));
+    nodes.push(events);
+  }
+  return nodes;
+}
+async function openTask(id, force = true) {
+  const summary = snapshot?.tasks.find(task => task.id === id), stamp = `${id}:${summary?.updated}`;
+  if (!force && stamp === selectedTaskStamp) return;
+  const task = await call('task', { taskId: id }); selectedTask = id; selectedTaskStamp = stamp; showDetail(task);
+}
+function renderCalls() {
+  const focusedId = document.activeElement?.id;
+  const tasks = snapshot?.tasks || [], active = tasks.filter(task => activeStates.has(task.state)), recent = tasks.filter(task => !activeStates.has(task.state)).slice(0, 50);
+  $('active-call-count').textContent = active.length; $('recent-call-count').textContent = recent.length;
+  for (const [id, entries, empty] of [['active-calls', active, 'Şu anda çalışan çağrı yok.'], ['recent-calls', recent, 'Henüz tamamlanan çağrı yok.']]) {
+    $(id).replaceChildren(...(entries.length ? entries.map(task => {
+      const row = element('article', null, `call-row${activeStates.has(task.state) ? ' is-active' : ''}`), title = element('div', null, 'task-title');
+      title.append(element('strong', task.modelId), element('span', labels[task.state] || task.state, 'badge subtle'));
+      const info = element('div'); info.append(title, element('small', `${task.clientLabel || 'Bilinmeyen istemci'} · ${task.routeId} · ${groupLabel(task.group)} · ${effortLabel(task.effort)}`), element('small', new Date(task.created).toLocaleString('tr-TR')));
+      const actions = element('div', null, 'actions'), inspect = button('Ayrıntılar', async () => { await openTask(task.id); }); inspect.id = `result-${task.id}`; actions.append(inspect);
+      if (['queued', 'starting', 'running'].includes(task.state)) { const cancel = button('Durdur', async () => { await call('cancel', {taskId:task.id}); await refresh(); }); cancel.id = `cancel-${task.id}`; actions.append(cancel); }
+      row.append(info, actions); return row;
+    }) : [element('p', empty, 'empty')]));
+  }
+  if (focusedId?.startsWith('result-') || focusedId?.startsWith('cancel-')) $(focusedId)?.focus({preventScroll:true});
+}
+function updateCardActivity() {
+  document.querySelectorAll('.model-card').forEach(card => {
+    const task = snapshot?.tasks.find(task => task.routeId === card.dataset.routeId && task.modelId === card.dataset.modelId);
+    card.classList.toggle('is-active', Boolean(task && activeStates.has(task.state)));
+    const link = card.querySelector('.model-call');
+    link.hidden = !task; link.textContent = task ? activeStates.has(task.state) ? '● Çalışıyor' : `Son çağrı: ${labels[task.state] || task.state}` : '';
+    link.dataset.taskId = task?.id || '';
   });
-} else { $('voice-input').disabled = true; $('voice-input').dataset.locked = 'true'; $('voice-status').textContent = 'Bu tarayıcı sesle yazmayı desteklemiyor. Destekleyen bir Chrome / Edge sürümüyle açabilirsiniz.'; }
+}
 window.addEventListener('beforeunload', event => { if (poolDirty) { event.preventDefault(); event.returnValue = ''; } });
 void refresh(true).then(() => { if (snapshot) void refreshQuotas(); });
 setInterval(() => { if (!document.hidden && !busy) void refresh(); }, 5000);

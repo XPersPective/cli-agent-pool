@@ -193,7 +193,8 @@ test('Antigravity discovers exact cross-vendor model IDs without inference or fa
  const route={id:'agy',adapter:'agy',executable:file,billing:'subscription',models:[{id:'gemini-2.5-pro',group:'antigravity',efforts:[]}]};
  const catalog=await routeCatalog(route,root,process.platform==='win32'?'python':'python3');
  const assigned={...route,models:[{id:'gemini-2.5-pro',group:'medium',efforts:[],enabled:true}]};mergeCatalogModels(assigned,catalog);assert.equal(assigned.models[0].enabled,false);assert.equal(assigned.models[0].group,'medium');
- assert.deepEqual(catalog.models.map(m=>m.id),['claude-opus-5-5-high','gemini-4-argon-low','gpt-oss-120b-medium']);
+ assert.deepEqual(catalog.models.map(m=>m.id),['claude-opus-5-5','gemini-4-argon','gpt-oss-120b']);
+ assert.deepEqual(catalog.models[0].variants,{high:'claude-opus-5-5-high'});
  assert.deepEqual(catalog.models[0].efforts,['high']);mergeCatalogModels(route,catalog);assert(!route.models.some(m=>m.id==='gemini-2.5-pro'));
  writeFileSync(file,"console.log('not a catalog')");await assert.rejects(routeCatalog(route,root,process.platform==='win32'?'python':'python3'),{code:'DISCOVERY_FAILED'});
 });

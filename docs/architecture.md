@@ -150,3 +150,15 @@ existing revision-checked save operation. Pending billing, trust and other setti
 stay in the browser draft, rebased onto the saved configuration. Browser storage
 retains pending config drafts across reloads; neither credentials nor task prompts
 are included. A failed save leaves the draft pending and reports the error.
+
+
+Pool 1.5 replaces the owner chat composer with a read-only calls monitor and fixed
+text probes. Agent submit/skills/folder APIs remain available for compatibility.
+Only owner probe_model can mark an internal runtime probe workspace; agent requests
+cannot forge that flag or expand workspace roots. The normal policy, quota and CLI
+permission checks still apply. Client labels are self-reported metadata, not identity.
+Completed payloads expire after seven days or 500 completed entries; durable keys,
+fingerprints and quarantine survive cleanup. Active jobs are prioritized in snapshots.
+Antigravity effort variants are canonical catalog entries with exact native ID maps;
+merges stage changes atomically and reject conflicting memberships. Provider-declared
+quota scopes apply identically in the UI and selector, including explicit Argon groups.

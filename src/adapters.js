@@ -247,7 +247,7 @@ export function localModelsFor(adapter) {
     } catch {}
     if (!models.length) add('kimi-code/k3-256k', 'Kimi K3 256k', 'kimi');
   } else if (adapter === 'mimo') {
-    add('mimo/mimo-v2.5-pro', 'MiMo v2.5 Pro', 'mimo');
+    // Only the native catalog knows which Xiaomi provider/model IDs are configured.
   } else if (adapter === 'agy') {
     // The live `models` subcommand is authoritative; never invent a local fallback.
   } else if (adapter === 'omniroute') {
@@ -387,7 +387,11 @@ export function buildArguments(route, model, task) {
   if (route.adapter === 'zcode') return [...argv, '--cwd', task.workspace, '--mode', task.kind === 'write' ? 'edit' : 'plan', '--disallowed-tools', task.kind === 'write' ? 'Bash' : 'Bash,Edit,Write', '--output-format', 'stream-json', '--no-color', '-p', task.prompt];
   if (route.adapter === 'mcode') return [...argv, 'exec', '--input', '-', '--cwd', task.workspace, '--model', model.id, '--prompt-mode', 'coding', '--permission', task.kind === 'write' ? 'full' : 'smart', '--mode', 'lightweight', '--output-format', 'stream-json', ...(effort ? ['--effort', effort] : [])];
   if (route.adapter === 'kimi') return [...argv, '-m', model.id, '--output-format', 'stream-json', ...(task.kind === 'write' ? ['--auto'] : []), '-p', task.prompt];
-  if (route.adapter === 'agy') return [...argv, '-p', '--output-format', 'stream-json', '--mode', task.kind === 'write' ? 'accept-edits' : 'plan', '--disable-slash-commands', '--model', model.id, ...(effort ? ['--effort', effort] : [])];
+  if (route.adapter === 'agy') {
+    const selectedEffort = effort || model.defaultEffort || Object.keys(model.variants || {})[0];
+    if (model.variants && !model.variants[selectedEffort]) throw new PoolError('INVALID_EFFORT', 'Bu model için desteklenen bir efor seçin.');
+    return [...argv, '--output-format', 'stream-json', '--mode', task.kind === 'write' ? 'accept-edits' : 'plan', '--disable-slash-commands', '--model', model.variants?.[selectedEffort] || model.id, ...(selectedEffort ? ['--effort', selectedEffort] : []), `--print=${task.prompt}`];
+  }
   if (route.adapter === 'omniroute') return [...argv, 'chat', '--stdin', '--no-history', '-m', model.id, ...(effort ? ['--reasoning-effort', effort] : [])];
   if (route.adapter === 'mmx') return [...argv, 'text', 'chat', '--model', model.id, '--messages-file', '-', '--output', 'json'];
   if (route.adapter === 'qwen') {
@@ -439,13 +443,14 @@ export async function checkAuth(route, cwd, python, directory = dataDirectory())
 }
 
 const strictJsonlAdapters = new Set(['codex', 'claude', 'qwen', 'opencode', 'mimo']);
-const promptArgAdapters = new Set(['zcode', 'kimi', 'aider']);
+const promptArgAdapters = new Set(['zcode', 'kimi', 'aider', 'agy']);
 
 export function execute(route, model, task, python, progress, directory = dataDirectory()) {
   let answer = '';
   let rawLines = [];
   let productError = false;
   let sawResult = false;
+  let failureText = '';
   const argv = buildArguments(route, model, task);
   const extraEnv = { ...routeEnvironment(route, directory, task.kind), CLI_AGENT_POOL_WORKER: '1' };
   const usesStdin = route.promptStdin ?? !promptArgAdapters.has(route.adapter);
@@ -459,6 +464,7 @@ export function execute(route, model, task, python, progress, directory = dataDi
         rawLines.push(line);
         return;
       }
+      if(event.error || event.is_error)failureText=JSON.stringify(event.error || event.result || '');
       if (route.adapter === 'codex') {
         if (event.type === 'item.completed' && event.item?.type === 'agent_message') answer = event.item.text || '';
         if (event.type === 'turn.completed') sawResult = true;
@@ -500,7 +506,11 @@ export function execute(route, model, task, python, progress, directory = dataDi
         if (fallback) { answer = fallback; sawResult = true; }
       }
       if (result.stopReason) return { error: result.stopReason };
-      if (result.code !== 0 || productError) return { error: 'CLI_FAILED' };
+      if (result.code !== 0 || productError) {
+        const message=`${failureText} ${result.stderr}`;
+        const error=/only.*(?:within|official)|unsupported client|client.*not allowed/i.test(message)?'PROVIDER_RESTRICTION':/unauthorized|not logged|login required|invalid.{0,20}(?:api.?key|token)|\b401\b/i.test(message)?'AUTH_REQUIRED':/rate.?limit|quota|insufficient.{0,20}(?:credit|balance)|\b429\b/i.test(message)?'QUOTA_EXHAUSTED':/model.{0,30}(?:not found|unavailable)|unknown model/i.test(message)?'MODEL_UNAVAILABLE':/workspace.{0,20}trust|permission denied/i.test(message)?'PERMISSION_REQUIRED':'CLI_FAILED';
+        return { error };
+      }
       if (!sawResult || !answer.trim()) return { error: 'INVALID_RESULT' };
       return { result: redact(answer) };
     }),
@@ -562,22 +572,57 @@ export async function claudeCatalog(route, cwd, python) {
 }
 
 export function mergeCatalogModels(route, catalog, filters = []) {
+  const staged = structuredClone(route);
+  const nextFilters=structuredClone(filters);
+  for(const item of catalog.models) if(item.variants) for(const rule of nextFilters) if(rule.match==='model' && (!rule.routeId || rule.routeId===route.id) && item.aliases?.includes(rule.value)) rule.value=item.id;
+  const added = mergeCatalogModelsInto(staged, catalog, nextFilters);
+  route.models = staged.models;
+  filters.splice(0,filters.length,...nextFilters);
+  return added;
+}
+
+function mergeCatalogModelsInto(route, catalog, filters) {
   let added = 0;
+  if(route.adapter==='mimo' || route.adapter==='opencode' && route.billing==='free') {
+    const available=new Set(catalog.models.map(model=>model.id));
+    for(const model of route.models) if(!available.has(model.id))model.enabled=false;
+  }
   if (route.adapter === 'agy') {
     for (const model of route.models) if (['gemini-2.5-pro','gemini-2.5-flash','gemini-3-flash'].includes(model.id) && !catalog.models.some(item => item.id === model.id)) model.enabled = false;
     route.models = route.models.filter(model => !['gemini-2.5-pro','gemini-2.5-flash','gemini-3-flash'].includes(model.id) || catalog.models.some(item => item.id === model.id) || model.memberships?.length || ['high','medium','low'].includes(model.group));
   }
   for (const item of catalog.models) {
-    if (modelFiltered(filters, route.id, item.id)) continue;
+    if (modelFiltered(filters, route.id, item.id) && (!item.variants || !route.models.some(model=>model.id===item.id || item.aliases?.includes(model.id)))) continue;
+    if (item.variants) {
+      const previous = route.models.filter(model => model.id === item.id || item.aliases?.includes(model.id));
+      if (previous.length) {
+        const merged = structuredClone(previous.find(model => model.id === item.id) || previous[0]);
+        const members = new Map();
+        for (const model of previous) {
+          const inferredEffort = Object.entries(item.variants).find(([,id]) => id === model.id)?.[0];
+          for (const member of model.memberships ?? (['high','medium','low'].includes(model.group) ? [{group:model.group,effort:model.defaultEffort}] : [])) {
+            const value = {...member, ...(member.effort || inferredEffort ? {effort:member.effort || inferredEffort} : {})};
+            if (members.has(value.group) && members.get(value.group).effort !== value.effort) throw new PoolError('MODEL_VARIANT_CONFLICT', `${item.id}: aynı havuzdaki eski varyantların eforları çakışıyor. Önce üyelikleri düzenleyin.`);
+            if (value.effort && !item.efforts.includes(value.effort)) throw new PoolError('CATALOG_EFFORT_CHANGED', 'Kayıtlı havuz eforu yeni katalogda yok.');
+            members.set(value.group,value);
+          }
+        }
+        Object.assign(merged,{id:item.id,alias:item.name || item.id,variants:item.variants,efforts:item.efforts,memberships:[...members.values()],enabled:previous.some(model=>model.enabled!==false)});
+        if (merged.defaultEffort && !item.efforts.includes(merged.defaultEffort)) delete merged.defaultEffort;
+        route.models = route.models.filter(model=>!previous.includes(model)); route.models.push(merged);
+        continue;
+      }
+    }
     const existing = route.models.find(model => model.id === item.id) || route.models.find(model => item.aliases?.includes(model.id));
     if (existing) {
       if (existing.memberships?.some(member => member.effort && !item.efforts.includes(member.effort))) throw new PoolError('CATALOG_EFFORT_CHANGED', 'Katalogda havuz eforu artık desteklenmiyor. Önce o modelin havuz eforunu düzenleyin.');
       existing.id = item.id;
       existing.alias = (item.name || item.id).slice(0, 100);
       existing.efforts = item.efforts;
+      if (item.variants) existing.variants = item.variants;
       if (!item.efforts.includes(existing.defaultEffort)) delete existing.defaultEffort;
     } else if (route.models.length < 100) {
-      route.models.push({ id: item.id, alias: (item.name || item.id).slice(0, 100), group: 'unassigned', memberships: [], enabled: true, efforts: item.efforts, kinds: route.adapter === 'mmx' ? ['text'] : route.adapter === 'qwen' ? ['text', 'read'] : ['text', 'read', 'write'] });
+      route.models.push({ id: item.id, alias: (item.name || item.id).slice(0, 100), group: 'unassigned', memberships: [], enabled: true, efforts: item.efforts, ...(item.variants?{variants:item.variants}:{}), kinds: route.adapter === 'mmx' ? ['text'] : route.adapter === 'qwen' ? ['text', 'read'] : ['text', 'read', 'write'] });
       added++;
     }
   }
@@ -595,7 +640,14 @@ export async function routeCatalog(route, cwd, python) {
       return [{ id: match[1], name: match[2].trim().slice(0,100), efforts: effort ? [effort] : [], free: false }];
     });
     if (!models.length) throw new PoolError('DISCOVERY_FAILED', 'Antigravity model listesi boş veya biçimi tanınmadı.');
-    return { connection: route.id, models: [...new Map(models.map(model => [model.id, model])).values()].slice(0,100), nextCursor: null };
+    const grouped = new Map();
+    for (const model of models) {
+      const effort=model.efforts[0], id=effort?model.id.slice(0,-effort.length-1):model.id;
+      const entry=grouped.get(id) || {id,name:id,efforts:[],free:false,...(effort?{variants:{},aliases:[]}: {})};
+      if(effort){entry.efforts.push(effort);entry.variants[effort]=model.id;entry.aliases.push(model.id);}
+      grouped.set(id,entry);
+    }
+    return { connection: route.id, models: [...grouped.values()].slice(0,100), nextCursor: null };
   }
   if (route.adapter === 'claude' && !route.api) return claudeCatalog(route, cwd, python);
   if (['lmstudio', 'ollama'].includes(route.adapter)) {
@@ -637,8 +689,10 @@ export async function routeCatalog(route, cwd, python) {
 
 export function antigravityQuotaWindows(groups) {
   return groups.flatMap(group => {
-    // ponytail: explicit vendor labels scope shared groups; unknown labels stay account-wide until the CLI exposes model IDs.
-    const models = [...new Set(`${group.short_name || ''} ${group.name || ''}`.toLowerCase().match(/gemini|claude|gpt/g) || [])];
+    const label=`${group.name || ''} ${group.description || ''}`.toLowerCase();
+    const explicit=[...label.matchAll(/gemini\s+(flash|pro)|\b(argon|opus|sonnet|haiku|gpt)\b/g)].map(match=>match[1]?`gemini-${match[1]}`:match[2]);
+    // Prefer provider-declared model families over a lossy short_name such as "Gemini".
+    const models=[...new Set(explicit.length?explicit:label.match(/gemini|claude|gpt/g) || (group.short_name || '').toLowerCase().match(/gemini|claude|gpt/g) || [])];
     return Object.entries(group.buckets || {}).flatMap(([period,bucket]) => Number.isFinite(bucket.remaining_pct) ? [{ name: `${group.short_name || group.name}:${period}`, remainingPercent: Math.max(0,Math.min(100,bucket.remaining_pct)), resetsAt: bucket.reset_time || null, ...(models.length ? {models} : {}) }] : []);
   });
 }
@@ -710,23 +764,31 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
       const windows = antigravityQuotaWindows(ag.quota_groups);
       return { ...base, status: 'available', auth: ag.subscription_tier || 'antigravity', windows, source: 'cclimits-antigravity' };
     }
-    return { ...base, status: 'available', auth: 'configured', windows: [], source: 'antigravity' };
+    return { ...base, status: 'unknown', auth: 'unverified', windows: [], source: 'antigravity' };
   }
   if (route.adapter === 'kimi') {
     const cc = await readCclimitsCached(cwd, python);
     const km = cc?.kimi_code;
-    if (km?.error) return { ...base, status: 'auth_required', auth: km.error, windows: [], source: 'cclimits-kimi' };
-    return { ...base, status: 'available', auth: 'configured', windows: [], source: 'kimi' };
+    if (km?.error) return { ...base, status: /auth|login|credential|401|403/i.test(km.error)?'auth_required':'unknown', auth: 'unverified', windows: [], source: 'cclimits-kimi' };
+    return { ...base, status: 'unknown', auth: 'unverified', windows: [], source: 'kimi' };
   }
   if (route.adapter === 'mcode') {
     const hasCreds = existsSync(path.join(homedir(), '.minimax', 'local-runtime.auth.json'));
-    return { ...base, status: hasCreds ? 'available' : 'unknown', auth: hasCreds ? 'minimax_login' : 'unknown', windows: [], source: 'mcode' };
+    return { ...base, status: 'unknown', auth: hasCreds ? 'credentials_present' : 'unverified', windows: [], source: 'mcode' };
   }
-  if (route.adapter === 'opencode' || route.adapter === 'mimo' || route.adapter === 'lmstudio' || route.adapter === 'ollama') {
+  if (route.adapter === 'opencode' || route.adapter === 'mimo') {
+    try {
+      const result=await capture([...argv,'providers','list','--pure'],cwd,python);
+      const count=/(\d+)\s+credentials?/i.exec(result.output)?.[1];
+      if(result.code===0 && count!==undefined) return {...base,status:Number(count)===0 && route.billing!=='free'?'auth_required':'unknown',auth:Number(count)>0?'credentials_present':'unverified',windows:[],source:'native-provider-list'};
+    }catch{ /* A failed inspection is not proof that the user is logged out. */ }
+    return {...base,status:'unknown',auth:'unverified',windows:[],source:route.adapter};
+  }
+  if (route.adapter === 'lmstudio' || route.adapter === 'ollama') {
     return { ...base, status: 'available', auth: route.billing === 'free' ? 'builtin_free' : 'configured', windows: [], source: route.adapter };
   }
   if (route.adapter === 'qwen' || route.adapter === 'omniroute' || route.adapter === 'aider' || route.adapter === 'kilocode' || route.adapter === 'hermes' || route.adapter === 'custom') {
-    return { ...base, status: route.trustedSettings ? 'available' : 'unknown', auth: route.trustedSettings ? 'configured' : 'unverified', windows: [], source: route.adapter };
+    return { ...base, status: 'unknown', auth: route.trustedSettings ? 'credentials_unverified' : 'unverified', windows: [], source: route.adapter };
   }
   if (route.adapter !== 'mmx') return { ...base, status: 'unknown', windows: [], source: 'unsupported' };
   const authRes = await capture([...argv, 'auth', 'status', '--output', 'json'], cwd, python);

@@ -154,7 +154,7 @@ export function browserUI(pool, management) {
           })),
           quotas,
           models: pool.models(),
-          tasks: pool.list(50),
+          tasks: pool.list(160,0,true),
           installed: discover(),
           workspaceRoots: pool.config.workspaceRoots,
           selectionMode: pool.config.selectionMode,
@@ -194,6 +194,7 @@ export function browserUI(pool, management) {
         return { saved: payload.secretRef };
       }
       if (operation === 'submit') return pool.submitLive(payload);
+      if (operation === 'probe_model') return pool.probeModel(payload);
       if (operation === 'task') return pool.get(payload.taskId);
       if (operation === 'cancel') return pool.cancel(payload.taskId);
       if (operation === 'quota') return pool.getQuota(payload.routeId, payload.force === true);
