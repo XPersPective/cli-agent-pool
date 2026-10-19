@@ -175,8 +175,10 @@ Kullanıcı onayından sonra eklenen model ve bağlantısı etkinleşir; CLI aya
 inceleme, yerel oturum ve ücretli API otomatik seçim izinleri geçerliliğini korur.
 Ücretli API için mevcut açık `paid_api` / `autoSelect` kuralları aynen uygulanır.
 Bağlantı ve tarama ayarları ayrı **Ayarlar** sayfasındadır; bağlantılar ve ekleme
-formları kapalı başlar. Katalog sayfalanmaz: seçili aracın bütün modelleri kendi
-kaydırma alanındadır. Yenileme kaydırma konumunu korur.
+formları kapalı başlar. Katalog sayfalanmaz: havuz ve katalog kartları aşağı doğru uzar; iç içe
+kaydırma alanları yerine Modeller sayfası kaydırılır. Başlıktaki ok ile havuzun
+veya kataloğun tamamı kapatılabilir; açık/kapalı tercihi hatırlanır. Kapalı
+modellerin etkinleştirme ve giriş kontrolleri kartın içindedir.
 
 Claude sürümleri, kullanıcı istemi göndermeden CLI kontrol protokolünün
 `resolvedModel` alanından alınır. `opus` gibi alias kayıtları kesin kimliklerle

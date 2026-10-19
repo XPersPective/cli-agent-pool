@@ -562,7 +562,6 @@ function renderCatalog() {
   if (byFamily) status.append(element('small',`${familyLabel(selectedFamily)} · Tüm bağlantılar; her abonelik ayrı seçilebilir.`));
   else if (route) {
     status.append(element('small',`${route.id} · ${billingLabels[route.billing]}${route.api ? ` · ${route.api.baseUrl}` : ['ollama','lmstudio'].includes(route.adapter) ? ' · Yerel modeller' : ''}`));
-    status.append(loginNotice(route));
     if (route.adapter !== 'codex' && !route.api && route.billing !== 'free' && !route.trustedSettings) {
       const label=element('label',null,'trust-field'), check=document.createElement('input'); check.type='checkbox'; check.checked=route.trustedSettings;
       check.addEventListener('change',()=>{route.trustedSettings=check.checked;dirty();});label.append(check,element('span','Yerel ayarları ve planı doğruladım'));status.append(label);
@@ -579,7 +578,14 @@ function modelCard(route,model,member) {
   const row=element('div',null,`model-card ${member?'membership-row':'catalog-row'}`), info=element('div',null,'model-info');
   row.setAttribute('role','group');row.setAttribute('aria-label',`${model.id} · ${route.id}`);row.dataset.routeId=route.id;row.dataset.modelId=model.id;
   info.append(element('strong',model.id),element('small',`${adapterLabels[route.adapter] || route.adapter} · ${route.id}`));info.title=`${model.id} · ${route.id}`;
-  if(model.enabled===false || !route.enabled) info.append(element('small','Kullanımı kapalı','version-unknown'));
+  if(model.enabled===false || !route.enabled) {
+    const state=element('div',null,'model-connection'), enable=button('Etkinleştir',async()=>{
+      if(!activeBillings.has(baseConfig.routes.find(item=>item.id===route.id)?.billing)) { switchPage('settings'); const section=[...$('settings-routes').children].find(node=>node.dataset.routeId===route.id);if(section){section.open=true;section.scrollIntoView({block:'nearest'});}notice('Önce bağlantının ödeme / plan türünü doğrulayın.');return; }
+      model.enabled=true;route.enabled=true;await saveModel(route.id,model.id,true);
+    });
+    enable.setAttribute('aria-label',`${model.id} · ${route.id} modelini etkinleştir`);enable.title='Bu modeli ve bağlı olduğu bağlantıyı etkinleştir';state.append(element('small','Kapalı','version-unknown'),enable);info.append(state);
+  }
+  info.append(loginNotice(route,true));
   if(!/\d/.test(model.id)) info.append(element('small','Sağlayıcı sürüm bildirmedi','version-unknown'));
   const footer=element('div',null,'model-footer');
   if(member) {
@@ -591,7 +597,7 @@ function modelCard(route,model,member) {
     const actions=element('div',null,'model-actions'), hide=button('Gizle',async()=>openFilters(route,model)), add=button('Ekle',async()=>openPoolPicker(route,model));
     hide.setAttribute('aria-label',`${model.id} için filtre ekle`);add.classList.add('add-model');add.dataset.modelId=model.id;add.dataset.routeId=route.id;add.setAttribute('aria-label',`${model.id} modelini havuza ekle`);actions.append(hide,add);footer.append(actions);
   }
-  row.append(info,quotaCell(route,model),footer,loginNotice(route));return row;
+  row.append(info,quotaCell(route,model),footer);return row;
 }
 function openFilters(route, model) {
   const filters=settings.config.modelFilters ||= [];
@@ -608,12 +614,12 @@ function openFilters(route, model) {
 $('open-filters').addEventListener('click',()=>openFilters());
 $('close-filters').addEventListener('click',()=>$('model-filter-dialog').close());
 $('model-filter-dialog').addEventListener('close',()=>$('open-filters').focus());
-function loginNotice(route) {
-  const q=snapshot?.quotas?.[route.id], box=element('div',null,'login-notice');
+function loginNotice(route, compact=false) {
+  const q=snapshot?.quotas?.[route.id], box=element('div',null,`login-notice${compact?' model-connection':''}`);
   if(q?.status!=='auth_required') return box;
   box.append(element('span','Giriş gerekli'));
   box.append(button(route.api?'Anahtar ayarları':'Giriş yap',async()=>{if(route.api){switchPage('settings');return;}const result=await call('login',{routeId:route.id});notice(result.message);}));
-  box.append(button('Kontrol et',async()=>{await refreshQuotas(route.id);await refresh();renderPool();}));return box;
+  const check=button(compact?'↻':'Kontrol et',async()=>{await refreshQuotas(route.id);await refresh();renderPool();});check.setAttribute('aria-label',`${route.id} giriş durumunu kontrol et`);check.title='Giriş durumunu kontrol et';box.append(check);return box;
 }
 function openPoolPicker(route, model) {
   pendingPoolModel = { routeId: route.id, modelId: model.id };
