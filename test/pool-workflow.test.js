@@ -10,7 +10,7 @@ import { Store } from '../src/store.js';
 import { claudeCatalog, routeCatalog, claudeQuotaWindows, mergeCatalogModels, execute } from '../src/adapters.js';
 import { browserUI } from '../src/web.js';
 import { ensureInitialized } from '../src/daemon.js';
-import { memberships, mergeScanDraft, addMembership } from '../web/pool-state.js';
+import { memberships, mergeScanDraft, addMembership, quotaWindows, effortLabel } from '../web/pool-state.js';
 
 test('adding to an explicit target pool preserves other memberships and validates effort before mutation', () => {
   const model = { group: 'high', defaultEffort: 'high', efforts: ['low', 'medium', 'high'] };
@@ -25,6 +25,21 @@ test('adding to an explicit target pool preserves other memberships and validate
   assert.deepEqual(model.memberships, [{ group: 'high', effort: 'high' }, { group: 'medium' }]);
   addMembership(model, 'low', 'low');
   assert.equal(model.memberships.length, 3);
+  assert.equal(addMembership(model, 'low', 'low'), false);
+  assert.equal(addMembership(model, 'low', 'high'), true);
+  assert.equal(model.memberships.length, 3);
+});
+
+test('readable quota values preserve model scope and Turkish effort labels preserve protocol values', () => {
+  const snapshot = { windows: [{ name: 'shared', remainingPercent: 72 }, { name: 'opus', remainingPercent: 0, models: ['opus'] }, { name: 'unknown', remainingPercent: null }, { name: 'bad', remainingPercent: NaN }, { name: 'bounds', remainingPercent: 120 }] };
+  const before = structuredClone(snapshot);
+  const sonnet = quotaWindows(snapshot, 'claude-sonnet-5-5');
+  assert.deepEqual(sonnet.map(window => [window.name, window.remaining, window.used]), [['shared', 72, 28], ['bounds', 100, 0]]);
+  assert.equal(quotaWindows(snapshot, 'claude-opus-5-5')[1].remaining, 0);
+  assert.equal(quotaWindows(null).length, 0);
+  assert.deepEqual(snapshot, before);
+  assert.equal(effortLabel('low'), 'Düşük'); assert.equal(effortLabel('high'), 'Yüksek');
+  assert.equal(effortLabel(''), 'CLI varsayılanı'); assert.equal(effortLabel('provider-specific'), 'provider-specific');
 });
 
 test('manual pools enforce membership and per-pool effort at selection and execution', async t => {

@@ -1,4 +1,4 @@
-import { memberships, mergeScanDraft, addMembership } from '/pool-state.js';
+import { memberships, mergeScanDraft, addMembership, quotaWindows, effortLabel } from '/pool-state.js';
 const $ = id => document.getElementById(id);
 const labels = { queued: 'Sırada', starting: 'Başlatılıyor', running: 'Çalışıyor', succeeded: 'Tamamlandı', failed: 'Başarısız', timed_out: 'Süre doldu', cancelling: 'Durduruluyor', cancelled: 'Durduruldu', needs_review: 'Elle inceleme gerekli' };
 const billingLabels = { subscription: 'Abonelik', token_plan: 'Token planı', free_credits: 'Günlük / ücretsiz kredi', free: 'Ücretsiz', paid_api: 'Ücretli API', unknown: 'Doğrulanmadı' };
@@ -16,7 +16,9 @@ let skills = [];
 let poolDirty = false;
 let selectedRoute = '';
 let selectedGroup = 'high';
-let catalogPage = 0;
+let quotasOpen = true;
+const quotaStates = new Map();
+let noticeTimer;
 let quotasRefreshing = false;
 let quotaErrors = {};
 let pendingPoolModel = null;
@@ -24,7 +26,7 @@ const adapterLabels = { codex: 'Codex', claude: 'Claude', opencode: 'OpenCode', 
 const strengthGroups = ['high', 'medium', 'low'];
 
 const groupLabels = { high: 'Yüksek', medium: 'Orta', low: 'Hafif', unassigned: 'Sınıflandırılmamış' };
-const groupLabel = group => Object.hasOwn(groupLabels, group) ? groupLabels[group] : group;
+const groupLabel = group => Object.hasOwn(groupLabels, group) ? groupLabels[group] : groupLabels.unassigned;
 try { $('theme').value = localStorage.getItem('pool-theme') || 'system'; } catch { /* Storage may be disabled. */ }
 function applyTheme() {
   const theme = ['light', 'dark'].includes($('theme').value) ? $('theme').value : 'system';
@@ -33,7 +35,12 @@ function applyTheme() {
 }
 applyTheme();
 $('theme').addEventListener('change', () => { applyTheme(); try { localStorage.setItem('pool-theme', $('theme').value); } catch { /* Current-page theme still works. */ } });
-function dirty() { poolDirty = true; $('save-pool').textContent = 'Değişiklikleri kaydet'; }
+function updateSave() {
+  $('save-pool').textContent = poolDirty ? 'Kaydet' : 'Kaydedildi';
+  $('save-pool').disabled = busy || !poolDirty; $('save-pool').dataset.locked = String(!poolDirty);
+  $('discard-settings').hidden = !poolDirty;
+}
+function dirty() { poolDirty = true; updateSave(); }
 
 
 
@@ -43,7 +50,7 @@ function element(tag, text, className) {
   if (className) node.className = className;
   return node;
 }
-function notice(message, error = false) { $('notice').textContent = message; $('notice').title = message; $('notice').classList.toggle('error', error); }
+function notice(message, error = false) { clearTimeout(noticeTimer); $('notice').textContent = message; $('notice').hidden = !message; $('notice').classList.toggle('error', error); if (!error) noticeTimer = setTimeout(() => { $('notice').hidden = true; }, 5000); }
 async function call(operation, payload = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), operation === 'pick_folder' ? 185_000 : ['scan_import', 'quotas'].includes(operation) ? 90_000 : 30_000);
@@ -51,7 +58,7 @@ async function call(operation, payload = {}) {
     const response = await fetch('/ui', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operation, payload }), signal: controller.signal });
     const value = await response.json();
     if (!response.ok) throw new Error(value.error?.message || 'İşlem tamamlanamadı. Yeniden deneyin.');
-    if (operation === 'save') { poolDirty = false; $('save-pool').textContent = 'Havuzu kaydet'; baseConfig = structuredClone(value.config); }
+    if (operation === 'save') { poolDirty = false; updateSave(); baseConfig = structuredClone(value.config); }
     if (operation === 'settings' && !poolDirty) baseConfig = structuredClone(value.config);
     return value;
   } catch (error) {
@@ -69,10 +76,11 @@ async function action(operation) {
     busy = false;
     document.querySelectorAll('input,select,textarea,button').forEach(node => { node.disabled = node.dataset.locked === 'true'; });
     updateSubmit();
+    updateSave();
   }
 }
 function availableModels() { return (snapshot?.models || []).filter(model => model.enabled && activeBillings.has(model.billing) && model.kinds.includes($('task-kind').value) && (!$('task-group').value || model.group === $('task-group').value)); }
-function updateSubmit() { $('submit').disabled = busy || !availableModels().length || !$('task-prompt').value.trim() || $('voice-input').getAttribute('aria-pressed') === 'true'; }
+function updateSubmit() { $('submit').disabled = busy || !$('task-workspace').value || !availableModels().length || !$('task-prompt').value.trim() || $('voice-input').getAttribute('aria-pressed') === 'true'; }
 $('task-prompt').addEventListener('input', updateSubmit);
 $('task-prompt').addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); if (!$('submit').disabled) $('task-form').requestSubmit(); } });
 function updateModels() {
@@ -95,13 +103,17 @@ function updateEfforts() {
   const locked = snapshot?.selectionMode === 'manual' || Boolean(selected?.fixedEffort);
   const efforts = locked ? [] : [...new Set((selected ? [selected] : models).flatMap(model => model.efforts))];
   const previous = $('task-effort').value;
-  $('task-effort').replaceChildren(new Option(selected?.fixedEffort ? `${selected.fixedEffort} · havuz kuralı` : 'Havuzdaki efor kurallarını uygula', selected?.fixedEffort || ''), ...efforts.map(effort => new Option(effort, effort)));
+  $('task-effort').replaceChildren(new Option(selected?.fixedEffort ? `${effortLabel(selected.fixedEffort)} · havuz kuralı` : 'Havuzdaki efor kurallarını uygula', selected?.fixedEffort || ''), ...efforts.map(effort => new Option(effortLabel(effort), effort)));
   if (!locked && efforts.includes(previous)) $('task-effort').value = previous;
   $('task-effort').closest('label').hidden = snapshot?.selectionMode === 'manual';
   $('task-effort').disabled = locked || busy; $('task-effort').dataset.locked = String(locked);
 }
-function showDetail(value) { $('detail-content').textContent = value.result || JSON.stringify(value, null, 2); $('detail').hidden = false; if (!$('detail').open) $('detail').showModal(); $('detail-heading').tabIndex = -1; $('detail-heading').focus(); }
-function button(text, operation) { const node = element('button', text); node.type = 'button'; node.addEventListener('click', () => void action(operation)); return node; }
+function showDetail(value) {
+  $('detail-heading').textContent = value.windows ? 'Kota bilgisi' : 'Görev bilgisi';
+  $('detail-content').replaceChildren(...(value.windows ? [quotaBody(value)] : [element('p', labels[value.state] || 'Görev'), element('p', value.modelId || ''), element('pre', value.result || value.error || '')]));
+  $('detail').hidden = false; if (!$('detail').open) $('detail').showModal(); $('detail-heading').tabIndex = -1; $('detail-heading').focus();
+}
+function button(text, operation) { const node = element('button', text); node.type = 'button'; node.disabled = busy; node.addEventListener('click', () => void action(operation)); return node; }
 function formatQuotaSummary(conn, q) {
   if (!q) return conn.protocol ? `${conn.protocol.toUpperCase()} API · ${conn.baseUrl}` : `Giriş komutu: ${conn.loginCommand || conn.adapter}`;
   if (q.status === 'unknown' && !q.windows?.length) return 'Kota bilgisi bu bağlantıda bilinmiyor';
@@ -131,14 +143,13 @@ async function refresh(announce = false) {
     const wasOffline = $('connection-state').textContent === 'Bağlantı yok';
     snapshot = await call('snapshot');
     $('app-version').textContent = `v${snapshot.version || 'bilinmiyor'}`;
-    if (!$('task-workspace').value) $('task-workspace').value = snapshot.workspaceRoots[0] || '';
     if (!settings || (!poolDirty && settings.revision !== snapshot.revision)) { settings = await call('settings'); renderPool(); if (!$('settings').hidden) renderSettings(); }
     renderProjects();
     const previousGroup = $('task-group').value;
     $('task-group').replaceChildren(...(snapshot.selectionMode === 'auto' ? [new Option('Ajan otomatik seçsin', '')] : []), ...strengthGroups.map(group => new Option(groupLabel(group), group)));
     if ([...$('task-group').options].some(option => option.value === previousGroup)) $('task-group').value = previousGroup;
     else $('task-group').value = snapshot.selectionMode === 'manual' ? 'high' : '';
-    $('connection-state').textContent = 'Yerel havuza bağlı';
+    $('connection-state').textContent = 'Bağlı';
     $('installed-count').textContent = snapshot.installed.filter(cli => cli.status === 'installed').length;
     $('model-count').textContent = new Set(snapshot.models.filter(model => model.enabled && (snapshot.selectionMode === 'auto' || strengthGroups.includes(model.group))).map(model => `${model.routeId}/${model.id}`)).size;
     $('running-count').textContent = snapshot.tasks.filter(task => ['starting', 'running', 'cancelling'].includes(task.state)).length;
@@ -180,34 +191,36 @@ async function refresh(announce = false) {
     if (focusedId?.startsWith('result-') || focusedId?.startsWith('cancel-')) $(focusedId)?.focus({ preventScroll: true });
     updateModels();
     if (selectedTask) await openTask(selectedTask, false);
-    if (announce || wasOffline) notice('Havuz hazır. Modelleri gruplayın veya Çalışma Alanı’ndan bir görev başlatın.');
+    if (wasOffline) notice('Bağlantı yeniden kuruldu.');
   } catch (error) { $('connection-state').textContent = 'Bağlantı yok'; notice(error.message, true); }
   finally { refreshing = false; }
 }
 function settingField(label, value, update, choices, markDirty = true) {
   const wrapper = element('label', null, 'setting-field'); wrapper.append(element('span', label));
   const input = choices ? document.createElement('select') : document.createElement('input');
-  if (choices) input.replaceChildren(...choices.map(choice => new Option(Array.isArray(choice) ? choice[1] : (choice || 'CLI varsayılanı'), Array.isArray(choice) ? choice[0] : choice)));
+  if (choices) input.replaceChildren(...choices.map(choice => new Option(Array.isArray(choice) ? choice[1] : effortLabel(choice), Array.isArray(choice) ? choice[0] : choice)));
   else input.maxLength = 100;
   input.value = value;
   input.addEventListener('change', () => { update(input.value); if (markDirty) dirty(); }); wrapper.append(input); return wrapper;
 }
 function renderSettings() {
-  $('workspace-roots').value = settings.config.workspaceRoots.join('\n');
+  const expanded = new Set([...$('settings-routes').querySelectorAll('details[open]')].map(node => node.dataset.routeId));
   const previousAdapter = $('new-adapter').value;
   const adapters = snapshot.installed.filter(cli => cli.status === 'installed');
   $('new-adapter').replaceChildren(new Option('CLI seçin', ''), ...adapters.map(cli => new Option(`${cli.label || cli.adapter} (${cli.discoveredModels?.length || 0} model)`, cli.adapter)));
   if (adapters.some(cli => cli.adapter === previousAdapter)) $('new-adapter').value = previousAdapter;
   const billingChoices = Object.entries(billingLabels).map(([k, v]) => [k, v]);
   $('settings-routes').replaceChildren(...settings.config.routes.map(route => {
-    const section = element('div', null, 'route-settings');
+    const section = element('details', null, 'route-settings'); section.dataset.routeId = route.id; section.open = expanded.has(route.id);
+    const summary = element('summary'); summary.append(element('strong', adapterLabels[route.adapter] || route.adapter), element('span', `${route.id} · ${route.enabled ? 'Etkin' : 'Kapalı'}`, 'hint')); section.append(summary);
+    const body = element('div', null, 'settings-body');
     const header = element('label', null, 'route-header'); const enabled = document.createElement('input');
     enabled.type = 'checkbox'; enabled.checked = route.enabled; enabled.disabled = !activeBillings.has(route.billing);
     enabled.dataset.locked = String(!activeBillings.has(route.billing));
     enabled.addEventListener('change', () => { route.enabled = enabled.checked; });
     header.append(enabled, element('strong', `${route.id} · ${route.api ? `${route.api.protocol} API (${route.adapter})` : route.adapter}`));
-    section.append(header);
-    section.append(settingField('Ödeme / plan türü', route.billing, value => {
+    body.append(header);
+    body.append(settingField('Ödeme / plan türü', route.billing, value => {
       route.billing = value;
       enabled.disabled = !activeBillings.has(value);
       enabled.dataset.locked = String(!activeBillings.has(value));
@@ -216,10 +229,10 @@ function renderSettings() {
       const autoLabel = element('label', null, 'route-header'); const autoCheck = document.createElement('input');
       autoCheck.type = 'checkbox'; autoCheck.checked = Boolean(route.autoSelect);
       autoCheck.addEventListener('change', () => { route.autoSelect = autoCheck.checked; });
-      autoLabel.append(autoCheck, element('span', 'Ücretli API’nin otomatik model seçimine girmesine izin ver')); section.append(autoLabel);
+      autoLabel.append(autoCheck, element('span', 'Ücretli API’nin otomatik model seçimine girmesine izin ver')); body.append(autoLabel);
     }
     if (route.api) {
-      section.append(settingField('API Base URL', route.api.baseUrl, value => { route.api.baseUrl = value; }));
+      body.append(settingField('API adresi', route.api.baseUrl, value => { route.api.baseUrl = value; }));
       const secretRef = route.api.secretRef || route.id;
       route.api.secretRef = secretRef;
       const hasKey = settings.secretStates?.[route.id];
@@ -232,16 +245,16 @@ function renderSettings() {
         settings.secretStates ||= {}; settings.secretStates[route.id] = true; renderSettings(); await refresh();
         notice(`${route.id} için API anahtarı yerel kasaya kaydedildi.`);
       });
-      keyRow.append(keyInput, keyBtn); section.append(keyRow);
+      keyRow.append(keyInput, keyBtn); body.append(keyRow);
     } else if (route.adapter !== 'codex') {
       const trustedLabel = element('label', null, 'route-header'); const trusted = document.createElement('input');
       trusted.type = 'checkbox'; trusted.checked = route.trustedSettings;
       trusted.addEventListener('change', () => { route.trustedSettings = trusted.checked; });
-      trustedLabel.append(trusted, element('span', `CLI yerel ayarlarını inceledim (Giriş komutu: ${loginCommandsLabel(route.adapter)})`)); section.append(trustedLabel);
+      trustedLabel.append(trusted, element('span', `CLI yerel ayarlarını inceledim (Giriş komutu: ${loginCommandsLabel(route.adapter)})`)); body.append(trustedLabel);
     }
-    section.append(settingField('Öncelik (küçük değer önce)', route.priority, value => { route.priority = Number(value); }));
-    section.append(settingField('Seçim için asgari kalan kota (%)', route.minRemainingPercent, value => { route.minRemainingPercent = Number(value); }));
-    section.append(element('p', 'Modelleri üstteki havuz görünümünden sınıflandırabilirsiniz.', 'hint'));
+    body.append(settingField('Öncelik (küçük değer önce)', route.priority, value => { route.priority = Number(value); }));
+    body.append(settingField('Seçim için asgari kalan kota (%)', route.minRemainingPercent, value => { route.minRemainingPercent = Number(value); }));
+    body.append(element('p', 'Modelleri üstteki havuz görünümünden sınıflandırabilirsiniz.', 'hint'));
     const addModelRow = element('div', null, 'actions');
     const newModelInput = document.createElement('input'); newModelInput.placeholder = 'Bu bağlantıya yeni model kimliği ekle';
     const addModelBtn = button('Model ekle', async () => {
@@ -252,13 +265,14 @@ function renderSettings() {
       route.models.push({ id, alias: id, group: route.billing === 'free' ? 'free' : 'unassigned', enabled: true, efforts: [], kinds });
       newModelInput.value = ''; dirty(); renderSettings(); renderPool();
     });
-    addModelRow.append(newModelInput, addModelBtn); section.append(addModelRow);
+    const manualModel = element('details'); manualModel.append(element('summary', 'Model kimliği ekle')); addModelRow.append(newModelInput, addModelBtn); manualModel.append(addModelRow); body.append(manualModel);
     const routeActions = element('div', null, 'actions');
     routeActions.append(button('Plan / kota durumunu sorgula', async () => { const q = await call('quota', { routeId: route.id }); await refresh(); showDetail(q); }));
     if (!route.api && route.adapter !== 'custom') {
       routeActions.append(button('Model sürümlerini yenile', async () => { await refreshCatalog(route.id); }));
     }
-    section.append(routeActions);
+    body.append(routeActions);
+    section.append(body);
     return section;
   }));
   if (!settings.config.routes.length) $('settings-routes').append(element('p', 'Henüz bağlantı yok. Üstteki "Bilgisayarı tara ve tümünü havuza aktar" düğmesine basın veya aşağıdan ekleyin.', 'empty'));
@@ -274,27 +288,21 @@ $('new-adapter').addEventListener('change', () => {
   if (cli?.defaultBilling) $('new-billing').value = cli.defaultBilling;
 });
 $('task-kind').addEventListener('change', updateModels);
-$('refresh').addEventListener('click', () => void refresh(true));
-$('quick-scan-import').addEventListener('click', () => void action(runScanImport));
+$('refresh').addEventListener('click', () => void action(async () => { await refresh(); await refreshQuotas(); }));
 $('scan-import').addEventListener('click', () => void action(runScanImport));
 $('close-detail').addEventListener('click', () => { $('detail').close(); $('detail').hidden = true; ($('workspace-panel').hidden ? $('pool-tab') : $('task-prompt')).focus(); });
-$('open-settings').addEventListener('click', () => { renderSettings(); $('settings').hidden = false; $('settings').showModal(); });
-$('close-settings').addEventListener('click', () => { $('settings').close(); $('settings').hidden = true; $('open-settings').focus(); });
-$('settings').addEventListener('close', () => { $('settings').hidden = true; });
+$('open-settings').addEventListener('click', () => switchPage('settings'));
 async function saveSettings() {
-  settings = await call('save', settings); poolDirty = false; renderSettings(); renderPool(); await refresh(); notice('Havuz kaydedildi. Bağlı ajanlar ve yeni görevler bu grupları kullanır.');
+  settings = await call('save', settings); poolDirty = false; renderSettings(); renderPool(); await refresh(); notice('Kaydedildi.');
 }
-$('save-settings').addEventListener('click', () => void action(saveSettings));
 $('save-pool').addEventListener('click', () => void action(saveSettings));
 $('settings').addEventListener('change', dirty);
-$('workspace-roots').addEventListener('input', () => { dirty(); if (settings) settings.config.workspaceRoots = $('workspace-roots').value.split(/\r?\n/).map(line => line.trim()).filter(Boolean); });
 $('add-route').addEventListener('click', () => void action(async () => {
   const adapter = $('new-adapter').value;
   const billing = $('new-billing').value;
   const cli = snapshot.installed.find(cli => cli.adapter === adapter && cli.executable);
   if (!cli) throw new Error('Kurulu bir CLI seçin.');
   if (!$('subscription-confirmed').checked) throw new Error('Önce CLI’ın seçtiğiniz ödeme/plan türüyle yapılandırıldığını onaylayın.');
-  if (!settings.config.workspaceRoots.length) throw new Error('Önce izin verilen bir çalışma klasörü ekleyin.');
   const modelId = $('new-model').value.trim();
   let id = `${adapter}-local`;
   let suffix = 2;
@@ -385,73 +393,85 @@ function selectionRequest() {
   return request;
 }
 function switchPage(page) {
-  const pool = page === 'pool';
-  $('pool-panel').hidden = !pool; $('workspace-panel').hidden = pool;
-  if (pool) renderPool();
-  $('settings').close(); $('settings').hidden = true; $('detail').close(); $('detail').hidden = true;
-  for (const [id, active] of [['pool-tab', pool], ['workspace-tab', !pool]]) {
-    if (active) $(id).setAttribute('aria-current', 'page'); else $(id).removeAttribute('aria-current');
+  $('pool-panel').hidden = page !== 'pool'; $('workspace-panel').hidden = page !== 'workspace'; $('settings').hidden = page !== 'settings';
+  if (page === 'pool') renderPool();
+  if (page === 'settings' && settings) renderSettings();
+  $('detail').close(); $('detail').hidden = true;
+  for (const [id, target] of [['pool-tab', 'pool'], ['workspace-tab', 'workspace'], ['open-settings', 'settings']]) {
+    if (page === target) $(id).setAttribute('aria-current', 'page'); else $(id).removeAttribute('aria-current');
   }
 }
+
 document.querySelector('.skip').addEventListener('click', () => { switchPage('workspace'); $('task-prompt').focus(); updateSubmit(); });
 $('pool-tab').addEventListener('click', () => switchPage('pool'));
 $('workspace-tab').addEventListener('click', () => switchPage('workspace'));
 $('task-group').addEventListener('change', updateModels);
 $('task-model').addEventListener('change', updateEfforts);
-$('pool-search').addEventListener('input', () => { catalogPage = 0; renderCatalog(); });
+$('pool-search').addEventListener('input', () => { $('pool-models').scrollTop = 0; renderCatalog(); });
 $('selection-mode').addEventListener('change', () => { settings.config.selectionMode = $('selection-mode').value; dirty(); renderPool(); });
 $('grouping-mode').addEventListener('change', () => { settings.config.groupingMode = $('grouping-mode').value; dirty(); });
-$('catalog-prev').addEventListener('click', () => { catalogPage--; renderCatalog(); $('pool-models').scrollTop = 0; });
-$('catalog-next').addEventListener('click', () => { catalogPage++; renderCatalog(); $('pool-models').scrollTop = 0; });
+$('discard-settings').addEventListener('click', () => void action(async () => { settings = await call('settings'); poolDirty = false; baseConfig = structuredClone(settings.config); renderSettings(); renderPool(); updateSave(); }));
+$('toggle-quotas').addEventListener('click', () => {
+  quotasOpen = [...document.querySelectorAll('#pool-models .quota-details')].some(node => !node.open);
+  quotaStates.clear();
+  document.querySelectorAll('.quota-details').forEach(node => { node.open = quotasOpen; });
+  updateQuotaToggle();
+});
+function updateQuotaToggle() {
+  const details = [...$('pool-models').querySelectorAll('.quota-details')];
+  const allOpen = details.length ? details.every(node => node.open) : quotasOpen;
+  $('toggle-quotas').textContent = allOpen ? 'Kotaları gizle' : 'Kotaları göster';
+  $('toggle-quotas').setAttribute('aria-pressed', String(allOpen));
+}
 
-function quotaCell(route, model, compact = true) {
-  const cell = element('div', null, 'quota-cell');
-  const q = snapshot?.quotas?.[route.id];
-  const windows = (q?.windows || []).filter(window => !window.models?.length || window.models.some(id => model.id.includes(id)));
-  if (compact) {
-    const details = element('details', null, 'quota-details');
-    const measured = windows.filter(window => Number.isFinite(window.remainingPercent));
-    const summary = element('summary', measured.length ? measured.map(window => `${({ five_hour: '5s', seven_day: '7g', opus: 'Opus' })[window.name] || window.name}: %${(100 - window.remainingPercent).toFixed(0)} kullanım`).join(' · ') : quotaErrors[route.id] || (quotasRefreshing ? 'Kota sorgulanıyor…' : q?.status === 'auth_required' ? 'Giriş gerekli' : 'Kota bilinmiyor'));
-    summary.title = `${summary.textContent} · kullanım, yenilenme ve ölçüm ayrıntıları`;
-    details.append(summary, quotaCell(route, model, false)); cell.append(details); return cell;
+function quotaBody(q, modelId = '', error) {
+  const cell = element('div', null, 'quota-body');
+  const windows = quotaWindows(q, modelId);
+  for (const window of windows) {
+    const name = ({ five_hour: '5 saat', seven_day: '7 gün', '5h': '5 saat', '7d': '7 gün', weekly: 'Haftalık', monthly: 'Aylık', opus: 'Opus haftalık', primary: 'Kısa dönem', secondary: 'Haftalık' })[window.name] || (window.windowMinutes ? window.windowMinutes >= 1440 ? `${window.windowMinutes / 1440} gün` : `${window.windowMinutes / 60} saat` : window.name);
+    const line = element('div', null, 'usage-line');
+    const heading = element('div', null, 'quota-heading'); heading.append(element('span', name), element('strong', `%${window.remaining.toFixed(0)} kalan`));
+    const bar = document.createElement('progress'); bar.max = 100; bar.value = window.remaining; bar.setAttribute('aria-label', `${name} kalan kota`);
+    line.append(heading, bar, element('small', `%${window.used.toFixed(0)} kullanıldı${window.resetsAt ? ` · Yenilenme: ${new Date(typeof window.resetsAt === 'number' && window.resetsAt < 1e12 ? window.resetsAt * 1000 : window.resetsAt).toLocaleString('tr-TR')}` : ''}`)); cell.append(line);
   }
-  if (windows.length) {
-    for (const window of windows) {
-      if (!Number.isFinite(window.remainingPercent)) continue;
-      const used = Math.max(0, Math.min(100, 100 - window.remainingPercent));
-      const line = element('div', null, 'usage-line');
-      const name = ({ five_hour: '5 saat', seven_day: '7 gün', opus: 'Opus haftalık' })[window.name] || (window.windowMinutes ? window.windowMinutes >= 1440 ? `${window.windowMinutes / 1440} gün` : `${window.windowMinutes / 60} saat` : window.name);
-      line.append(element('span', `${name}: %${used.toFixed(0)} kullanım · %${window.remainingPercent.toFixed(0)} kalan`));
-      const bar = document.createElement('progress'); bar.max = 100; bar.value = used; bar.setAttribute('aria-label', `${window.name} kullanım`); line.append(bar); if (window.resetsAt) line.append(element('small', `Yenilenme: ${new Date(typeof window.resetsAt === 'number' && window.resetsAt < 1e12 ? window.resetsAt * 1000 : window.resetsAt).toLocaleString('tr-TR')}`)); cell.append(line);
-    }
-    cell.append(element('small', `${q.scope === 'model' ? 'Model kotası' : 'Hesap / bağlantı kotası'}${q.observedAt ? ` · ${new Date(q.observedAt).toLocaleTimeString('tr-TR')}` : ''}${Date.now() - Date.parse(q.observedAt) >= 60000 ? ' · eski ölçüm' : ''}${quotaErrors[route.id] ? ' · son sorgu başarısız' : ''}`));
-  } else cell.append(element('small', quotaErrors[route.id] || (quotasRefreshing ? 'Kota sorgulanıyor…' : q?.status === 'auth_required' ? 'Giriş gerekli' : q ? 'Sağlayıcı yüzde kotası bildirmiyor' : 'Kota henüz sorgulanmadı')));
+  if (!windows.length) cell.append(element('p', error || (quotasRefreshing ? 'Kota sorgulanıyor…' : q?.status === 'auth_required' ? 'Giriş gerekli' : q ? 'Sağlayıcı yüzde kotası bildirmiyor' : 'Kota henüz sorgulanmadı'), 'hint'));
+  if (windows.length) cell.append(element('small', `${q.scope === 'model' ? 'Model kotası' : 'Hesap kotası'}${q.observedAt ? ` · Ölçüm: ${new Date(q.observedAt).toLocaleTimeString('tr-TR')}` : ''}${Date.now() - Date.parse(q.observedAt) >= 60000 ? ' · eski ölçüm' : ''}${error ? ' · son sorgu başarısız' : ''}`, 'quota-stamp'));
   return cell;
+}
+function quotaCell(route, model) {
+  const cell = element('div', null, 'quota-cell'); const q = snapshot?.quotas?.[route.id];
+  const windows = quotaWindows(q, model.id); const details = element('details', null, 'quota-details'); const key = JSON.stringify([route.id, model.id]); details.dataset.quotaKey = key;
+  details.open = quotaStates.has(key) ? quotaStates.get(key) : quotasOpen;
+  const summary = element('summary'); summary.append(element('span', 'Kota'), element('strong', windows.length ? `%${Math.min(...windows.map(window => window.remaining)).toFixed(0)} kalan` : 'Bilinmiyor'));
+  details.append(summary, quotaBody(q, model.id, quotaErrors[route.id]));
+  details.addEventListener('toggle', () => { if (!details.isConnected) return; quotaStates.set(key, details.open); updateQuotaToggle(); });
+  cell.append(details); return cell;
 }
 function renderPool() {
   if (!settings) return;
   $('selection-mode').value = settings.config.selectionMode;
   $('grouping-mode').value = settings.config.groupingMode;
-  $('save-pool').textContent = poolDirty ? 'Değişiklikleri kaydet' : 'Havuzu kaydet';
-  $('selection-description').textContent = settings.config.selectionMode === 'manual' ? 'Katı mod: ajan yalnızca istediği havuzdaki modelleri, sizin belirlediğiniz eforla kullanır.' : 'Otomatik mod: ajan uygun model ve havuzu seçebilir. Tanımladığınız havuz eforları yine zorunludur.';
+  updateSave();
   $('group-summary').replaceChildren(...strengthGroups.map(group => {
     const count = settings.config.routes.reduce((total, route) => total + route.models.filter(model => memberships(model).some(member => member.group === group)).length, 0);
     const card = element('button', null, `group-card group-${group}`); card.type = 'button'; card.setAttribute('aria-pressed', String(selectedGroup === group));
     card.append(element('strong', groupLabel(group)), element('span', `${count} model`));
-    card.addEventListener('click', () => { selectedGroup = group; catalogPage = 0; renderPool(); }); return card;
+    card.addEventListener('click', () => { selectedGroup = group; renderPool(); }); return card;
   }));
-  $('members-heading').textContent = `${groupLabel(selectedGroup)} havuzundaki modeller`;
+  $('members-heading').textContent = `${groupLabel(selectedGroup)} üyeleri`;
   $('catalog-heading').textContent = 'Model kataloğu';
+  const memberScroll = $('pool-members').scrollLeft;
   const rows = [];
   for (const route of settings.config.routes) for (const model of route.models) {
     const member = memberships(model).find(item => item.group === selectedGroup);
     if (!member) continue;
     const row = element('div', null, 'membership-row');
     const info = element('div'); info.append(element('strong', model.id), element('small', `${adapterLabels[route.adapter] || route.adapter} · ${route.id}${!route.enabled || model.enabled === false ? ' · Kapalı' : route.adapter !== 'codex' && !route.api && route.billing !== 'free' && !route.trustedSettings ? ' · Yerel ayar onayı bekliyor' : ''}${route.billing === 'paid_api' && !route.autoSelect ? ' · Ücretli API otomatik seçimi kapalı' : ''}`));
-    row.append(info, quotaCell(route, model), settingField('Bu havuzdaki efor', member.effort || '', value => { model.memberships = memberships(model); const item = model.memberships.find(item => item.group === selectedGroup); if (value) item.effort = value; else delete item.effort; dirty(); }, ['', ...model.efforts]), button('Çıkar', async () => { model.memberships = memberships(model).filter(item => item.group !== selectedGroup); dirty(); renderPool(); }));
+    row.append(info, settingField('Efor', member.effort || '', value => { model.memberships = memberships(model); const item = model.memberships.find(item => item.group === selectedGroup); if (value) item.effort = value; else delete item.effort; dirty(); }, ['', ...model.efforts]), button('Çıkar', async () => { model.memberships = memberships(model).filter(item => item.group !== selectedGroup); dirty(); renderPool(); }));
     rows.push(row);
   }
   $('pool-members').replaceChildren(...(rows.length ? rows : [element('p', `Bu havuz boş. Aşağıdan Codex, Claude veya başka bir araç seçip modelleri ekleyin.`, 'empty')]));
+  $('pool-members').scrollLeft = memberScroll;
   renderCatalog();
 }
 async function refreshCatalog(routeId) {
@@ -461,18 +481,18 @@ async function refreshCatalog(routeId) {
 }
 function renderCatalog() {
   if (!settings) return;
+  const scroll = $('pool-models').scrollTop;
   const routes = settings.config.routes;
   if (!routes.some(route => route.id === selectedRoute)) selectedRoute = routes.find(route => route.adapter === 'codex')?.id || routes[0]?.id || '';
   $('route-nav').replaceChildren(...routes.map(route => {
     const node = element('button', `${adapterLabels[route.adapter] || route.adapter}${route.api ? ' API' : ''} (${route.models.length})`); node.type = 'button'; node.title = route.id;
     node.classList.toggle('selected', route.id === selectedRoute); node.setAttribute('aria-pressed', String(route.id === selectedRoute));
-    node.addEventListener('click', () => { selectedRoute = route.id; catalogPage = 0; $('pool-search').value = ''; renderCatalog(); }); return node;
+    node.addEventListener('click', () => { selectedRoute = route.id; $('pool-search').value = ''; $('pool-models').scrollTop = 0; renderCatalog(); }); return node;
   }));
   const route = routes.find(route => route.id === selectedRoute);
-  if (!route) { $('catalog-status').replaceChildren(); $('pool-models').replaceChildren(element('p', 'Modelleri tara düğmesiyle kurulu araçları bulun.', 'empty')); $('catalog-page').textContent = ''; return; }
+  if (!route) { $('catalog-status').replaceChildren(); $('pool-models').replaceChildren(element('p', 'Modelleri tara düğmesiyle kurulu araçları bulun.', 'empty')); $('catalog-count').textContent = '0 model'; return; }
   const status = element('div', null, 'actions');
   status.append(element('small', `${route.id} · ${billingLabels[route.billing]}${route.api ? ` · ${route.api.baseUrl}` : ['ollama', 'lmstudio'].includes(route.adapter) ? ' · Yerel modeller' : ' · Kurulu araç üzerinden erişim'}`));
-  status.append(button('Model sürümlerini al', () => refreshCatalog(route.id)), button('Kota sorgula', async () => { await refreshQuotas(route.id); }));
   if (route.adapter !== 'codex' && !route.api && !route.trustedSettings) {
     const label = element('label', null, 'trust-field'); const check = document.createElement('input'); check.type = 'checkbox'; check.checked = route.trustedSettings;
     check.addEventListener('change', () => { route.trustedSettings = check.checked; dirty(); }); label.append(check, element('span', 'Bu aracın yerel ayarlarını ve planını doğruladım')); status.append(label);
@@ -480,8 +500,7 @@ function renderCatalog() {
   $('catalog-status').replaceChildren(status);
   const search = $('pool-search').value.trim().toLocaleLowerCase('tr');
   const models = route.models.filter(model => `${model.id} ${model.alias}`.toLocaleLowerCase('tr').includes(search));
-  const pageSize = 24; const pageCount = Math.max(1, Math.ceil(models.length / pageSize)); catalogPage = Math.max(0, Math.min(catalogPage, pageCount - 1));
-  $('pool-models').replaceChildren(...models.slice(catalogPage * pageSize, (catalogPage + 1) * pageSize).map(model => {
+  $('pool-models').replaceChildren(...models.map(model => {
     const row = element('div', null, 'catalog-row'); const info = element('div');
     info.append(element('strong', model.id)); info.title = `${model.id}${model.alias !== model.id ? ` · ${model.alias}` : ''}`;
     if (model.alias !== model.id) info.append(element('small', model.alias));
@@ -492,13 +511,13 @@ function renderCatalog() {
     row.append(info, quotaCell(route, model), tags, add); return row;
   }));
   if (!models.length) $('pool-models').append(element('p', 'Eşleşen model yok. Model sürümlerini al düğmesini kullanın.', 'empty'));
-  $('catalog-page').textContent = `${models.length} model · ${catalogPage + 1} / ${pageCount}`;
-  for (const [id, locked] of [['catalog-prev', catalogPage === 0], ['catalog-next', catalogPage >= pageCount - 1]]) { $(id).disabled = locked || busy; $(id).dataset.locked = String(locked); }
+  $('catalog-count').textContent = `${models.length} model`;
+  $('pool-models').scrollTop = scroll; updateQuotaToggle();
 }
 function openPoolPicker(route, model) {
   pendingPoolModel = { routeId: route.id, modelId: model.id };
   $('add-pool-model').textContent = model.id;
-  $('add-pool-effort').replaceChildren(new Option('CLI varsayılanı', ''), ...model.efforts.map(effort => new Option(effort, effort)));
+  $('add-pool-effort').replaceChildren(...(memberships(model).length ? [new Option('Mevcut eforu koru', 'preserve')] : []), new Option('CLI varsayılanı', ''), ...model.efforts.map(effort => new Option(effortLabel(effort), effort)));
   $('add-pool-targets').replaceChildren(...strengthGroups.map(group => {
     const existing = memberships(model).find(member => member.group === group);
     return button(`${groupLabel(group)}${existing ? ' · ekli' : ''}`, async () => {
@@ -506,10 +525,12 @@ function openPoolPicker(route, model) {
       const targetModel = targetRoute?.models.find(item => item.id === pendingPoolModel?.modelId);
       if (!targetModel) throw new Error('Model kataloğu değişti. Modeli yeniden seçin.');
       if (!activeBillings.has(targetRoute.billing)) throw new Error('Bağlantı ayarlarından bu aracın plan türünü doğrulayın.');
-      addMembership(targetModel, group, $('add-pool-effort').value);
-      targetModel.enabled = true; targetRoute.enabled = true; dirty(); $('add-pool-dialog').close(); renderPool();
+      const member = memberships(targetModel).find(item => item.group === group);
+      const changed = addMembership(targetModel, group, $('add-pool-effort').value === 'preserve' ? member?.effort || '' : $('add-pool-effort').value);
+      const enabled = targetModel.enabled && targetRoute.enabled;
+      targetModel.enabled = true; targetRoute.enabled = true; if (changed || !enabled) dirty(); $('add-pool-dialog').close(); renderPool();
       [...$('pool-models').querySelectorAll('.add-model')].find(node => node.dataset.modelId === targetModel.id)?.focus();
-      notice(`${targetModel.id}, ${groupLabel(group)} havuzuna eklendi. Kalıcı olması için havuzu kaydedin.`);
+      notice(`${targetModel.id}, ${groupLabel(group)} havuzunda.`);
     });
   }));
   $('add-pool-dialog').showModal();
@@ -522,7 +543,7 @@ async function refreshQuotas(routeId) {
   try {
     const result = await call('quotas', routeId ? { routeId } : {}); snapshot.quotas = { ...snapshot.quotas, ...result.quotas }; quotaErrors = routeId ? { ...quotaErrors, [routeId]: result.errors[routeId] } : result.errors;
   } catch (error) { notice(error.message, true); }
-  finally { quotasRefreshing = false; $('refresh-quotas').textContent = 'Kullanım / limitleri yenile'; renderPool(); }
+  finally { quotasRefreshing = false; $('refresh-quotas').textContent = 'Kotaları yenile'; renderPool(); }
 }
 $('refresh-quotas').addEventListener('click', () => { void refreshQuotas(); });
 function renderProjects() {
@@ -534,7 +555,7 @@ function renderProjects() {
 }
 async function openFolders() {
   notice('Windows klasör seçme penceresi açılıyor…');
-  const result = await call('pick_folder', { path: $('task-workspace').value || snapshot.workspaceRoots[0] || '' });
+  const result = await call('pick_folder', { path: $('task-workspace').value || '' });
   if (!result.path) { notice('Klasör seçimi iptal edildi.'); return; }
   // Save only the selected project root, keeping any unrelated pool draft in memory.
   const view = await call('settings');
@@ -553,7 +574,7 @@ async function openTask(id, force = true) {
   const stamp = `${id}:${summary?.updated}`;
   if (!force && stamp === selectedTaskStamp) return;
   const task = await call('task', { taskId: id }); selectedTask = id; selectedTaskStamp = stamp;
-  const content = [element('p', `Seçilen: ${task.modelId} · ${task.routeId} · ${groupLabel(task.group || 'unassigned')} · Efor: ${task.effort || 'CLI varsayılanı'} · ${labels[task.state]}`, 'badge subtle'), element('p', task.reportedModel ? `Araç tarafından bildirilen model: ${task.reportedModel}` : 'Çalıştırıcı sürüm kimliğini ayrıca bildirmedi.', 'hint')];
+  const content = [element('p', `Seçilen: ${task.modelId} · ${task.routeId} · ${groupLabel(task.group || 'unassigned')} · Efor: ${effortLabel(task.effort)} · ${labels[task.state]}`, 'badge subtle'), element('p', task.reportedModel ? `Araç tarafından bildirilen model: ${task.reportedModel}` : 'Çalıştırıcı sürüm kimliğini ayrıca bildirmedi.', 'hint')];
   if (task.prompt) { const prompt = element('details', null, 'user-message'); prompt.append(element('summary', `Görev: ${task.prompt.split('\n\n')[0].slice(0, 200)}`), element('pre', task.prompt)); content.push(prompt); }
   content.push(element('pre', task.result || task.error || task.events?.at(-1)?.detail || labels[task.state], 'agent-message'));
   $('conversation').replaceChildren(...content);

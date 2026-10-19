@@ -1,37 +1,30 @@
 # Havuz ve çalışma alanı kabul listesi
 
-- [x] Üç ana havuz: Yüksek / Orta / Hafif; sağlayıcılar alt katalog sekmeleri.
-- [x] Seçili havuza model ekleme ve çıkarma; aynı model farklı havuzlarda bulunabilir.
-- [x] Her havuz üyeliğinde bağımsız efor; sahibi sabitlediyse istemci değiştiremez.
-- [x] Manuel seçimde havuz dışına çıkılmaz; otomatik seçim açıkça yapılandırılır.
-- [x] Kota tükenince başlamamış yeni iş için aynı havuzdan alternatif seçilir.
-- [x] Claude dahil canlı sürüm kataloğu ve tam model kimlikleri; tahminî sürüm yok.
-- [x] Görev ayrıntısında seçilen model, efor, havuz ve varsa aracın bildirdiği model.
-- [x] Model satırında kullanım/kalan yüzdesi, ortak kota kapsamı ve ölçüm/yenilenme bilgisi.
-- [x] Kaydetmeden tarama; taslak üyelikler, eforlar ve yeni modeller korunur.
-- [x] Windows yerel klasör seçicisi; iptal, Unicode ve mevcut proje koruması.
-- [x] Proje listesi ve görev geçmişi; bağımsız görev çalıştırma.
-- [x] Giriş kutusu içinde mikrofon/gönder düğmeleri; skill ve hedef talimatları.
-- [x] Bağlantı ayarları üstten açılır; masaüstünde sayfa boyu kaydırma gerekmez.
-- [x] Klavye, odak, erişilebilir adlar, dar ekran, karanlık tema ve hata durumları.
-- [x] MCP keşfi/politika/üyelik/efor ve kota filtreleri; açık hata kodları ve örnekler.
-- [x] node:test, sözdizimi, gizli bilgi taraması, npm audit ve gerçek arayüz doğrulaması.
-- [x] Kurulu masaüstü kopyasını güncelleme ve gerçek katalogla son kontrol.
+Güncel arayüz: Pool 1.2.0. Önceki sayfalama, kapalı kota ve ayar penceresi düzeninin yerini aşağıdaki davranışlar alır.
 
-Doğrulanan arayüz akışları: üç havuza üyelik ve efor ekleme, aynı modelin farklı
-havuzları, kaydetmeden tarama, ayar penceresi, skill/hedefli görev, sonuç ve model/efor,
-Enter/Shift+Enter, dikte olayları, mikrofon izin hatası ve destek yokluğu, koyu tema,
-1440×1000 / 1280×720 masaüstünde belge taşması olmaması ve 390 pikselde yatay taşma olmaması.
-Windows modern klasör penceresi gerçek işletim sisteminde açıldı; seçim ve iptal sonucu
-doğrulandı. Gerçek mikrofonla donanım/konuşma servisi testi yapılmadı; SpeechRecognition
-olayları taklit edilerek giriş davranışı ve hata akışları doğrulandı.
+- [x] Yüksek / Orta / Hafif havuzları; sağlayıcılar ayrı katalog sekmeleri.
+- [x] Küçük Ekle düğmesiyle hedef havuz ve bağımsız efor seçimi; üst havuz görünümü değişmez.
+- [x] Aynı üyeliği tekrar eklemek mevcut eforu korur; açıkça seçilen yeni efor uygulanır.
+- [x] Model seçimi: Ajan seçsin / Havuzlarım; sabit efor ve aynı havuzda kota alternatifi korunur.
+- [x] Tam model kimlikleri ve bildirilen sürümler; bilinmeyen sürüm/kota tahmin edilmez.
+- [x] Kotalar varsayılan açık; topluca veya tek tek aç/kapat; yenilemede açık durum ve kaydırma korunur.
+- [x] Büyük kalan yüzde, kalan miktarı gösteren çubuk, kullanılan yüzde, pencere ve yenilenme bilgisi.
+- [x] Sayfalamasız katalog; en son modele kadar yerel kaydırma; daraltılmış üst alan.
+- [x] Seçili havuzda vurgu; diğerlerinde temaya uygun nötr görünüm; Türkçe efor etiketleri.
+- [x] Ayrı Ayarlar sayfası; kapalı başlayan bağlantılar, ekleme formları ve keşif/kota araçları.
+- [x] JSON yerine okunabilir kota ayrıntısı; değişiklik varsa Kaydet / Vazgeç, yoksa Kaydedildi.
+- [x] Kaydetmeden tarama; taslak üyelikler, eforlar ve keşfedilen modeller korunur.
+- [x] Projeler Çalışma Alanı içinde; başlangıçta kurulum klasörü seçilmez; ham kök klasör listesi yok.
+- [x] Windows yerel klasör seçicisi; iptal ve Unicode desteği; proje listesi ve görev geçmişi.
+- [x] Mikrofon/gönder düğmeleri, skill ve hedef talimatları; görevde model/efor/kapsam bilgisi.
+- [x] Klavye ve erişilebilir adlar; açık/koyu/sistem teması; 1440×1000, 1280×720, 390×844 düzenleri.
+- [x] MCP/JSON ajan API'si; sahip politikası, otomatik başlatma ve bağımsız Project Brain bağlantısı.
 
-Ajan auto-start kontrolü kapalı bağlantıları açmaz ve trustedSettings onayı vermez.
-Kota bildirilmeyen sağlayıcılarda yüzde uydurulmaz. Yerel CLI bulunması tek başına
-kurulu model olduğu anlamına gelmez; LM Studio / Ollama gerçek katalogdan okunur.
+39 node:test kontrolü, sözdizimi, gizli bilgi taraması ve bağımlılık denetimi başarılı.
+Tarayıcı kontrolleri: kota anahtarları, kaydırma, son model, tekrar ekleme, taslak kaydet/vazgeç,
+ayar sayfası, okunabilir kota, 24 üzeri modelin sayfasız görünmesi, açık proje seçimi ve görev sonucu.
+Önceki doğrulamalar: gerçek Windows klasör seçimi/iptali ve taklit SpeechRecognition olaylarıyla
+konuşma/izin/hata akışları. Gerçek mikrofon donanımıyla konuşma tanıma doğrulanmadı.
 
-Son kontrol: 35 node:test başarılı; npm run check ve npm run secrets başarılı; npm audit açık bulmadı. Kurulu kopyada 13 araç sekmesi, Claude’un dört tam sürüm kimliği ve gerçek kullanım pencereleri doğrulandı; tarayıcı konsol hatası yok.
-
-- [x] Son kullanıcı düzeltmesi: geniş açılan satırlar yerine sıkı model ızgarası; 1440 px ekranda dört sütun ve yaklaşık 16 görünür model, sayfa başına 24 kayıt, katalog içinde dikey kaydırma, tek satır yatay araç sekmeleri ve kapalı başlayan kota ayrıntıları.
-
-- [x] Son düzeltme (1.1.1): küçük Ekle düğmesi → hedef havuz/efor penceresi; üst havuz görünümü değişmez, diğer üyelik/eforlar korunur. Açık / Koyu / Sistem teması ve tarayıcıda kalıcılık doğrulandı.
+Kota bildirilmeyen sağlayıcıda yüzde uydurulmaz. Ortak hesap kotası ayrı model bakiyesi gibi
+sunulmaz. Yerel CLI bulunması kurulu model anlamına gelmez; LM Studio/Ollama kataloğu okunur.

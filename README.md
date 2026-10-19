@@ -164,9 +164,9 @@ zorunlu efor tanımlar. İstemci farklı efor isteyerek bu kuralı aşamaz. Efor
 CLI varsayılanı kullanılır; bu bir model veya güç kategorisi değildir. Eski `group`
 ve `defaultEffort` kayıtları okunabilir; yeni üyelik listesi varsa o liste geçerlidir.
 
-**Benim havuzlarım · katı kurallar** (`selectionMode: "manual"`) açıkken her yeni
+**Havuzlarım** (`selectionMode: "manual"`) açıkken her yeni
 seçim/gönderim `high`, `medium` veya `low` gruplarından birini ister. Açık model veya
-bağlantı seçimi de havuz üyeliğini aşamaz. **Otomatik · ajan seçsin** (`"auto"`)
+bağlantı seçimi de havuz üyeliğini aşamaz. **Ajan seçsin** (`"auto"`)
 seçeneğinde ajan grup belirtmeden katalogdaki uygun modelleri de seçebilir. Grup
 belirtilirse o grup ve üyelik eforu her iki modda da bağlayıcıdır. Eski yapılandırma
 ve istemcilerle uyumluluk için `selectionMode` varsayılanı `auto`dur.
@@ -174,8 +174,9 @@ ve istemcilerle uyumluluk için `selectionMode` varsayılanı `auto`dur.
 Kullanıcı onayından sonra eklenen model ve bağlantısı etkinleşir; CLI ayarlarını
 inceleme, yerel oturum ve ücretli API otomatik seçim izinleri geçerliliğini korur.
 Ücretli API için mevcut açık `paid_api` / `autoSelect` kuralları aynen uygulanır.
-Bağlantı ayarları üstteki düğmeden pencere olarak açılır. Model kataloğu sayfalanır;
-masaüstünde uzun bir yönetim sayfasını aşağı kaydırmak gerekmez.
+Bağlantı ve tarama ayarları ayrı **Ayarlar** sayfasındadır; bağlantılar ve ekleme
+formları kapalı başlar. Katalog sayfalanmaz: seçili aracın bütün modelleri kendi
+kaydırma alanındadır. Yenileme kaydırma konumunu korur.
 
 Claude sürümleri, kullanıcı istemi göndermeden CLI kontrol protokolünün
 `resolvedModel` alanından alınır. `opus` gibi alias kayıtları kesin kimliklerle
@@ -184,7 +185,9 @@ kimlikleri gösterilir. Sağlayıcı sürüm bildirmiyorsa numara uydurulmaz. G�
 ayrıntısı istenen kimlik, havuz ve eforu, CLI olaylarında bildirilmişse gerçek
 çalışan model kimliğini ayrı gösterir.
 
-Kullanım/kalan yüzdeleri ve yenilenme zamanı model satırındadır; hesap ortak kotası
+Kotalar varsayılan açık başlar. Büyük kalan yüzdesi, kalan miktarı gösteren çubuk,
+kullanım ve yenilenme zamanı görünür. **Kotaları gizle / göster** tümünü; her modelin
+Kota başlığı yalnızca o modeli açar/kapatır. Kullanım yüzdeleri hesap kotasıdır; hesap ortak kotası
 model başına ayrı bakiye gibi sunulmaz. Kota, kapalı bağlantılar için de okunabilir.
 Codex native app-server, Claude kurulu `cclimits` gözlemcisi üzerinden sorgulanır.
 Desteklenmeyen veya ulaşılamayan bilgiler açıkça belirtilir. Yeni işten önce uygun
@@ -206,6 +209,15 @@ Metin kullanıcı göndermeden çalıştırılmaz. Tarayıcı/mikrofon desteği 
 bulunmazsa yazılı giriş kullanılabilir. Hedef ve en fazla 10 Markdown skill dosyası
 görev talimatlarına eklenir (dosya başına 64 KB, toplam görev 100.000 karakter).
 Skill kurulumu yapılmaz.
+
+Proje başlangıçta otomatik seçilmez; **Projeler** listesinden veya yerel klasör
+seçicisinden seçilir. Ayarlarda kurulum/veri dizini ya da çok satırlı kök klasör
+girişi yoktur. İzin verilen proje kökleri yine sunucuda doğrulanır.
+
+**Kaydet** yalnızca değişiklik olduğunda etkinleşir; **Vazgeç** kaydedilmemiş
+havuz/ayar değişikliklerini geri alır. Aynı üyeliği tekrar eklemek çoğaltmaz ve
+varsayılan olarak mevcut eforunu korur. Efor adları Türkçe gösterilir; API değerleri
+(low/medium/high vb.) değişmez. Kota sorgu sonucu ekranda JSON yerine bilgi olarak gösterilir.
 
 Bağlı ajanlar için örnekler ve hata kodları: [Ajan API rehberi](docs/agent-api.md).
 

@@ -31,8 +31,21 @@ export function mergeScanDraft(scanned, before, draft) {
 }
 export function addMembership(model, group, effort = '') {
   if (!['high', 'medium', 'low'].includes(group) || effort && !model.efforts.includes(effort)) throw new Error('Havuz veya efor seçimi geçersiz.');
+  if (memberships(model).some(member => member.group === group && (member.effort || '') === effort)) return false;
   model.memberships = memberships(model);
   let member = model.memberships.find(item => item.group === group);
   if (!member) { member = { group }; model.memberships.push(member); }
   if (effort) member.effort = effort; else delete member.effort;
+  return true;
+}
+
+export function quotaWindows(snapshot, modelId = '') {
+  return (snapshot?.windows || []).filter(window => (!modelId || !window.models?.length || window.models.some(id => modelId.includes(id))) && Number.isFinite(window.remainingPercent)).map(window => {
+    const remaining = Math.max(0, Math.min(100, window.remainingPercent));
+    return { ...window, remaining, used: 100 - remaining };
+  });
+}
+
+export function effortLabel(value) {
+  return ({ low: 'Düşük', medium: 'Orta', high: 'Yüksek', xhigh: 'Çok yüksek', max: 'En yüksek', minimal: 'En az', none: 'Kapalı', default: 'Varsayılan' })[value] || value || 'CLI varsayılanı';
 }

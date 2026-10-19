@@ -102,5 +102,11 @@ The C# source is shipped; generated executables and copies remain outside the re
 
 The workspace composer places dictation and submit controls inside the input box.
 Speech uses browser recognition only after user interaction. Project/task results
-and attached skill instructions are rendered with textContent. Settings are modal;
-model catalogs are paginated inside a viewport-sized desktop layout.
+and attached skill instructions are rendered with textContent. Settings are a separate page with initially collapsed connection/form sections.
+Catalogs render every model in the chosen route inside a native scrolling region,
+without pagination. Quota details default open with readable remaining percentages,
+model-specific/global toggles and remaining-value progress bars. Scroll position and
+individual disclosure state survive quota refresh. No project is auto-selected from
+configuration or the installation directory; native project selection still uses
+server-side allowed-root validation. Save/discard controls reflect owner draft state.
+The human dashboard formats quota responses; agent MCP/JSON responses are unchanged.
