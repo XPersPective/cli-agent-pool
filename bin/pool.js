@@ -137,8 +137,13 @@ export async function main(args = process.argv.slice(2)) {
     initialize(directory);
     const view = configView(directory);
     const imported = importDiscoveredRoutes(view.config);
+    const catalogErrors = [];
+    for (const route of imported.config.routes.filter(route => !route.api && ['claude','agy'].includes(route.adapter))) {
+      try { imported.addedModels += mergeCatalogModels(route, await routeCatalog(route, imported.config.workspaceRoots[0] || directory, imported.config.python), imported.config.modelFilters); }
+      catch { catalogErrors.push(route.id); }
+    }
     saveConfig(directory, imported.config, view.revision);
-    print({ discoveredCLIs: imported.discoveredCount, addedRoutes: imported.addedRoutes, addedModels: imported.addedModels, totalRoutes: imported.config.routes.length });
+    print({ catalogErrors, discoveredCLIs: imported.discoveredCount, addedRoutes: imported.addedRoutes, addedModels: imported.addedModels, totalRoutes: imported.config.routes.length });
     return;
   }
   const config = ensureInitialized(directory, false);
@@ -163,7 +168,7 @@ export async function main(args = process.argv.slice(2)) {
     if (command === 'refresh-models') {
       const view = configView(directory);
       const stored = view.config.routes.find(r => r.id === route.id);
-      mergeCatalogModels(stored, catalog);
+      mergeCatalogModels(stored, catalog, view.config.modelFilters);
       saveConfig(directory, view.config, view.revision);
       print({ updated: stored.id, models: stored.models.length, manualGroups: 'preserved', restart: 'Restart pool service if already running.' });
     } else print(catalog);

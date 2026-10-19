@@ -8,9 +8,9 @@ import { configSchema } from '../src/config.js';
 import { Pool } from '../src/pool.js';
 import { Store } from '../src/store.js';
 import { claudeCatalog, routeCatalog, claudeQuotaWindows, mergeCatalogModels, execute } from '../src/adapters.js';
-import { browserUI } from '../src/web.js';
+import { browserUI, openCliLogin } from '../src/web.js';
 import { ensureInitialized } from '../src/daemon.js';
-import { memberships, mergeScanDraft, addMembership, quotaWindows, effortLabel } from '../web/pool-state.js';
+import { memberships, mergeScanDraft, addMembership, quotaWindows, effortLabel, modelFamily, modelIdentity, modelFiltered, sortModels, initialTaskGroup } from '../web/pool-state.js';
 
 test('adding to an explicit target pool preserves other memberships and validates effort before mutation', () => {
   const model = { group: 'high', defaultEffort: 'high', efforts: ['low', 'medium', 'high'] };
@@ -150,4 +150,73 @@ test('agent auto-start preserves owner-disabled routes and never grants trust im
   assert.equal(loaded.selectionMode, 'manual');
   assert.equal(loaded.routes.find(route => route.id === 'owner-disabled').enabled, false);
   assert.equal(loaded.routes.find(route => route.id === 'owner-disabled').trustedSettings, false);
+});
+
+test('owner model filters survive scans and prohibit automatic and explicit agent selection', async t => {
+  const root=mkdtempSync(path.join(tmpdir(),'pool-filter-'));
+  const make=(id,adapter,ids)=>({id,adapter,executable:process.execPath,billing:'subscription',enabled:true,models:ids.map(id=>({id,alias:id,group:'medium',kinds:['text'],efforts:[]}))});
+  const config=configSchema.parse({workspaceRoots:[root],modelFilters:[{match:'model',value:'gpt-5.6-sol',routeId:'codex'},{match:'family',value:'terra'}],routes:[make('codex','codex',['gpt-5.6-sol','gpt-6.1-sol','gpt-5.6-terra']),make('other','agy',['gpt-5.6-sol'])]});
+  const store=new Store(':memory:'),pool=new Pool(config,store);
+  t.after(async()=>{await pool.close();store.close();await rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});});
+  assert.deepEqual(pool.models().map(m=>[m.routeId,m.id]),[['codex','gpt-6.1-sol'],['other','gpt-5.6-sol']]);
+  assert.throws(()=>pool.select({kind:'text',routeId:'codex',modelId:'gpt-5.6-sol'}),{code:'NO_ROUTE'});
+  assert.equal(pool.select({kind:'text',routeId:'other'}).selected.id,'gpt-5.6-sol');
+  const route=config.routes[0];mergeCatalogModels(route,{models:[{id:'gpt-9-terra',efforts:[]},{id:'gpt-5.6-sol',efforts:[]},{id:'gpt-6-astra',efforts:[]}]},config.modelFilters);
+  assert(!route.models.some(m=>m.id==='gpt-9-terra'));assert(route.models.some(m=>m.id==='gpt-6-astra'));
+  config.modelFilters=[];assert(pool.models().some(m=>m.id==='gpt-5.6-terra'));
+  assert.equal(modelFamily('anthropic/claude-opus-5-5-high'),'opus');
+  assert.equal(modelIdentity('claude-opus-5.5'),'claude-opus-5-5');
+  assert(modelFiltered([{match:'model',value:'claude-opus-5.5'}],'agy','claude-opus-5-5-high'));
+  assert(!modelFiltered([{match:'model',value:'claude-opus-5-5-high',routeId:'agy'}],'agy','claude-opus-5-5-medium'));
+  assert(!modelFiltered([{match:'family',value:'sol'}],'codex','gpt-6-astra'));
+  const entries=['model-10','model-2','model-1'].map(id=>({route:{id:'route'},model:{id}}));
+  assert.deepEqual(sortModels(entries).map(e=>e.model.id),['model-1','model-2','model-10']);
+  assert.deepEqual(sortModels(entries,'za').map(e=>e.model.id),['model-10','model-2','model-1']);
+  assert.equal(entries[0].model.id,'model-10');
+  const draft=structuredClone(config),before=structuredClone(config);draft.modelFilters=[{match:'family',value:'sol'}];
+  assert.deepEqual(mergeScanDraft(config,before,draft).modelFilters,draft.modelFilters);
+  assert(!configSchema.safeParse({...config,modelFilters:[{match:'regex',value:'.*'}]}).success);
+});
+
+test('manual composer initially selects a populated pool while respecting later user choice',()=>{
+ const models=[{enabled:false,group:'high'},{enabled:true,group:'medium'}];
+ assert.equal(initialTaskGroup(models,'manual','high'),'medium');
+ assert.equal(initialTaskGroup(models,'manual','high',true),'high');
+ assert.equal(initialTaskGroup(models,'auto',''),'');
+});
+
+test('Antigravity discovers exact cross-vendor model IDs without inference or fabricated fallback',async t=>{
+ const root=mkdtempSync(path.join(tmpdir(),'pool-agy-'));const file=path.join(root,'agy.cjs');
+ writeFileSync(file,String.raw`if(process.argv[2]!=='models')process.exit(3);console.log('Fetching available models...\nclaude-opus-5-5-high\tClaude Opus 5.5 (High)\ngemini-4-argon-low\tGemini 4 Argon (Low)\ngpt-oss-120b-medium\tGPT OSS (Medium)');`);
+ t.after(()=>rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:100}));
+ const route={id:'agy',adapter:'agy',executable:file,billing:'subscription',models:[{id:'gemini-2.5-pro',group:'antigravity',efforts:[]}]};
+ const catalog=await routeCatalog(route,root,process.platform==='win32'?'python':'python3');
+ const assigned={...route,models:[{id:'gemini-2.5-pro',group:'medium',efforts:[],enabled:true}]};mergeCatalogModels(assigned,catalog);assert.equal(assigned.models[0].enabled,false);assert.equal(assigned.models[0].group,'medium');
+ assert.deepEqual(catalog.models.map(m=>m.id),['claude-opus-5-5-high','gemini-4-argon-low','gpt-oss-120b-medium']);
+ assert.deepEqual(catalog.models[0].efforts,['high']);mergeCatalogModels(route,catalog);assert(!route.models.some(m=>m.id==='gemini-2.5-pro'));
+ writeFileSync(file,"console.log('not a catalog')");await assert.rejects(routeCatalog(route,root,process.platform==='win32'?'python':'python3'),{code:'DISCOVERY_FAILED'});
+});
+
+test('owner login opens the native CLI using a fixed platform script and data-only arguments',async()=>{
+ let launched;
+ const run=async(file,args,options)=>{launched={file,args,options};return{stdout:'{"opened":true}'};};
+ const route={adapter:'codex',executable:process.execPath};
+ assert.equal((await openCliLogin(route,{platform:'win32',run})).opened,true);
+ assert.deepEqual(JSON.parse(launched.options.env.CLI_AGENT_POOL_LOGIN_ARGV),{file:process.execPath,arguments:['login']});
+ assert(!launched.args.at(-1).includes(process.execPath));assert.equal(launched.options.env.OPENAI_API_KEY,undefined);assert(launched.args.includes('-NonInteractive'));
+ await assert.rejects(openCliLogin({...route,api:{}},{platform:'win32',run}),{code:'LOGIN_UNAVAILABLE'});
+ await assert.rejects(openCliLogin(route,{platform:'win32',run:async()=>{throw Error('failed')}}),{code:'LOGIN_FAILED'});
+ assert.equal((await openCliLogin(route,{platform:'linux',run})).opened,false);
+});
+
+test('failed Codex quota control distinguishes missing login from an unknown quota',async t=>{
+ const root=mkdtempSync(path.join(tmpdir(),'pool-auth-')),file=path.join(root,'codex.cjs');writeFileSync(file,'process.exit(1)');
+ const config=configSchema.parse({workspaceRoots:[root],routes:[{id:'codex',adapter:'codex',executable:file,enabled:true,billing:'subscription',models:[{id:'gpt-test',alias:'GPT',group:'medium',kinds:['text']}]}]});
+ const store=new Store(':memory:'),pool=new Pool(config,store);
+ t.after(async()=>{await pool.close();store.close();await rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});});
+ assert.equal((await pool.getQuota('codex')).status,'auth_required');
+ assert.throws(()=>pool.select({kind:'text',group:'medium'}),{code:'NO_ROUTE'});
+ pool.checkAuth=async()=>{};assert.equal((await pool.getQuota('codex')).status,'auth_required');assert.equal((await pool.getQuota('codex',true)).status,'unknown');
+ store.saveQuota('codex',{status:'rate_limited',observedAt:new Date().toISOString(),windows:[{remainingPercent:0}]});
+ assert.equal((await pool.getQuota('codex',true)).status,'rate_limited');assert.throws(()=>pool.select({kind:'text',group:'medium'}),{code:'NO_ROUTE'});
 });

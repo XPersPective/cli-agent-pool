@@ -1,4 +1,4 @@
-import { memberships, mergeScanDraft, addMembership, quotaWindows, effortLabel } from '/pool-state.js';
+import { memberships, mergeScanDraft, addMembership, quotaWindows, effortLabel, modelIdentity, modelFamily, modelFiltered, sortModels, initialTaskGroup } from '/pool-state.js';
 const $ = id => document.getElementById(id);
 const labels = { queued: 'Sırada', starting: 'Başlatılıyor', running: 'Çalışıyor', succeeded: 'Tamamlandı', failed: 'Başarısız', timed_out: 'Süre doldu', cancelling: 'Durduruluyor', cancelled: 'Durduruldu', needs_review: 'Elle inceleme gerekli' };
 const billingLabels = { subscription: 'Abonelik', token_plan: 'Token planı', free_credits: 'Günlük / ücretsiz kredi', free: 'Ücretsiz', paid_api: 'Ücretli API', unknown: 'Doğrulanmadı' };
@@ -19,6 +19,31 @@ let selectedGroup = 'high';
 let quotasOpen = true;
 const quotaStates = new Map();
 let noticeTimer;
+let taskGroupInitialized = false;
+let selectedFamily = '';
+let viewPreferences = {};
+try { viewPreferences = JSON.parse(localStorage.getItem('pool-view') || '{}'); if (!viewPreferences || typeof viewPreferences !== 'object' || Array.isArray(viewPreferences)) viewPreferences = {}; } catch { /* Browser defaults remain usable. */ }
+selectedRoute = typeof viewPreferences.selectedRoute === 'string' ? viewPreferences.selectedRoute : '';
+selectedFamily = typeof viewPreferences.selectedFamily === 'string' ? viewPreferences.selectedFamily : '';
+if (['high','medium','low'].includes(viewPreferences.selectedGroup)) selectedGroup = viewPreferences.selectedGroup;
+if (typeof viewPreferences.quotasOpen === 'boolean') quotasOpen = viewPreferences.quotasOpen;
+for (const [key,value] of Object.entries(viewPreferences.quotaStates || {})) if (typeof value === 'boolean') quotaStates.set(key,value);
+function rememberView() {
+  try { localStorage.setItem('pool-view', JSON.stringify({ ...viewPreferences, selectedRoute, selectedFamily, selectedGroup, quotasOpen, quotaStates: Object.fromEntries(quotaStates) })); } catch { /* Current-page choices still work. */ }
+}
+for (const id of ['catalog-view','catalog-sort','member-view']) {
+  if ([...$(id).options].some(option => option.value === viewPreferences[id])) $(id).value = viewPreferences[id];
+  $(id).addEventListener('change', () => { viewPreferences[id] = $(id).value; rememberView(); $('pool-models').scrollTop = 0; renderPool(); });
+}
+function setPanel(name, open) {
+  $(`${name}-content`).hidden = !open; $(`toggle-${name}`).setAttribute('aria-expanded', String(open));
+  $(`${name}-area`).classList.toggle('collapsed', !open);
+  $('pool-panel').classList.toggle('catalog-closed', name === 'catalog' ? !open : $('catalog-content').hidden);
+}
+for (const name of ['pool','catalog']) {
+  setPanel(name, viewPreferences[name] !== false);
+  $(`toggle-${name}`).addEventListener('click', () => { const open = $(`${name}-content`).hidden; setPanel(name,open); viewPreferences[name] = open; rememberView(); });
+}
 let quotasRefreshing = false;
 let quotaErrors = {};
 let pendingPoolModel = null;
@@ -36,7 +61,7 @@ function applyTheme() {
 applyTheme();
 $('theme').addEventListener('change', () => { applyTheme(); try { localStorage.setItem('pool-theme', $('theme').value); } catch { /* Current-page theme still works. */ } });
 function updateSave() {
-  $('save-pool').textContent = poolDirty ? 'Kaydet' : 'Kaydedildi';
+  $('save-pool').hidden = !poolDirty;
   $('save-pool').disabled = busy || !poolDirty; $('save-pool').dataset.locked = String(!poolDirty);
   $('discard-settings').hidden = !poolDirty;
 }
@@ -79,8 +104,13 @@ async function action(operation) {
     updateSave();
   }
 }
-function availableModels() { return (snapshot?.models || []).filter(model => model.enabled && activeBillings.has(model.billing) && model.kinds.includes($('task-kind').value) && (!$('task-group').value || model.group === $('task-group').value)); }
-function updateSubmit() { $('submit').disabled = busy || !$('task-workspace').value || !availableModels().length || !$('task-prompt').value.trim() || $('voice-input').getAttribute('aria-pressed') === 'true'; }
+function availableModels() { return (snapshot?.models || []).filter(model => !modelFiltered(settings?.config.modelFilters, model.routeId, model.id) && model.enabled && activeBillings.has(model.billing) && model.kinds.includes($('task-kind').value) && (!$('task-group').value || model.group === $('task-group').value)); }
+function updateSubmit() {
+  const reason = !$('task-workspace').value ? 'Başlamak için proje klasörünü seçin.' : !availableModels().length ? poolDirty ? 'Havuz değişikliklerini üstteki ✓ düğmesiyle kaydedin.' : 'Bu görev için seçilen havuzda etkin model yok. Başka havuz seçin veya Modeller ekranından ekleyin.' : availableModels().every(model => snapshot?.quotas?.[model.routeId]?.status === 'auth_required') ? 'Giriş gerekli. Modeller ekranında bağlantınızın Giriş yap düğmesini kullanın.' : $('voice-input').getAttribute('aria-pressed') === 'true' ? 'Sesle yazmayı tamamlayın.' : '';
+  $('submit').disabled = busy || Boolean(reason) || !$('task-prompt').value.trim();
+  $('model-empty').textContent = reason; $('model-empty').hidden = !reason;
+  $('submit').title = reason || 'Görevi gönder';
+}
 $('task-prompt').addEventListener('input', updateSubmit);
 $('task-prompt').addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); if (!$('submit').disabled) $('task-form').requestSubmit(); } });
 function updateModels() {
@@ -94,7 +124,7 @@ function updateModels() {
   }
   updateEfforts();
   updateSubmit();
-  $('model-empty').textContent = models.length ? 'Seçtiğiniz havuzdan kotası uygun model kullanılır. Modeli açıkça seçerseniz yalnızca o model çalışır.' : 'Bu görev / grupta etkin model yok. Ajan Havuzu ekranından modelleri etkinleştirip kaydedin.';
+
   $('write-warning').hidden = $('task-kind').value !== 'write';
 }
 function updateEfforts() {
@@ -147,9 +177,8 @@ async function refresh(announce = false) {
     renderProjects();
     const previousGroup = $('task-group').value;
     $('task-group').replaceChildren(...(snapshot.selectionMode === 'auto' ? [new Option('Ajan otomatik seçsin', '')] : []), ...strengthGroups.map(group => new Option(groupLabel(group), group)));
-    if ([...$('task-group').options].some(option => option.value === previousGroup)) $('task-group').value = previousGroup;
-    else $('task-group').value = snapshot.selectionMode === 'manual' ? 'high' : '';
-    $('connection-state').textContent = 'Bağlı';
+    $('task-group').value = initialTaskGroup(snapshot.models.filter(model => activeBillings.has(model.billing) && model.kinds.includes($('task-kind').value)), snapshot.selectionMode, previousGroup, taskGroupInitialized); taskGroupInitialized = true;
+    $('connection-state').textContent = 'Bağlı'; $('connection-state').dataset.connected = 'true'; $('connection-state').title = 'Bağlı';
     $('installed-count').textContent = snapshot.installed.filter(cli => cli.status === 'installed').length;
     $('model-count').textContent = new Set(snapshot.models.filter(model => model.enabled && (snapshot.selectionMode === 'auto' || strengthGroups.includes(model.group))).map(model => `${model.routeId}/${model.id}`)).size;
     $('running-count').textContent = snapshot.tasks.filter(task => ['starting', 'running', 'cancelling'].includes(task.state)).length;
@@ -192,7 +221,7 @@ async function refresh(announce = false) {
     updateModels();
     if (selectedTask) await openTask(selectedTask, false);
     if (wasOffline) notice('Bağlantı yeniden kuruldu.');
-  } catch (error) { $('connection-state').textContent = 'Bağlantı yok'; notice(error.message, true); }
+  } catch (error) { $('connection-state').textContent = 'Bağlantı yok'; $('connection-state').dataset.connected = 'false'; $('connection-state').title = 'Bağlantı yok'; notice(error.message, true); }
   finally { refreshing = false; }
 }
 function settingField(label, value, update, choices, markDirty = true) {
@@ -271,7 +300,8 @@ function renderSettings() {
     if (!route.api && route.adapter !== 'custom') {
       routeActions.append(button('Model sürümlerini yenile', async () => { await refreshCatalog(route.id); }));
     }
-    body.append(routeActions);
+    if (!route.api && !['custom','lmstudio','ollama'].includes(route.adapter)) routeActions.append(button('Giriş yap', async () => { const result = await call('login', { routeId: route.id }); notice(result.message); }));
+    body.append(routeActions, loginNotice(route));
     section.append(body);
     return section;
   }));
@@ -296,7 +326,7 @@ async function saveSettings() {
   settings = await call('save', settings); poolDirty = false; renderSettings(); renderPool(); await refresh(); notice('Kaydedildi.');
 }
 $('save-pool').addEventListener('click', () => void action(saveSettings));
-$('settings').addEventListener('change', dirty);
+$('settings').addEventListener('change', event => { if (event.target.id !== 'theme') dirty(); });
 $('add-route').addEventListener('click', () => void action(async () => {
   const adapter = $('new-adapter').value;
   const billing = $('new-billing').value;
@@ -406,19 +436,19 @@ document.querySelector('.skip').addEventListener('click', () => { switchPage('wo
 $('pool-tab').addEventListener('click', () => switchPage('pool'));
 $('workspace-tab').addEventListener('click', () => switchPage('workspace'));
 $('task-group').addEventListener('change', updateModels);
-$('task-model').addEventListener('change', updateEfforts);
+$('task-model').addEventListener('change', () => { updateEfforts(); updateSubmit(); });
 $('pool-search').addEventListener('input', () => { $('pool-models').scrollTop = 0; renderCatalog(); });
 $('selection-mode').addEventListener('change', () => { settings.config.selectionMode = $('selection-mode').value; dirty(); renderPool(); });
 $('grouping-mode').addEventListener('change', () => { settings.config.groupingMode = $('grouping-mode').value; dirty(); });
 $('discard-settings').addEventListener('click', () => void action(async () => { settings = await call('settings'); poolDirty = false; baseConfig = structuredClone(settings.config); renderSettings(); renderPool(); updateSave(); }));
 $('toggle-quotas').addEventListener('click', () => {
-  quotasOpen = [...document.querySelectorAll('#pool-models .quota-details')].some(node => !node.open);
+  quotasOpen = [...document.querySelectorAll('.quota-details')].some(node => !node.open);
   quotaStates.clear();
   document.querySelectorAll('.quota-details').forEach(node => { node.open = quotasOpen; });
-  updateQuotaToggle();
+  updateQuotaToggle(); rememberView();
 });
 function updateQuotaToggle() {
-  const details = [...$('pool-models').querySelectorAll('.quota-details')];
+  const details = [...document.querySelectorAll('.quota-details')];
   const allOpen = details.length ? details.every(node => node.open) : quotasOpen;
   $('toggle-quotas').textContent = allOpen ? 'Kotaları gizle' : 'Kotaları göster';
   $('toggle-quotas').setAttribute('aria-pressed', String(allOpen));
@@ -444,7 +474,7 @@ function quotaCell(route, model) {
   details.open = quotaStates.has(key) ? quotaStates.get(key) : quotasOpen;
   const summary = element('summary'); summary.append(element('span', 'Kota'), element('strong', windows.length ? `%${Math.min(...windows.map(window => window.remaining)).toFixed(0)} kalan` : 'Bilinmiyor'));
   details.append(summary, quotaBody(q, model.id, quotaErrors[route.id]));
-  details.addEventListener('toggle', () => { if (!details.isConnected) return; quotaStates.set(key, details.open); updateQuotaToggle(); });
+  details.addEventListener('toggle', () => { if (!details.isConnected) return; quotaStates.set(key, details.open); document.querySelectorAll('.quota-details').forEach(other => { if (other !== details && other.dataset.quotaKey === key) other.open = details.open; }); updateQuotaToggle(); rememberView(); });
   cell.append(details); return cell;
 }
 function renderPool() {
@@ -453,25 +483,29 @@ function renderPool() {
   $('grouping-mode').value = settings.config.groupingMode;
   updateSave();
   $('group-summary').replaceChildren(...strengthGroups.map(group => {
-    const count = settings.config.routes.reduce((total, route) => total + route.models.filter(model => memberships(model).some(member => member.group === group)).length, 0);
+    const count = settings.config.routes.reduce((total, route) => total + route.models.filter(model => !modelFiltered(settings.config.modelFilters, route.id, model.id) && memberships(model).some(member => member.group === group)).length, 0);
     const card = element('button', null, `group-card group-${group}`); card.type = 'button'; card.setAttribute('aria-pressed', String(selectedGroup === group));
     card.append(element('strong', groupLabel(group)), element('span', `${count} model`));
-    card.addEventListener('click', () => { selectedGroup = group; renderPool(); }); return card;
+    card.addEventListener('click', () => { selectedGroup = group; rememberView(); renderPool(); }); return card;
   }));
   $('members-heading').textContent = `${groupLabel(selectedGroup)} üyeleri`;
-  $('catalog-heading').textContent = 'Model kataloğu';
-  const memberScroll = $('pool-members').scrollLeft;
+  $('filter-count').textContent = settings.config.modelFilters?.length || 0;
+  const memberScroll = $('pool-members').scrollLeft, memberTop = $('pool-members').scrollTop;
   const rows = [];
-  for (const route of settings.config.routes) for (const model of route.models) {
+  const entries = sortModels(settings.config.routes.flatMap(route => route.models.filter(model => !modelFiltered(settings.config.modelFilters, route.id, model.id)).map(model => ({route, model}))), 'az', $('member-view').value === 'family');
+  if ($('member-view').value === 'route') entries.sort((a,b) => a.route.id.localeCompare(b.route.id));
+  for (const {route,model} of entries) {
     const member = memberships(model).find(item => item.group === selectedGroup);
     if (!member) continue;
     const row = element('div', null, 'membership-row');
     const info = element('div'); info.append(element('strong', model.id), element('small', `${adapterLabels[route.adapter] || route.adapter} · ${route.id}${!route.enabled || model.enabled === false ? ' · Kapalı' : route.adapter !== 'codex' && !route.api && route.billing !== 'free' && !route.trustedSettings ? ' · Yerel ayar onayı bekliyor' : ''}${route.billing === 'paid_api' && !route.autoSelect ? ' · Ücretli API otomatik seçimi kapalı' : ''}`));
     row.append(info, settingField('Efor', member.effort || '', value => { model.memberships = memberships(model); const item = model.memberships.find(item => item.group === selectedGroup); if (value) item.effort = value; else delete item.effort; dirty(); }, ['', ...model.efforts]), button('Çıkar', async () => { model.memberships = memberships(model).filter(item => item.group !== selectedGroup); dirty(); renderPool(); }));
-    rows.push(row);
+    row.setAttribute('role','group'); row.setAttribute('aria-label',`${model.id} · ${route.id}`); info.title=`${model.id} · ${route.id}`;
+    row.querySelector('select').setAttribute('aria-label',`${model.id} · ${route.id} efor`); row.querySelector('button').setAttribute('aria-label',`${model.id} · ${route.id} modelini ${groupLabel(selectedGroup)} havuzundan çıkar`);
+    row.append(quotaCell(route,model), loginNotice(route)); rows.push(row);
   }
   $('pool-members').replaceChildren(...(rows.length ? rows : [element('p', `Bu havuz boş. Aşağıdan Codex, Claude veya başka bir araç seçip modelleri ekleyin.`, 'empty')]));
-  $('pool-members').scrollLeft = memberScroll;
+  $('pool-members').scrollLeft = memberScroll; $('pool-members').scrollTop = memberTop;
   renderCatalog();
 }
 async function refreshCatalog(routeId) {
@@ -479,40 +513,73 @@ async function refreshCatalog(routeId) {
   if (poolDirty) { await runScanImport(routeId); return; }
   settings = await call('refresh_catalog', { routeId }); renderPool(); await refresh(); notice('Model sürümleri güncellendi.');
 }
+function familyLabel(value) { return ({sol:'Sol',terra:'Terra',astra:'Astra',luna:'Luna',opus:'Opus',sonnet:'Sonnet',haiku:'Haiku',gemini:'Gemini',qwen:'Qwen',glm:'GLM',gpt:'GPT','gpt-oss':'GPT OSS'})[value] || value; }
 function renderCatalog() {
   if (!settings) return;
   const scroll = $('pool-models').scrollTop;
   const routes = settings.config.routes;
+  const all = routes.flatMap(route => route.models.filter(model => !modelFiltered(settings.config.modelFilters, route.id, model.id)).map(model => ({route,model})));
+  const byFamily = $('catalog-view').value === 'family';
   if (!routes.some(route => route.id === selectedRoute)) selectedRoute = routes.find(route => route.adapter === 'codex')?.id || routes[0]?.id || '';
-  $('route-nav').replaceChildren(...routes.map(route => {
-    const node = element('button', `${adapterLabels[route.adapter] || route.adapter}${route.api ? ' API' : ''} (${route.models.length})`); node.type = 'button'; node.title = route.id;
-    node.classList.toggle('selected', route.id === selectedRoute); node.setAttribute('aria-pressed', String(route.id === selectedRoute));
-    node.addEventListener('click', () => { selectedRoute = route.id; $('pool-search').value = ''; $('pool-models').scrollTop = 0; renderCatalog(); }); return node;
+  const families = [...new Set(all.map(({model}) => modelFamily(model.id)))].sort();
+  if (!families.includes(selectedFamily)) selectedFamily = families[0] || '';
+  const groups = byFamily ? families.map(id => ({id,label:familyLabel(id),count:all.filter(({model})=>modelFamily(model.id)===id).length})) : routes.map(route => ({id:route.id,label:`${adapterLabels[route.adapter] || route.adapter}${route.api ? ' API' : ''}`,count:all.filter(item=>item.route.id===route.id).length}));
+  $('route-nav').replaceChildren(...groups.map(group => {
+    const node = element('button', `${group.label} (${group.count})`); node.type='button'; node.title=group.id;
+    const selected = group.id === (byFamily ? selectedFamily : selectedRoute); node.classList.toggle('selected',selected); node.setAttribute('aria-pressed',String(selected));
+    node.addEventListener('click',()=>{ if (byFamily) selectedFamily=group.id; else selectedRoute=group.id; rememberView(); $('pool-search').value=''; $('pool-models').scrollTop=0; renderCatalog(); }); return node;
   }));
-  const route = routes.find(route => route.id === selectedRoute);
-  if (!route) { $('catalog-status').replaceChildren(); $('pool-models').replaceChildren(element('p', 'Modelleri tara düğmesiyle kurulu araçları bulun.', 'empty')); $('catalog-count').textContent = '0 model'; return; }
-  const status = element('div', null, 'actions');
-  status.append(element('small', `${route.id} · ${billingLabels[route.billing]}${route.api ? ` · ${route.api.baseUrl}` : ['ollama', 'lmstudio'].includes(route.adapter) ? ' · Yerel modeller' : ' · Kurulu araç üzerinden erişim'}`));
-  if (route.adapter !== 'codex' && !route.api && !route.trustedSettings) {
-    const label = element('label', null, 'trust-field'); const check = document.createElement('input'); check.type = 'checkbox'; check.checked = route.trustedSettings;
-    check.addEventListener('change', () => { route.trustedSettings = check.checked; dirty(); }); label.append(check, element('span', 'Bu aracın yerel ayarlarını ve planını doğruladım')); status.append(label);
+  const route = routes.find(route=>route.id===selectedRoute);
+  const status = element('div',null,'actions');
+  if (byFamily) status.append(element('small',`${familyLabel(selectedFamily)} · Tüm bağlantılar; her abonelik ayrı seçilebilir.`));
+  else if (route) {
+    status.append(element('small',`${route.id} · ${billingLabels[route.billing]}${route.api ? ` · ${route.api.baseUrl}` : ['ollama','lmstudio'].includes(route.adapter) ? ' · Yerel modeller' : ''}`));
+    status.append(loginNotice(route));
+    if (route.adapter !== 'codex' && !route.api && route.billing !== 'free' && !route.trustedSettings) {
+      const label=element('label',null,'trust-field'), check=document.createElement('input'); check.type='checkbox'; check.checked=route.trustedSettings;
+      check.addEventListener('change',()=>{route.trustedSettings=check.checked;dirty();});label.append(check,element('span','Yerel ayarları ve planı doğruladım'));status.append(label);
+    }
   }
   $('catalog-status').replaceChildren(status);
-  const search = $('pool-search').value.trim().toLocaleLowerCase('tr');
-  const models = route.models.filter(model => `${model.id} ${model.alias}`.toLocaleLowerCase('tr').includes(search));
-  $('pool-models').replaceChildren(...models.map(model => {
-    const row = element('div', null, 'catalog-row'); const info = element('div');
-    info.append(element('strong', model.id)); info.title = `${model.id}${model.alias !== model.id ? ` · ${model.alias}` : ''}`;
-    if (model.alias !== model.id) info.append(element('small', model.alias));
-    if (!/\d/.test(model.id)) info.append(element('small', 'Sürüm bildirilmedi · model sürümlerini al', 'version-unknown'));
-    const groups = memberships(model);
-    const tags = element('small', groups.length ? groups.map(member => groupLabel(member.group)).join(' · ') : 'Henüz bir havuzda değil', 'model-memberships');
-    const add = button('Ekle', async () => openPoolPicker(route, model)); add.classList.add('add-model'); add.dataset.modelId = model.id; add.setAttribute('aria-label', `${model.id} modelini havuza ekle`);
-    row.append(info, quotaCell(route, model), tags, add); return row;
+  const search=$('pool-search').value.trim().toLocaleLowerCase('tr');
+  const entries=sortModels(all.filter(({route,model})=>(byFamily ? modelFamily(model.id)===selectedFamily : route.id===selectedRoute) && `${model.id} ${model.alias} ${route.id}`.toLocaleLowerCase('tr').includes(search)), $('catalog-sort').value, byFamily);
+  $('pool-models').replaceChildren(...entries.map(({route,model})=>{
+    const row=element('div',null,'catalog-row'), info=element('div');row.setAttribute('role','group');row.setAttribute('aria-label',`${model.id} · ${route.id}`); row.dataset.routeId=route.id;row.dataset.modelId=model.id;
+    info.append(element('strong',model.id));info.title=model.id;
+    if (model.alias!==model.id) info.append(element('small',model.alias));
+    if (model.enabled === false) info.append(element('small','Kullanımı kapalı','version-unknown'));
+    if (byFamily) info.append(element('small',`${adapterLabels[route.adapter] || route.adapter} · ${route.id}`));
+    if (!/\d/.test(model.id)) info.append(element('small','Sağlayıcı sürüm bildirmedi','version-unknown'));
+    const groups=memberships(model), tags=element('small',groups.length?groups.map(member=>groupLabel(member.group)).join(' · '):'Henüz bir havuzda değil','model-memberships');
+    const actions=element('div',null,'model-actions');
+    const hide=button('Gizle',async()=>openFilters(route,model));hide.setAttribute('aria-label',`${model.id} için filtre ekle`);
+    const add=button('Ekle',async()=>openPoolPicker(route,model));add.classList.add('add-model');add.dataset.modelId=model.id;add.dataset.routeId=route.id;add.setAttribute('aria-label',`${model.id} modelini havuza ekle`);actions.append(hide,add);
+    row.append(info,quotaCell(route,model),tags,actions); if(byFamily) row.append(loginNotice(route));return row;
   }));
-  if (!models.length) $('pool-models').append(element('p', 'Eşleşen model yok. Model sürümlerini al düğmesini kullanın.', 'empty'));
-  $('catalog-count').textContent = `${models.length} model`;
-  $('pool-models').scrollTop = scroll; updateQuotaToggle();
+  if(!entries.length) $('pool-models').append(element('p','Görünür model yok. Filtreleri kontrol edin veya Ayarlar → Modelleri tara seçeneğini kullanın.','empty'));
+  $('catalog-count').textContent=`${entries.length} model`;$('pool-models').scrollTop=scroll;updateQuotaToggle();
+}
+function openFilters(route, model) {
+  const filters=settings.config.modelFilters ||= [];
+  $('filter-actions').replaceChildren();
+  if(route&&model) {
+    $('filter-heading').textContent=model.id;
+    const rules=[['Bu bağlantıda gizle',{match:'model',value:model.id,routeId:route.id}],['Bu modeli her yerde gizle',{match:'model',value:modelIdentity(model.id)}],[`${familyLabel(modelFamily(model.id))} ailesini gizle`,{match:'family',value:modelFamily(model.id)}]];
+    for(const [label,rule] of rules) $('filter-actions').append(button(label,async()=>{if(!filters.some(item=>JSON.stringify(item)===JSON.stringify(rule))){filters.push(rule);dirty();}renderPool();openFilters();}));
+  } else $('filter-heading').textContent='Gizlenen modeller';
+  $('filter-list').replaceChildren(...filters.map((rule,index)=>{const row=element('div',null,'filter-row');row.append(element('span',`${rule.match==='family'?familyLabel(rule.value)+' ailesi':rule.value} · ${rule.routeId||'Tüm bağlantılar'}`),button('Göster',async()=>{filters.splice(index,1);dirty();renderPool();openFilters();}));return row;}));
+  if(!filters.length) $('filter-list').append(element('p','Gizlenen model yok. Model kartındaki Gizle düğmesiyle filtre ekleyin.','hint'));
+  if(!$('model-filter-dialog').open) $('model-filter-dialog').showModal(); else $('close-filters').focus();
+}
+$('open-filters').addEventListener('click',()=>openFilters());
+$('close-filters').addEventListener('click',()=>$('model-filter-dialog').close());
+$('model-filter-dialog').addEventListener('close',()=>$('open-filters').focus());
+function loginNotice(route) {
+  const q=snapshot?.quotas?.[route.id], box=element('div',null,'login-notice');
+  if(q?.status!=='auth_required') return box;
+  box.append(element('span','Giriş gerekli'));
+  box.append(button(route.api?'Anahtar ayarları':'Giriş yap',async()=>{if(route.api){switchPage('settings');return;}const result=await call('login',{routeId:route.id});notice(result.message);}));
+  box.append(button('Kontrol et',async()=>{await refreshQuotas(route.id);await refresh();renderPool();}));return box;
 }
 function openPoolPicker(route, model) {
   pendingPoolModel = { routeId: route.id, modelId: model.id };
@@ -529,8 +596,8 @@ function openPoolPicker(route, model) {
       const changed = addMembership(targetModel, group, $('add-pool-effort').value === 'preserve' ? member?.effort || '' : $('add-pool-effort').value);
       const enabled = targetModel.enabled && targetRoute.enabled;
       targetModel.enabled = true; targetRoute.enabled = true; if (changed || !enabled) dirty(); $('add-pool-dialog').close(); renderPool();
-      [...$('pool-models').querySelectorAll('.add-model')].find(node => node.dataset.modelId === targetModel.id)?.focus();
-      notice(`${targetModel.id}, ${groupLabel(group)} havuzunda.`);
+      [...$('pool-models').querySelectorAll('.add-model')].find(node => node.dataset.modelId === targetModel.id && node.dataset.routeId === targetRoute.id)?.focus();
+      notice(`${targetModel.id}, ${groupLabel(group)} havuzunda.${snapshot?.quotas?.[targetRoute.id]?.status === 'auth_required' ? ' Kullanmak için Giriş yap düğmesiyle oturum açın.' : ''}`);
     });
   }));
   $('add-pool-dialog').showModal();
@@ -541,7 +608,7 @@ async function refreshQuotas(routeId) {
   if (quotasRefreshing) return;
   quotasRefreshing = true; $('refresh-quotas').textContent = 'Limitler sorgulanıyor…'; renderPool();
   try {
-    const result = await call('quotas', routeId ? { routeId } : {}); snapshot.quotas = { ...snapshot.quotas, ...result.quotas }; quotaErrors = routeId ? { ...quotaErrors, [routeId]: result.errors[routeId] } : result.errors;
+    const result = await call('quotas', { ...(routeId ? { routeId } : {}), force: true }); snapshot.quotas = { ...snapshot.quotas, ...result.quotas }; quotaErrors = routeId ? { ...quotaErrors, [routeId]: result.errors[routeId] } : result.errors;
   } catch (error) { notice(error.message, true); }
   finally { quotasRefreshing = false; $('refresh-quotas').textContent = 'Kotaları yenile'; renderPool(); }
 }

@@ -259,3 +259,31 @@ git config core.hooksPath .githooks
 
 Mimari ve kabul sınırları: [docs/architecture.md](docs/architecture.md).
 Gizlilik ve güvenlik: [SECURITY.md](SECURITY.md).
+
+### Katalog filtreleri ve görünüm (1.3.0)
+
+Model kartındaki **Gizle** ile yalnızca o bağlantıdaki tam modeli, aynı modelin tüm
+bağlantılardaki efor varyantlarını veya bir model ailesini gizleyebilirsiniz.
+**Gizlenenler → Göster** işlemi kuralı kaldırır. Filtreler Kaydet ile kalıcılaşır;
+ajan listeleri/seçimi ve yeniden tarama da bu kurallara uyar. Model üyelikleri
+silinmez; filtre kaldırıldığında tekrar görünür. Örnek modeller otomatik kara listeye alınmaz.
+
+Katalog **Araçlara göre / Model ailesine göre** ve **A → Z / Z → A** görünür.
+Aynı modelin farklı abonelikleri ayrı bağlantı kartlarıdır. Havuzlarım da araç veya
+model ailesine göre sıralanabilir. Bölümleri açıp kapatma, kota görünümü, seçili
+havuz/araç/aile ve sıralama bu tarayıcıda korunur. Havuz kartlarında da ince kota
+çubukları vardır. Geniş ekranın tamamı kullanılır; daraltıp büyütmek düzeni geri açar.
+
+Antigravity modelleri `agy models` çıktısından alınır; Claude ve GPT dahil yalnızca
+CLI'ın gerçekten bildirdiği kimlikler eklenir. Eski sabit Gemini listesi kullanılmaz.
+
+**Giriş gerekli** uyarısındaki **Giriş yap** Windows'ta resmî CLI'ı görünür bir
+terminalde açar. Giriş kullanıcı tarafından tamamlanır; **Kontrol et** önbelleği
+beklemeden durumu yeniden sorgular. API bağlantıları anahtar ayarlarına yönlenir.
+Bilinmeyen oturum bilgisi giriş yapılmış gibi sunulmaz; Ayarlar'da giriş eylemi de vardır.
+
+Çalışma Alanı metin/sohbet ile başlar; manuel modda ilk uygun dolu havuz seçilir.
+Daha sonra elle seçilen havuz korunur. Proje yolu giriş kutusunda, görev/model/efor
+seçenekleri altındadır. Gönderilemiyorsa eksik proje, boş havuz veya gerekli giriş
+kutunun yanında açıklanır. Tema Ayarlar'dadır; bağlantı noktası ve simgeli işlemler
+üst çubuğu sade tutar.

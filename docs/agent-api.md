@@ -39,6 +39,7 @@ tekrarlamayın; `needs_review` kullanıcı incelemesi ister.
 - Aynı havuzda kota dolmuş bağlantı atlanır. `routeId` veya `modelId` sabitlerseniz
   havuzun diğer üyelerine otomatik geçişi daraltmış olursunuz.
 - Ücretli API otomatik kullanımı yalnızca sahibinin açık `autoSelect` tercihiyle olur.
+- Sahibin gizlediği model/aileler listelenmez ve açık model isteğiyle de kullanılamaz. Ajan grup düzenlemesi bu filtreleri kaldıramaz. Giriş gerekiyorsa kullanıcı Modeller veya Ayarlar ekranından resmî CLI girişini tamamlar.
 - Kota desteklenmiyorsa `unknown`/boş windows dönebilir; bunu sıfır veya sınırsız saymayın.
 
 ## Havuz üyeliği yönetimi

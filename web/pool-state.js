@@ -26,7 +26,7 @@ export function mergeScanDraft(scanned, before, draft) {
       }
     }
   }
-  for (const key of ['selectionMode', 'groupingMode', 'workspaceRoots']) if (JSON.stringify(draft[key]) !== JSON.stringify(before[key])) merged[key] = structuredClone(draft[key]);
+  for (const key of ['selectionMode', 'groupingMode', 'workspaceRoots', 'modelFilters']) if (JSON.stringify(draft[key]) !== JSON.stringify(before[key])) merged[key] = structuredClone(draft[key]);
   return merged;
 }
 export function addMembership(model, group, effort = '') {
@@ -48,4 +48,24 @@ export function quotaWindows(snapshot, modelId = '') {
 
 export function effortLabel(value) {
   return ({ low: 'Düşük', medium: 'Orta', high: 'Yüksek', xhigh: 'Çok yüksek', max: 'En yüksek', minimal: 'En az', none: 'Kapalı', default: 'Varsayılan' })[value] || value || 'CLI varsayılanı';
+}
+
+// Family names are navigation hints, not capability scores. Exact identities keep versions distinct.
+export function modelIdentity(id) {
+  return id.split('/').at(-1).toLowerCase().replace(/-(low|medium|high|xhigh|max)$/, '').replace(/(\d)[.](?=\d)/g, '$1-');
+}
+export function modelFamily(id) {
+  const key = modelIdentity(id);
+  return key.match(/(?:^|-)(astra|sol|terra|luna|opus|sonnet|haiku)(?:-|$)/)?.[1] || key.match(/^(gemini|qwen|glm|kimi|mimo|deepseek|gpt-oss|gpt)(?:-|$)/)?.[1] || key.replace(/[-_.]?\d.*$/, '') || key;
+}
+export function modelFiltered(filters, routeId, modelId) {
+  return (filters || []).some(rule => (!rule.routeId || rule.routeId === routeId) && (rule.match === 'family' ? modelFamily(modelId) === rule.value : rule.routeId ? modelId.toLowerCase() === rule.value.toLowerCase() : modelIdentity(modelId) === modelIdentity(rule.value)));
+}
+export function sortModels(entries, order = 'az', families = false) {
+  return [...entries].sort((a,b) => (families ? (order === 'za' ? -1 : 1) * modelIdentity(a.model.id).localeCompare(modelIdentity(b.model.id), 'tr', {numeric:true}) : 0) || (order === 'za' ? -1 : 1) * a.model.id.localeCompare(b.model.id, 'tr', {numeric:true}) || a.route.id.localeCompare(b.route.id));
+}
+export function initialTaskGroup(models, mode, previous, initialized = false) {
+  if (mode !== 'manual') return previous || '';
+  if (initialized && ['high','medium','low'].includes(previous)) return previous;
+  return ['high','medium','low'].find(group => models.some(model => model.enabled && model.group === group)) || 'high';
 }

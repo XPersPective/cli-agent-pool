@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { allowedWorkspace, overlaps, PoolError, activeBillings, nonMeteredBillings, dataDirectory, configView, saveConfig } from './config.js';
 import { checkAuth, execute, quota, loginCommands } from './adapters.js';
+import { modelFiltered } from '../web/pool-state.js';
 import { codexControl } from './codex-control.js';
 
 export const taskSchema = z.object({
@@ -40,7 +41,7 @@ export class Pool {
     this.pumping = false;
   }
   models() {
-    return this.config.routes.flatMap(route => route.models.flatMap(model => {
+    return this.config.routes.flatMap(route => route.models.filter(model => !modelFiltered(this.config.modelFilters, route.id, model.id)).flatMap(model => {
       const memberships = model.memberships ?? [{ group: model.group, effort: model.defaultEffort }];
       return (memberships.length ? memberships : [{ group: 'unassigned' }]).map(member => ({
       ...model,
@@ -106,17 +107,26 @@ export class Pool {
     if (!matches.length) throw new PoolError('NO_ROUTE', 'Kurallara uyan etkin model yok. Bağlantı, ödeme türü veya izin ayarlarını kontrol edin.');
     return { selected: matches[0], alternatives: matches.slice(1), reason: 'Önce abonelik, token planı ve ücretsiz modeller tercih edilir; ücretli API yalnızca açıkça seçildiğinde veya otomatik seçime izin verildiğinde kullanılır.' };
   }
-  async getQuota(routeId) {
+  async getQuota(routeId, force = false) {
     const route = this.config.routes.find(r => r.id === routeId);
     if (!route) throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı.');
     const cached = this.store.quota(routeId);
-    if (cached && Date.now() - Date.parse(cached.observedAt) < 15_000) return cached;
+    if (!force && cached && Date.now() - Date.parse(cached.observedAt) < 15_000) return cached;
     if (this.quotaRequests.has(routeId)) return this.quotaRequests.get(routeId);
     const request = (async () => {
       const cwd = this.config.workspaceRoots[0] || process.cwd();
-      const snapshot = route.adapter === 'codex' && !route.api
-        ? { ...(await codexControl(route, cwd, this.config.python, 'quotas')), adapter: route.adapter, billing: route.billing, loginCommand: loginCommands.codex }
-        : await quota(route, cwd, this.config.python, this.directory);
+      let snapshot;
+      if (route.adapter === 'codex' && !route.api) {
+        try { snapshot = { ...(await codexControl(route, cwd, this.config.python, 'quotas')), adapter: route.adapter, billing: route.billing, loginCommand: loginCommands.codex }; }
+        catch {
+          try { await this.checkAuth(route, cwd, this.config.python, this.directory); }
+          catch (error) {
+            if (error.code !== 'AUTH_REQUIRED') throw error;
+            snapshot = { connection: route.id, status: 'auth_required', windows: [], observedAt: new Date().toISOString(), loginCommand: loginCommands.codex };
+          }
+          snapshot ||= cached?.windows?.length ? cached : { connection: route.id, status: 'unknown', windows: [], observedAt: new Date().toISOString(), loginCommand: loginCommands.codex };
+        }
+      } else snapshot = await quota(route, cwd, this.config.python, this.directory);
       this.store.saveQuota(routeId, snapshot);
       return snapshot;
     })();

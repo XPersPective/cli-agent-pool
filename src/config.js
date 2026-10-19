@@ -35,6 +35,7 @@ export const configSchema = z.object({
   concurrency: z.number().int().min(1).max(8).default(1),
   groupingMode: z.enum(['manual', 'agent']).default('manual'),
   selectionMode: z.enum(['manual', 'auto']).default('auto'),
+  modelFilters: z.array(z.object({ match: z.enum(['model', 'family']), value: label, routeId: label.optional() }).strict()).max(500).default([]),
   routes: z.array(z.object({
     id: label.regex(/^[a-zA-Z0-9_-]+$/),
     adapter: z.enum(adapterValues),

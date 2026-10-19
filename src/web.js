@@ -1,8 +1,10 @@
 import { randomBytes, timingSafeEqual, createHmac, createHash } from 'node:crypto';
 import { readFileSync, realpathSync, statSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { configView, saveConfig, PoolError, dataDirectory } from './config.js';
-import { discover, routeCatalog, importDiscoveredRoutes, loginCommands, mergeCatalogModels } from './adapters.js';
+import { discover, routeCatalog, importDiscoveredRoutes, loginCommands, mergeCatalogModels, executableArgv } from './adapters.js';
 import { codexControl } from './codex-control.js';
 import { saveSecret, hasSecret } from './secrets-store.js';
 import { childEnvironment, runProcess } from './process.js';
@@ -39,6 +41,22 @@ export async function pickWindowsFolder(initialPath = '', { run = execPicker, pl
   const actual = realpathSync(selected);
   if (!statSync(actual).isDirectory()) throw new PoolError('INVALID_WORKSPACE', 'Bir klasör seçin.');
   return { path: actual };
+}
+
+export async function openCliLogin(route, { platform = process.platform, run = promisify(execFile) } = {}) {
+  const command = loginCommands[route.adapter];
+  if (route.api || !command || ['custom','lmstudio','ollama'].includes(route.adapter)) throw new PoolError('LOGIN_UNAVAILABLE', 'Bu bağlantının anahtar veya yerel uygulama ayarlarını Ayarlar ekranından düzenleyin.');
+  const argv = [...executableArgv(route.executable), ...command.split(' ').slice(1)];
+  if (platform !== 'win32') return { opened: false, message: `Terminalde ${command} çalıştırın, girişten sonra Kontrol et düğmesine basın.` };
+  if (argv.some(arg => /["\r\n]/.test(arg))) throw new PoolError('LOGIN_UNAVAILABLE', `Terminalde ${command} çalıştırın.`);
+  // Fixed platform script only: arguments travel as JSON data, never executable PowerShell text.
+  // Every forwarded argument is a file or fixed login word, without embedded quotes or trailing backslashes.
+  const script = `$ErrorActionPreference = 'Stop'; $taskLoginRequest = ConvertFrom-Json $env:CLI_AGENT_POOL_LOGIN_ARGV; $taskLoginOptions = @{FilePath=$taskLoginRequest.file; WindowStyle='Normal'; PassThru=$true; ErrorAction='Stop'}; if ($taskLoginRequest.arguments.Count -gt 0) { $taskLoginOptions.ArgumentList = (($taskLoginRequest.arguments | ForEach-Object { '"' + $_ + '"' }) -join ' ') }; $taskLoginProcess = Start-Process @taskLoginOptions; @{opened=$true} | ConvertTo-Json -Compress`;
+  try {
+    const result = await run(path.join(process.env.SystemRoot || 'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe'), ['-NoProfile','-NonInteractive','-Command',script], { env: childEnvironment({CLI_AGENT_POOL_LOGIN_ARGV: JSON.stringify({file:argv[0],arguments:argv.slice(1)})}), windowsHide: true, timeout: 15000, maxBuffer: 4096 });
+    if (!JSON.parse(result.stdout).opened) throw new Error('Not opened');
+  } catch { throw new PoolError('LOGIN_FAILED', `Giriş penceresi açılamadı. Terminalde ${command} çalıştırın.`); }
+  return { opened: true, message: 'Resmî CLI giriş penceresi açıldı. Girişi orada tamamlayıp Kontrol et düğmesine basın.' };
 }
 
 function annotateView(view, directory) {
@@ -149,14 +167,19 @@ export function browserUI(pool, management) {
         folderPicker = pickWindowsFolder(initial, { directory: management.directory });
         try { return await folderPicker; } finally { folderPicker = null; }
       }
+      if (operation === 'login') {
+        const route = pool.config.routes.find(route => route.id === payload.routeId);
+        if (!route) throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı.');
+        return openCliLogin(route);
+      }
       if (operation === 'select') return pool.selectLive(payload);
       if (operation === 'save') return managementOperation(pool, management, { ...payload, operation: 'save' });
       if (operation === 'scan_import') {
         const view = configView(management.directory);
         const imported = importDiscoveredRoutes(view.config);
         const catalogErrors = [];
-        for (const route of imported.config.routes.filter(route => !route.api && (route.adapter === 'claude' || route.id === payload.routeId))) {
-          try { imported.addedModels += mergeCatalogModels(route, await catalogFor(route)); }
+        for (const route of imported.config.routes.filter(route => !route.api && (['claude', 'agy'].includes(route.adapter) || route.id === payload.routeId))) {
+          try { imported.addedModels += mergeCatalogModels(route, await catalogFor(route), imported.config.modelFilters); }
           catch (error) { catalogErrors.push({ routeId: route.id, message: error instanceof PoolError ? error.message : 'Model sürümleri alınamadı.' }); }
         }
         pool.config = saveConfig(management.directory, imported.config, view.revision);
@@ -170,12 +193,12 @@ export function browserUI(pool, management) {
       if (operation === 'submit') return pool.submitLive(payload);
       if (operation === 'task') return pool.get(payload.taskId);
       if (operation === 'cancel') return pool.cancel(payload.taskId);
-      if (operation === 'quota') return pool.getQuota(payload.routeId);
+      if (operation === 'quota') return pool.getQuota(payload.routeId, payload.force === true);
       if (operation === 'quotas') {
         const routes = pool.config.routes.filter(route => !payload.routeId || route.id === payload.routeId);
         const quotas = {}, errors = {};
         await Promise.all(routes.map(async route => {
-          try { quotas[route.id] = await pool.getQuota(route.id); }
+          try { quotas[route.id] = await pool.getQuota(route.id, payload.force === true); }
           catch (error) { errors[route.id] = error instanceof PoolError ? error.message : 'Kota sorgulanamadı'; }
         }));
         return { quotas, errors };
@@ -186,7 +209,7 @@ export function browserUI(pool, management) {
         const catalog = await catalogFor(route);
         if (operation === 'catalog') return catalog;
         const view = configView(management.directory);
-        mergeCatalogModels(view.config.routes.find(item => item.id === route.id), catalog);
+        mergeCatalogModels(view.config.routes.find(item => item.id === route.id), catalog, view.config.modelFilters);
         pool.config = saveConfig(management.directory, view.config, view.revision);
         return annotateView(configView(management.directory), management.directory);
       }

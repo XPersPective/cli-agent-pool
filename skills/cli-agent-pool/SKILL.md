@@ -87,7 +87,12 @@ destination-pool/effort picker; the currently viewed top pool is not changed by 
 addition. Quotas open by default, with individual/global controls; the catalog
 scrolls without pagination. Settings is a separate page; unsaved changes support
 Save/Discard. Workspace tasks require an explicitly selected project.
-Light/dark/system themes are owner browser preferences, not agent policy.
+Owner-hidden models/families are excluded from discovery imports and agent selection,
+including explicitly pinned requests. Do not work around filters or change them via
+other tools. Missing login must be completed by the owner through the dashboard's
+native CLI login action; never request or copy their credentials.
+Family/source views, sorting and light/dark/system themes are owner browser preferences,
+not agent policy.
 
 ## Project Brain, editors and Freebuff
 

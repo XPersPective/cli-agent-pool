@@ -1,3 +1,4 @@
+import { modelFiltered } from '../web/pool-state.js';
 import { existsSync, readFileSync, realpathSync, statSync, accessSync, constants, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -248,9 +249,7 @@ export function localModelsFor(adapter) {
   } else if (adapter === 'mimo') {
     add('mimo/mimo-v2.5-pro', 'MiMo v2.5 Pro', 'mimo');
   } else if (adapter === 'agy') {
-    add('gemini-2.5-pro', 'Gemini 2.5 Pro (Antigravity)', 'antigravity', ['low', 'medium', 'high']);
-    add('gemini-2.5-flash', 'Gemini 2.5 Flash (Antigravity)', 'antigravity', ['low', 'medium', 'high']);
-    add('gemini-3-flash', 'Gemini 3 Flash (Antigravity)', 'antigravity', ['low', 'medium', 'high']);
+    // The live `models` subcommand is authoritative; never invent a local fallback.
   } else if (adapter === 'omniroute') {
     add('default', 'OmniRoute Varsayılan', 'omniroute', ['low', 'medium', 'high']);
   } else if (adapter === 'lmstudio' || adapter === 'ollama') {
@@ -289,7 +288,7 @@ export function importDiscoveredRoutes(config) {
     }
     for (const model of cli.discoveredModels || []) {
       if (cli.adapter === 'claude' && ['opus', 'sonnet', 'haiku'].includes(model.id) && route.models.some(existing => existing.id.startsWith(`claude-${model.id}-`))) continue;
-      if (!route.models.some(existing => existing.id === model.id) && route.models.length < 100) {
+      if (!modelFiltered(cloned.modelFilters, route.id, model.id) && !route.models.some(existing => existing.id === model.id) && route.models.length < 100) {
         const { free, ...cleanModel } = model;
         route.models.push(cleanModel);
         addedModels++;
@@ -562,9 +561,14 @@ export async function claudeCatalog(route, cwd, python) {
   return { connection: route.id, models: models.slice(0, 100), nextCursor: null };
 }
 
-export function mergeCatalogModels(route, catalog) {
+export function mergeCatalogModels(route, catalog, filters = []) {
   let added = 0;
+  if (route.adapter === 'agy') {
+    for (const model of route.models) if (['gemini-2.5-pro','gemini-2.5-flash','gemini-3-flash'].includes(model.id) && !catalog.models.some(item => item.id === model.id)) model.enabled = false;
+    route.models = route.models.filter(model => !['gemini-2.5-pro','gemini-2.5-flash','gemini-3-flash'].includes(model.id) || catalog.models.some(item => item.id === model.id) || model.memberships?.length || ['high','medium','low'].includes(model.group));
+  }
   for (const item of catalog.models) {
+    if (modelFiltered(filters, route.id, item.id)) continue;
     const existing = route.models.find(model => model.id === item.id) || route.models.find(model => item.aliases?.includes(model.id));
     if (existing) {
       if (existing.memberships?.some(member => member.effort && !item.efforts.includes(member.effort))) throw new PoolError('CATALOG_EFFORT_CHANGED', 'Katalogda havuz eforu artık desteklenmiyor. Önce o modelin havuz eforunu düzenleyin.');
@@ -581,6 +585,18 @@ export function mergeCatalogModels(route, catalog) {
 }
 
 export async function routeCatalog(route, cwd, python) {
+  if (route.adapter === 'agy' && !route.api) {
+    const result = await capture([...executableArgv(route.executable), 'models'], cwd, python);
+    if (result.code !== 0 || result.stopReason) throw new PoolError('DISCOVERY_FAILED', 'Antigravity model listesi alınamadı. CLI giriş durumunu kontrol edin.');
+    const models = result.output.split(/\r?\n/).flatMap(line => {
+      const match = line.match(/^([a-zA-Z0-9][a-zA-Z0-9._:/-]{0,99})\t+(.+)$/);
+      if (!match) return [];
+      const effort = match[1].match(/-(low|medium|high|xhigh|max)$/)?.[1];
+      return [{ id: match[1], name: match[2].trim().slice(0,100), efforts: effort ? [effort] : [], free: false }];
+    });
+    if (!models.length) throw new PoolError('DISCOVERY_FAILED', 'Antigravity model listesi boş veya biçimi tanınmadı.');
+    return { connection: route.id, models: [...new Map(models.map(model => [model.id, model])).values()].slice(0,100), nextCursor: null };
+  }
   if (route.adapter === 'claude' && !route.api) return claudeCatalog(route, cwd, python);
   if (['lmstudio', 'ollama'].includes(route.adapter)) {
     const result = await capture([...executableArgv(route.executable), ...(route.adapter === 'lmstudio' ? ['ls', '--json'] : ['list'])], cwd, python);

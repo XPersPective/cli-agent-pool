@@ -110,3 +110,21 @@ individual disclosure state survive quota refresh. No project is auto-selected f
 configuration or the installation directory; native project selection still uses
 server-side allowed-root validation. Save/discard controls reflect owner draft state.
 The human dashboard formats quota responses; agent MCP/JSON responses are unchanged.
+
+Owner `modelFilters` are persisted alongside configuration and shared by catalog
+import/refresh, dashboard and Pool.models(). Thus hidden models cannot be selected
+by automatic or explicitly pinned agent requests. A route-scoped model filter is
+exact; a global identity filter groups equivalent version/effort spellings, and a
+family filter covers versions of the selected named family. These are naming hints,
+not strength measurements. Filtering preserves stored memberships for restoration.
+Agents cannot edit filters through group assignments.
+
+Antigravity's live `models` command supplies exact cross-vendor IDs; generated
+legacy Gemini defaults are removed only if not owner-assigned. Effort-bearing IDs
+expose their corresponding effort. Failed discovery preserves owner configuration.
+The browser's login operation is owner-only. It starts a fixed Windows platform
+script with data-only JSON executable/arguments, sanitized environment and visible
+native CLI terminal. It never receives credentials or runs a model prompt. Other
+platforms receive the official terminal command. Login checks can force quota
+refresh; transient Codex control failures retain known windows without extending
+their timestamp, and independently verified missing login is exposed explicitly.

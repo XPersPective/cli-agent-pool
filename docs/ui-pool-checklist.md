@@ -1,6 +1,6 @@
 # Havuz ve çalışma alanı kabul listesi
 
-Güncel arayüz: Pool 1.2.0. Önceki sayfalama, kapalı kota ve ayar penceresi düzeninin yerini aşağıdaki davranışlar alır.
+Güncel arayüz: Pool 1.3.0. Önceki sayfalama, kapalı kota ve ayar penceresi düzeninin yerini aşağıdaki davranışlar alır.
 
 - [x] Yüksek / Orta / Hafif havuzları; sağlayıcılar ayrı katalog sekmeleri.
 - [x] Küçük Ekle düğmesiyle hedef havuz ve bağımsız efor seçimi; üst havuz görünümü değişmez.
@@ -20,7 +20,7 @@ Güncel arayüz: Pool 1.2.0. Önceki sayfalama, kapalı kota ve ayar penceresi d
 - [x] Klavye ve erişilebilir adlar; açık/koyu/sistem teması; 1440×1000, 1280×720, 390×844 düzenleri.
 - [x] MCP/JSON ajan API'si; sahip politikası, otomatik başlatma ve bağımsız Project Brain bağlantısı.
 
-39 node:test kontrolü, sözdizimi, gizli bilgi taraması ve bağımlılık denetimi başarılı.
+44 node:test kontrolü, sözdizimi, gizli bilgi taraması ve bağımlılık denetimi başarılı.
 Tarayıcı kontrolleri: kota anahtarları, kaydırma, son model, tekrar ekleme, taslak kaydet/vazgeç,
 ayar sayfası, okunabilir kota, 24 üzeri modelin sayfasız görünmesi, açık proje seçimi ve görev sonucu.
 Önceki doğrulamalar: gerçek Windows klasör seçimi/iptali ve taklit SpeechRecognition olaylarıyla
@@ -28,3 +28,12 @@ konuşma/izin/hata akışları. Gerçek mikrofon donanımıyla konuşma tanıma 
 
 Kota bildirilmeyen sağlayıcıda yüzde uydurulmaz. Ortak hesap kotası ayrı model bakiyesi gibi
 sunulmaz. Yerel CLI bulunması kurulu model anlamına gelmez; LM Studio/Ollama kataloğu okunur.
+
+1.3.0 ek kontrolleri:
+- [x] Tam model / bağlantı / aile filtresi, kaydetme ve geri gösterme; taramada ve ajan seçiminde engel.
+- [x] Araç/aile görünümü, A–Z/Z–A sıralama, farklı abonelikten aynı modelin bağımsız üyeliği.
+- [x] Havuz ve katalog aç/kapat kalıcılığı; tüm kartlarda ortak kota anahtarı ve ince çubuklar.
+- [x] Havuzlarım için ayrı zemin/çerçeve; görünür klavye odağı ve bağlantı bazında erişilebilir işlem adları.
+- [x] Giriş gerekli uyarısı; resmî CLI girişini açma ve önbelleksiz kontrol. Windows terminali sentetik CLI ile gerçekten açıldı; kullanıcı hesabıyla giriş yapılmadı.
+- [x] Manuel modda dolu ilk havuz, boş havuz açıklaması, proje seçimi sonrası başarılı sohbet gönderimi.
+- [x] 390→1440 ve 900→2560 genişliklerine dönüş; taşma yok, önceki genişlik geri geliyor. Yakınlaştırılmış CSS düzeninde de taşma kontrolü.
