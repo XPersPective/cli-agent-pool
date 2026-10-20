@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { modelSaveConfig, mergeScanDraft, addMembership } from '../web/pool-state.js';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { configSchema, configView, saveConfig, loadConfig } from '../src/config.js';
+import { modelSaveConfig, mergeScanDraft, addMembership, preferenceSaveConfig } from '../web/pool-state.js';
 
 test('model autosave persists membership and effort without committing unrelated settings', () => {
   const base = { selectionMode: 'manual', routes: [{ id: 'codex', enabled: false, billing: 'subscription', priority: 100, models: [{ id: 'luna', alias: 'Luna', group: 'unassigned', enabled: true, efforts: ['low', 'high'] }] }] };
@@ -35,4 +39,41 @@ test('new catalog models are saved independently and unsaved connections are rej
   assert.equal(saved.routes[0].billing, 'subscription');
   assert.throws(() => modelSaveConfig(base, draft, 'missing', model.id));
   assert.throws(() => modelSaveConfig(base, draft, 'codex', 'missing'));
+});
+
+
+test('pool policy autosave is durable without committing unrelated drafts', () => {
+  const base = { selectionMode: 'auto', groupingMode: 'manual', modelFilters: [], routes: [{ id: 'codex', billing: 'subscription', models: [{ id: 'luna', memberships: [{ group: 'low', effort: 'low' }] }] }] };
+  const draft = structuredClone(base);
+  draft.selectionMode = 'manual'; draft.groupingMode = 'agent';
+  draft.routes[0].billing = 'paid_api';
+  const saved = preferenceSaveConfig(base, draft, 'selectionMode');
+  assert.equal(saved.selectionMode, 'manual');
+  assert.equal(saved.groupingMode, 'manual');
+  assert.deepEqual(saved.routes, base.routes);
+  assert.deepEqual(mergeScanDraft(saved, base, draft), draft);
+  const permissions = preferenceSaveConfig(saved, draft, 'groupingMode');
+  assert.equal(permissions.selectionMode, 'manual');
+  assert.equal(permissions.groupingMode, 'agent');
+  assert.deepEqual(permissions.routes, base.routes);
+  assert.throws(() => preferenceSaveConfig(base, draft, 'routes'));
+  assert.equal(base.selectionMode, 'auto');
+});
+
+
+test('pool selection and membership reload from disk in a fresh session', t => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'pool-policy-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const base = configSchema.parse({ workspaceRoots: [], routes: [{ id: 'codex', adapter: 'codex', executable: process.execPath, billing: 'subscription', models: [{ id: 'luna', alias: 'Luna', kinds: ['text'], group: 'unassigned', efforts: ['low'] }] }] });
+  writeFileSync(path.join(directory, 'config.json'), JSON.stringify(base));
+  const draft = structuredClone(base);
+  addMembership(draft.routes[0].models[0], 'low', 'low');
+  saveConfig(directory, modelSaveConfig(base, draft, 'codex', 'luna', true), configView(directory).revision);
+  const saved = configView(directory);
+  draft.selectionMode = 'manual';
+  saveConfig(directory, preferenceSaveConfig(saved.config, draft, 'selectionMode'), saved.revision);
+  const restarted = loadConfig(directory);
+  assert.equal(restarted.selectionMode, 'manual');
+  assert.equal(restarted.routes[0].enabled, true);
+  assert.deepEqual(restarted.routes[0].models[0].memberships, [{ group: 'low', effort: 'low' }]);
 });

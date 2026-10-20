@@ -1,4 +1,4 @@
-import { memberships, mergeScanDraft, addMembership, modelSaveConfig, quotaWindows, effortLabel, modelIdentity, modelFamily, modelFiltered, sortModels } from '/pool-state.js';
+import { memberships, mergeScanDraft, addMembership, modelSaveConfig, preferenceSaveConfig, quotaWindows, effortLabel, modelIdentity, modelFamily, modelFiltered, sortModels } from '/pool-state.js';
 const $ = id => document.getElementById(id);
 const labels = { queued: 'Sırada', starting: 'Başlatılıyor', running: 'Çalışıyor', succeeded: 'Tamamlandı', failed: 'Başarısız', timed_out: 'Süre doldu', cancelling: 'Durduruluyor', cancelled: 'Durduruldu', needs_review: 'Elle inceleme gerekli' };
 const billingLabels = { subscription: 'Abonelik', token_plan: 'Token planı', free_credits: 'Günlük / ücretsiz kredi', free: 'Ücretsiz', paid_api: 'Ücretli API', unknown: 'Doğrulanmadı' };
@@ -384,8 +384,8 @@ document.querySelector('.skip').addEventListener('click', () => { switchPage('po
 $('pool-tab').addEventListener('click', () => switchPage('pool'));
 $('calls-tab').addEventListener('click', () => switchPage('calls'));
 $('pool-search').addEventListener('input', () => { $('pool-models').scrollTop = 0; renderCatalog(); });
-$('selection-mode').addEventListener('change', () => { settings.config.selectionMode = $('selection-mode').value; dirty(); renderPool(); });
-$('grouping-mode').addEventListener('change', () => { settings.config.groupingMode = $('grouping-mode').value; dirty(); });
+$('selection-mode').addEventListener('change', () => void action(async () => { settings.config.selectionMode = $('selection-mode').value; await savePreference('selectionMode'); notice('Model seçimi kaydedildi.'); }));
+$('grouping-mode').addEventListener('change', () => void action(async () => { settings.config.groupingMode = $('grouping-mode').value; await savePreference('groupingMode'); notice('Havuz düzenleme yetkisi kaydedildi.'); }));
 $('discard-settings').addEventListener('click', () => void action(async () => { settings = await call('settings'); poolDirty = false; baseConfig = structuredClone(settings.config); renderSettings(); renderPool(); updateSave(); }));
 $('toggle-quotas').addEventListener('click', () => {
   quotasOpen = [...document.querySelectorAll('.quota-details')].some(node => !node.open);
@@ -533,19 +533,19 @@ function openFilters(route, model) {
   if(route&&model) {
     $('filter-heading').textContent=model.id;
     const rules=[['Bu bağlantıda gizle',{match:'model',value:model.id,routeId:route.id}],['Bu modeli her yerde gizle',{match:'model',value:modelIdentity(model.id)}],[`${familyLabel(modelFamily(model.id))} ailesini gizle`,{match:'family',value:modelFamily(model.id)}]];
-    for(const [label,rule] of rules) $('filter-actions').append(button(label,async()=>{if(!filters.some(item=>JSON.stringify(item)===JSON.stringify(rule))){filters.push(rule);await saveFilters();}renderPool();openFilters();}));
+    for(const [label,rule] of rules) $('filter-actions').append(button(label,async()=>{if(!filters.some(item=>JSON.stringify(item)===JSON.stringify(rule))){filters.push(rule);await savePreference('modelFilters');}renderPool();openFilters();}));
   } else $('filter-heading').textContent='Gizlenen modeller';
-  $('filter-list').replaceChildren(...filters.map((rule,index)=>{const row=element('div',null,'filter-row');row.append(element('span',`${rule.match==='family'?familyLabel(rule.value)+' ailesi':rule.value} · ${rule.routeId||'Tüm bağlantılar'}`),button('Göster',async()=>{filters.splice(index,1);await saveFilters();renderPool();openFilters();}));return row;}));
+  $('filter-list').replaceChildren(...filters.map((rule,index)=>{const row=element('div',null,'filter-row');row.append(element('span',`${rule.match==='family'?familyLabel(rule.value)+' ailesi':rule.value} · ${rule.routeId||'Tüm bağlantılar'}`),button('Göster',async()=>{filters.splice(index,1);await savePreference('modelFilters');renderPool();openFilters();}));return row;}));
   if(!filters.length) $('filter-list').append(element('p','Gizlenen model yok. Model kartındaki Gizle düğmesiyle filtre ekleyin.','hint'));
   if(!$('model-filter-dialog').open) $('model-filter-dialog').showModal(); else $('close-filters').focus();
 }
 $('open-filters').addEventListener('click',()=>openFilters());
 $('close-filters').addEventListener('click',()=>$('model-filter-dialog').close());
 $('model-filter-dialog').addEventListener('close',()=>$('open-filters').focus());
-async function saveFilters() {
+async function savePreference(key) {
   dirty();
   const before = structuredClone(baseConfig), draft = structuredClone(settings.config);
-  const config = { ...before, modelFilters: structuredClone(draft.modelFilters || []) };
+  const config = preferenceSaveConfig(before, draft, key);
   const saved = await call('save', { ...settings, config });
   settings = { ...saved, config: mergeScanDraft(saved.config, before, draft) };
   poolDirty = JSON.stringify(settings.config) !== JSON.stringify(saved.config);

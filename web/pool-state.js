@@ -62,6 +62,11 @@ export function modelSaveConfig(base, draft, routeId, modelId, enableRoute = fal
   return config;
 }
 
+export function preferenceSaveConfig(base, draft, key) {
+  if (!['selectionMode', 'groupingMode', 'modelFilters'].includes(key)) throw new Error('Geçersiz havuz ayarı.');
+  return { ...structuredClone(base), [key]: structuredClone(draft[key]) };
+}
+
 export function quotaWindows(snapshot, modelId = '') {
   return (snapshot?.windows || []).filter(window => quotaApplies(window,modelId) && Number.isFinite(window.remainingPercent)).map(window => {
     const remaining = Math.max(0, Math.min(100, window.remainingPercent));

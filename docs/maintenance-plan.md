@@ -203,3 +203,17 @@ kullanıldı. Genel Brain kaynakları değişmedi, lifecycle hook/protokol bekle
 İlk yüksek model alt ajanları kullanıcının kota uyarısıyla durduruldu; kalan işler
 kısa, geçmişsiz düşük model görevlerine ayrıldı. Windows junction regresyonları
 Project Forge (10 test) ve Release Harbor (11 test) üzerinde çalıştırıldı.
+
+
+## 1.5.1 havuz seçimi kalıcılığı
+
+20 Ekim 2026: model üyelikleri kalıcı kaydedilirken Model seçimi ve ajan düzenleme
+izni yalnızca tarayıcı taslağında kalıyordu. Bu nedenle yeni oturumda sunucunun
+önceki seçim politikası uygulanıyordu. Her iki tercih artık filtrelerle aynı dar
+kapsamlı otomatik kayıt akışını kullanır; ilgisiz bağlantı/ödeme taslakları kaydedilmez.
+Mevcut kullanıcı politikası yükseltme sırasında değiştirilmez.
+
+54 node:test, sözdizimi, secrets ve bağımlılık denetimi; ayrıca gerçek tarayıcıda
+her iki seçim modu, düzenleme izni, havuz üyeliği ve sabit efor kaydı doğrulandı.
+Tarayıcı localStorage temizlendikten sonra yeniden yüklemede seçimler korundu;
+ayrı diskten yükleme regresyonu da eklendi.
