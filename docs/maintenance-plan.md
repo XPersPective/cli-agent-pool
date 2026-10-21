@@ -371,3 +371,9 @@ kota yaniti bos); MiMo Xiaomi API bakiyesi yetersiz (402) ve ucretsiz MiMo Auto 
 mmx'te etkin token plan yok ve bakiye bitmis (1008); OpenRouter bakiyesi negatif, ucretsiz
 modeller gunluk 50 istekle sinirli. Antigravity kota servisi Argon icin deger bildirmiyor.
 Meta Muse Code bu makinede kurulu degil; yerlesik adaptor uydurulmadi.
+
+1.6.1: `claude auth status` de kullanici ayarindaki jetonu goruyordu (`oauth_token`);
+abonelik kontrolu artik calistirmayla ayni `--setting-sources project,local` kapsaminda
+yapilir. Gercek servis uzerinden kisa gorevler: ZCode, MiniMax Code, Qwen ve Antigravity
+"OK" dondu. Codex `gpt-6-luna` ChatGPT hesabiyla desteklenmiyor (OpenAI 400); bu
+makinede model kapatildi.

@@ -165,14 +165,16 @@ test('auth checks enforce subscription vs token_plan vs free_credits and reject 
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const fake = (name, body) => { const file = path.join(root, `${name}.js`); writeFileSync(file, `const a=process.argv.slice(2).join(' ');${body}`); return file; };
   const claude = (authMethod, baseURL, billing = 'subscription') => ({ id: 'c', adapter: 'claude', billing, trustedSettings: true, executable: fake(`claude-${authMethod}-${Boolean(baseURL)}-${billing}`,
-    `if(a==='auth status --json')console.log(JSON.stringify({loggedIn:true,authMethod:${JSON.stringify(authMethod)},apiProvider:'firstParty'}));else if(a==='auth status --text')console.log(${JSON.stringify(baseURL ? `Auth token: ANTHROPIC_AUTH_TOKEN\nAnthropic base URL: ${baseURL}` : 'Login method: Claude Max account')});else process.exit(2)`) });
+    `const fs=require('fs');if(a.startsWith('--setting-sources project,local '))fs.writeFileSync(__filename+'.scoped','1');if(a.replace('--setting-sources project,local ','')==='auth status --json')console.log(JSON.stringify({loggedIn:true,authMethod:${JSON.stringify(authMethod)},apiProvider:'firstParty'}));else if(a==='auth status --text')console.log(${JSON.stringify(baseURL ? `Auth token: ANTHROPIC_AUTH_TOKEN\nAnthropic base URL: ${baseURL}` : 'Login method: Claude Max account')});else process.exit(2)`) });
   await assert.rejects(checkAuth(claude('oauth_token', 'https://example.invalid/anthropic', 'subscription'), root, py), { code: 'AUTH_REQUIRED' });
   // A user-settings endpoint redirect is skipped by subscription runs, so it no longer blocks the claude.ai login.
   await checkAuth(claude('claude.ai', 'https://example.invalid/anthropic', 'subscription'), root, py);
   const subscriptionArgs = buildArguments(claude('claude.ai', null, 'subscription'), { id: 'claude-x' }, { kind: 'text', workspace: root });
   assert.deepEqual(subscriptionArgs.slice(subscriptionArgs.indexOf('--setting-sources'), subscriptionArgs.indexOf('--setting-sources') + 2), ['--setting-sources', 'project,local']);
   assert.ok(!buildArguments(claude('oauth_token', null, 'token_plan'), { id: 'x' }, { kind: 'text', workspace: root }).includes('--setting-sources'));
-  await checkAuth(claude('claude.ai', null, 'subscription'), root, py);
+  const scopedRoute = claude('claude.ai', null, 'subscription');
+  await checkAuth(scopedRoute, root, py);
+  assert.ok(existsSync(scopedRoute.executable + '.scoped'), 'subscription auth must be inspected without user settings');
   // When explicitly declared as token_plan, Claude Code redirected to a Coding Plan endpoint is allowed.
   await checkAuth(claude('oauth_token', 'https://example.invalid/anthropic', 'token_plan'), root, py);
   const mmx = (name, body, billing = 'subscription') => ({ id: 'm', adapter: 'mmx', billing, trustedSettings: true, executable: fake(name, body) });

@@ -418,7 +418,8 @@ export async function checkAuth(route, cwd, python, directory = dataDirectory())
     if (result.code !== 0 || !/Logged in using ChatGPT/i.test(result.output + result.stderr)) throw new PoolError('AUTH_REQUIRED', `Codex CLI içinde hesabınızla giriş yapın (${loginCommands.codex}).`);
   } else if (route.adapter === 'claude') {
     if (!route.trustedSettings) throw new PoolError('SETTINGS_NOT_TRUSTED', 'Claude yerel ayarları ve hook’ları incelenerek trustedSettings etkinleştirilmeli.');
-    const result = await capture([...argv, 'auth', 'status', '--json'], cwd, python);
+    // Inspect the same settings scope the run uses; a user-level token would otherwise mask the claude.ai login.
+    const result = await capture([...argv, ...claudeSettingSources(route), 'auth', 'status', '--json'], cwd, python);
     let status;
     try { status = JSON.parse(result.output); } catch { /* Fail closed on CLI protocol drift. */ }
     if (result.code !== 0 || !status?.loggedIn) throw new PoolError('AUTH_REQUIRED', `Claude Code içinde giriş yapın (${loginCommands.claude}).`);
