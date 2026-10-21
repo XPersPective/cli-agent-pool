@@ -1,13 +1,14 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
+import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { initialize, loadConfig, configView, saveConfig, allowedWorkspace, PoolError } from './config.js';
+import { initialize, loadConfig, configView, saveConfig, allowedWorkspace, dataDirectory, PoolError } from './config.js';
 import { importDiscoveredRoutes } from './adapters.js';
 import { capture } from './process.js';
 import { version } from './version.js';
@@ -78,53 +79,32 @@ export async function ensureDaemon(directory, config = ensureInitialized(directo
   throw new PoolError('DAEMON_START_TIMEOUT', 'CLI Agent Pool arka plan servisi başlatılamadı.');
 }
 
-export function openDashboardWindow(url) {
-  if (process.platform === 'win32') {
-    const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
-    const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
-    const localAppData = process.env.LOCALAPPDATA || path.join(homedir(), 'AppData', 'Local');
-    const browsers = [
-      path.join(programFilesX86, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-      path.join(programFiles, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-      path.join(programFiles, 'Google', 'Chrome', 'Application', 'chrome.exe'),
-      path.join(localAppData, 'Google', 'Chrome', 'Application', 'chrome.exe'),
-    ];
-    for (const browser of browsers) {
-      if (existsSync(browser)) {
-        const proc = spawn(browser, [`--app=${url}`, '--new-window'], {
-          detached: true,
-          stdio: 'ignore',
-          windowsHide: false,
-        });
-        proc.unref();
-        return { opened: true, mode: 'app-window', browser };
-      }
-    }
-    const fallback = spawn('rundll32.exe', ['url.dll,FileProtocolHandler', url], {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true,
-    });
-    fallback.unref();
-    return { opened: true, mode: 'default-browser' };
+async function dashboardExecutable(directory) {
+  const source = readFileSync(new URL('./dashboard.cs', import.meta.url));
+  const cache = path.join(directory, 'ui');
+  const digest = createHash('sha256').update(source).digest('hex').slice(0,16);
+  const executable = path.join(cache, 'dashboard-' + digest + '.exe');
+  if (!existsSync(executable)) {
+    mkdirSync(cache, { recursive:true, mode:0o700 });
+    const filename = path.join(cache, 'dashboard-' + digest + '.cs');
+    writeFileSync(filename,source,{mode:0o600});
+    const compiler = path.join(process.env.SystemRoot || 'C:\\Windows','Microsoft.NET','Framework64','v4.0.30319','csc.exe');
+    const result = await capture([compiler,'/nologo','/target:winexe','/out:'+executable,'/reference:System.Web.Extensions.dll','/reference:System.Management.dll','/reference:System.Windows.Forms.dll',filename],directory);
+    if(result.code!==0) throw new PoolError('DASHBOARD_BUILD_FAILED','Windows panel baslaticisi hazirlanamadi.');
   }
-  const opener = process.platform === 'darwin' ? 'open' : 'xdg-open';
-  const proc = spawn(opener, [url], { detached: true, stdio: 'ignore' });
-  proc.unref();
-  return { opened: true, mode: 'default-browser' };
+  return executable;
 }
 
-export function ensureWorkspaceAllowed(directory, workspacePath) {
-  const resolved = path.resolve(workspacePath);
-  const view = configView(directory);
-  try {
-    allowedWorkspace(resolved, view.config.workspaceRoots);
-    return resolved;
-  } catch {
-    view.config.workspaceRoots.push(resolved);
-    saveConfig(directory, view.config, view.revision);
-    return resolved;
-  }
+export async function openDashboardWindow(url) {
+  const windows = process.platform === 'win32';
+  const executable = windows ? await dashboardExecutable(dataDirectory()) : process.platform === 'darwin' ? 'open' : 'xdg-open';
+  const proc = spawn(executable, windows ? [dataDirectory(),'--url',url] : [url], { detached:true, stdio:'ignore', windowsHide:false });
+  if(windows) {
+    const [code] = await once(proc,'exit');
+    if(code!==0) throw new PoolError('DASHBOARD_FAILED','Panel penceresi acilamadi.');
+  } else await once(proc,'spawn');
+  proc.unref();
+  return { launchRequested:true, mode:windows?'app-window':'default-browser' };
 }
 
 export async function withMcpClient(directory, callback) {
@@ -154,11 +134,9 @@ export async function callPoolTool(client, name, args = {}) {
 }
 
 export async function runTaskFromCli(directory, options) {
-  const workspace = ensureWorkspaceAllowed(directory, options.workspace || process.cwd());
+  const workspace = allowedWorkspace(options.workspace || process.cwd());
   const config = loadConfig(directory);
   await ensureDaemon(directory, config);
-  const view = configView(directory);
-  await managementRequest(directory, config, { operation: 'save', config: view.config, revision: view.revision });
 
   return withMcpClient(directory, async client => {
     const submitted = await callPoolTool(client, 'pool_submit', {
@@ -205,22 +183,16 @@ export async function installDesktopAndSkills(directory) {
   };
 
   if (process.platform === 'win32') {
-    const vbsPath = path.join(directory, 'launch-ui.vbs');
-    const escapedNode = process.execPath.replace(/"/g, '""');
-    const escapedPool = activePoolBin.replace(/"/g, '""');
-    const vbsContent = [
-      'Set sh = CreateObject("WScript.Shell")',
-      `sh.Run """${escapedNode}"" ""${escapedPool}"" open", 0, False`,
-    ].join('\r\n') + '\r\n';
-    writeFileSync(vbsPath, vbsContent, 'utf8');
-
+    const launcher = await dashboardExecutable(directory);
     const psScript = `
 $ErrorActionPreference = 'Stop'
 $sh = New-Object -ComObject WScript.Shell
 $desktop = [Environment]::GetFolderPath('Desktop')
 $startMenu = Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs'
-$vbs = ${JSON.stringify(vbsPath)}
-$workDir = ${JSON.stringify(directory)}
+$launcher = '${launcher.replace(/'/g, "''")}'
+$node = '${process.execPath.replace(/'/g, "''")}'
+$pool = '${activePoolBin.replace(/'/g, "''")}'
+$workDir = '${directory.replace(/'/g, "''")}'
 $edgeExe = Join-Path $\{env:ProgramFiles(x86)} 'Microsoft\\Edge\\Application\\msedge.exe'
 $icon = if (Test-Path $edgeExe) { "$edgeExe,0" } else { "$env:SystemRoot\\System32\\shell32.dll,13" }
 
@@ -228,22 +200,28 @@ foreach ($targetDir in @($desktop, $startMenu)) {
   if ($targetDir -and (Test-Path $targetDir)) {
     $lnkPath = Join-Path $targetDir 'CLI Agent Pool.lnk'
     $sc = $sh.CreateShortcut($lnkPath)
-    $sc.TargetPath = Join-Path $env:SystemRoot 'System32\\wscript.exe'
-    $sc.Arguments = '"' + $vbs + '"'
+    $sc.TargetPath = $launcher
+    $sc.Arguments = '"' + $workDir + '" "' + $node + '" "' + $pool + '"'
     $sc.WorkingDirectory = $workDir
     $sc.Description = 'CLI Agent Pool - Yerel AI CLI ve Model Havuzu'
     $sc.IconLocation = $icon
     $sc.Save()
   }
 }
-Write-Output (ConvertTo-Json @{ desktop = (Join-Path $desktop 'CLI Agent Pool.lnk'); startMenu = (Join-Path $startMenu 'CLI Agent Pool.lnk') })
+Write-Output (ConvertTo-Json @{ desktop = (Join-Path $desktop 'CLI Agent Pool.lnk'); startMenu = (Join-Path $startMenu 'CLI Agent Pool.lnk'); runtimeDirectory = [IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName($sc.TargetPath)) })
 `;
     const shortcutRes = await capture(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', psScript], directory, config.python);
+    if (shortcutRes.code !== 0) throw new PoolError('SHORTCUT_FAILED', 'Windows kisayollari olusturulamadi.');
     if (shortcutRes.code === 0) {
       try {
         const parsed = JSON.parse(shortcutRes.output.trim());
         results.desktopShortcut = parsed.desktop;
         results.startMenuShortcut = parsed.startMenu;
+        if (parsed.runtimeDirectory) {
+          const locator = path.join(homedir(),'.cli-agent-pool');
+          mkdirSync(locator,{recursive:true,mode:0o700});
+          writeFileSync(path.join(locator,'runtime-path'),parsed.runtimeDirectory+'\n',{mode:0o600});
+        }
       } catch {
         results.desktopShortcut = 'CLI Agent Pool.lnk';
       }

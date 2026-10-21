@@ -8,10 +8,11 @@ import path from 'node:path';
 import { configSchema } from '../src/config.js';
 import { Pool } from '../src/pool.js';
 import { Store } from '../src/store.js';
-import { claudeCatalog, routeCatalog, claudeQuotaWindows, antigravityQuotaWindows, mergeCatalogModels, execute } from '../src/adapters.js';
+import { claudeCatalog, routeCatalog, mergeCatalogModels, execute } from '../src/adapters.js';
+import { claudeWindows, antigravityGroupWindows } from '../src/quotas.js';
 import { browserUI, openCliLogin } from '../src/web.js';
 import { ensureInitialized } from '../src/daemon.js';
-import { memberships, mergeScanDraft, addMembership, quotaWindows, effortLabel, modelFamily, modelIdentity, modelFiltered, sortModels, initialTaskGroup, restoredWorkspace } from '../web/pool-state.js';
+import { memberships, mergeScanDraft, addMembership, quotaWindows, quotaMatches, effortLabel, modelFamily, modelIdentity, modelFiltered, sortModels, initialTaskGroup, restoredWorkspace } from '../web/pool-state.js';
 
 test('adding to an explicit target pool preserves other memberships and validates effort before mutation', () => {
   const model = { group: 'high', defaultEffort: 'high', efforts: ['low', 'medium', 'high'] };
@@ -41,6 +42,16 @@ test('readable quota values preserve model scope and Turkish effort labels prese
   assert.deepEqual(snapshot, before);
   assert.equal(effortLabel('low'), 'Düşük'); assert.equal(effortLabel('high'), 'Yüksek');
   assert.equal(effortLabel(''), 'CLI varsayılanı'); assert.equal(effortLabel('provider-specific'), 'provider-specific');
+});
+
+test('quota filtering uses numeric model-scoped balances, including exhausted quotas', () => {
+ const scoped={windows:[{models:['opus'],remainingPercent:0},{remainingPercent:null},{remainingPercent:NaN}]};
+ assert.equal(quotaMatches(scoped,'claude-opus-5-5','known'),true);
+ assert.equal(quotaMatches(scoped,'claude-opus-5-5','unknown'),false);
+ assert.equal(quotaMatches(scoped,'claude-sonnet-5-5','known'),false);
+ assert.equal(quotaMatches(scoped,'claude-sonnet-5-5','unknown'),true);
+ assert.equal(quotaMatches(null,'luna','known'),false);
+ assert.equal(quotaMatches(null,'luna','all'),true);
 });
 
 test('manual pools enforce membership and per-pool effort at selection and execution', async t => {
@@ -112,10 +123,10 @@ test('scan merges new versioned models without saving or discarding unrelated dr
 });
 
 test('quota percentages are validated and model-specific limits do not block sibling models', async t => {
-  const windows = claudeQuotaWindows({ five_hour: { used: '20.0%', remaining: '80%' }, seven_day: { used: '10%' }, opus: { used: '100%' }, invalid: {} });
+  const windows = claudeWindows({ five_hour: { utilization: 20 }, seven_day: { utilization: 10 }, seven_day_opus: { utilization: 100 }, invalid: {} });
   assert.equal(windows[0].remainingPercent, 80); assert.equal(windows[1].remainingPercent, 90);
   assert.deepEqual(windows[2].models, ['opus']);
-  assert.deepEqual(claudeQuotaWindows({ five_hour: { used: 'not numeric' } }), []);
+  assert.deepEqual(claudeWindows({ five_hour: { utilization: 'not numeric' } }), []);
   const root = mkdtempSync(path.join(tmpdir(), 'pool-quota-ui-'));
   const config = configSchema.parse({ routes: [{ id: 'claude', adapter: 'claude', executable: process.execPath, billing: 'subscription', enabled: true, models: ['opus', 'sonnet'].map(family => ({ id: `claude-${family}-9-1`, alias: family, group: 'high', kinds: ['text'], efforts: [] })) }], workspaceRoots: [root] });
   writeFileSync(path.join(root, 'config.json'), JSON.stringify(config));
@@ -205,6 +216,16 @@ test('owner login opens the native CLI using a fixed platform script and data-on
  const route={adapter:'codex',executable:process.execPath};
  assert.equal((await openCliLogin(route,{platform:'win32',run})).opened,true);
  assert.deepEqual(JSON.parse(launched.options.env.CLI_AGENT_POOL_LOGIN_ARGV),{file:process.execPath,arguments:['login']});
+ for(const [adapter,arguments_] of [
+  ['mcode',['login','--region','global']],
+  ['mmx',['auth','login','--recommend','--region=global']],
+  ['kimi',['login','--region','global']],
+  ['mimo',['providers','login']],
+  ['qwen',[]],
+ ]) {
+  await openCliLogin({...route,adapter},{platform:'win32',run});
+  assert.deepEqual(JSON.parse(launched.options.env.CLI_AGENT_POOL_LOGIN_ARGV),{file:process.execPath,arguments:arguments_});
+ }
  assert(!launched.args.at(-1).includes(process.execPath));assert.equal(launched.options.env.OPENAI_API_KEY,undefined);assert(launched.args.includes('-NonInteractive'));
  await assert.rejects(openCliLogin({...route,api:{}},{platform:'win32',run}),{code:'LOGIN_UNAVAILABLE'});
  await assert.rejects(openCliLogin(route,{platform:'win32',run:async()=>{throw Error('failed')}}),{code:'LOGIN_FAILED'});
@@ -224,11 +245,11 @@ test('failed Codex quota control distinguishes missing login from an unknown quo
 });
 
 test('Antigravity vendor quota groups never block or display unrelated model families',()=>{
- const windows=antigravityQuotaWindows([{short_name:'Gemini',buckets:{'5h':{remaining_pct:96}}},{short_name:'Claude/GPT',buckets:{'5h':{remaining_pct:0},weekly:{remaining_pct:50}}},{name:'Unknown',buckets:{'5h':{remaining_pct:null}}}]);
+ const windows=antigravityGroupWindows({groups:[{displayName:'Gemini',buckets:[{window:'5h',remainingFraction:0.96}]},{displayName:'Claude/GPT',buckets:[{window:'5h',remainingFraction:0},{window:'weekly',remainingFraction:0.5}]},{name:'Unknown',buckets:[{window:'5h',remainingFraction:null}]}]});
  assert.deepEqual(quotaWindows({windows},'gemini-4-argon-low').map(w=>w.remaining),[96]);
  assert.deepEqual(quotaWindows({windows},'claude-opus-5-5-high').map(w=>w.remaining),[0,50]);
  assert.deepEqual(quotaWindows({windows},'gpt-oss-120b-medium').map(w=>w.remaining),[0,50]);
- assert.equal(antigravityQuotaWindows([{name:'Shared',buckets:{'5h':{remaining_pct:120}}}])[0].remainingPercent,100);
+ assert.equal(antigravityGroupWindows({groups:[{name:'Shared',buckets:[{window:'5h',remainingFraction:1.2}]}]})[0].remainingPercent,100);
 });
 
 test('project skill picker confines reads to authorized project and central skill files',async t=>{
@@ -239,7 +260,7 @@ test('project skill picker confines reads to authorized project and central skil
  t.after(()=>rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:100}));
  const skills=workspaceSkills(project,[project],library);assert.equal(skills.length,2);assert.equal(skills.find(s=>s.name==='demo').source,'Proje');assert.equal(readWorkspaceSkill(project,[project],file,library).text.includes('local test command'),true);
  assert.throws(()=>readWorkspaceSkill(project,[project],path.join(root,'secret.md'),library),{code:'INVALID_SKILL'});
- assert.throws(()=>workspaceSkills(root,[project],library),{code:'WORKSPACE_DENIED'});
+ assert.equal(workspaceSkills(root,[],library).length,1);
  assert.equal(workspaceSkills('',[project],library).length,1);assert.equal(workspaceSkills('',[project],library)[0].description,'Shared instructions across lines');
- assert.equal(restoredWorkspace(project,[project]),project);assert.equal(restoredWorkspace(root,[project]),'');assert.equal(restoredWorkspace(null,[project]),'');
+ assert.equal(restoredWorkspace(project,[project]),project);assert.equal(restoredWorkspace(root,[project]),root);assert.equal(restoredWorkspace(null,[project]),'');
 });

@@ -42,14 +42,13 @@ arka plan servisi (`127.0.0.1:43127`) **otomatik olarak başlatılır** ve göre
 
 **Not:** `%LOCALAPPDATA%\cli-agent-pool` veri dizinini repository, OneDrive veya başka bir senkronizasyon klasörü içine koymayın. Token değerlerini sohbete, komut satırı argümanlarına veya Git'e yapıştırmayın.
 
-Yerel `config.json` içinde `workspaceRoots` ve `routes` tanımlayabilir veya doğrudan
+Yerel `config.json` içinde `routes` tanımlayabilir veya doğrudan
 web yönetim ekranından bağlantı ekleyebilirsiniz:
 
 ```json
 {
   "port": 43127,
   "python": "python",
-  "workspaceRoots": ["D:\\repositories\\your-project"],
   "concurrency": 1,
   "routes": [{
     "id": "codex-local",
@@ -98,22 +97,40 @@ dosyasında saklanır ve tarayıcıya veya MCP istemcilerine hiçbir zaman geri 
 | Adaptör | Desteklenen Plan / Modlar | Otomatik Keşif / Kota | CLI Giriş Komutu |
 |---|---|---|---|
 | **Codex** (`codex`) | `subscription` | Canlı model/efor keşfi (`~/.codex/models_cache.json` + `codex app-server`) | `codex login` |
-| **Claude Code** (`claude`) | `subscription`, `token_plan`, `paid_api` | `claude auth status` + `cclimits` kota takibi | `claude auth login` |
+| **Claude Code** (`claude`) | `subscription`, `token_plan`, `paid_api` | `claude auth status` + Anthropic OAuth kullanım kotası (5 saat / 7 gün). Abonelik çalıştırmaları kullanıcı ayarındaki uç nokta yönlendirmesini atlar | `claude auth login` |
 | **OpenCode** (`opencode`) | `free`, `token_plan`, `subscription`, `paid_api` | `opencode models --verbose` ve `~/.config/opencode/opencode.json` keşfi | `opencode providers login` |
-| **ZCode / Z.AI** (`zcode`) | `token_plan` (GLM Coding Plan), `free`, `subscription` | `~/.zcode/v2/config.json` model keşfi (`GLM-5.3`, `GLM-5.2` vb.) + `cclimits` Z.AI kotası | `zcode` |
+| **ZCode / Z.AI** (`zcode`) | `token_plan` (GLM Coding Plan), `free`, `subscription` | Tek model: ZCode içinde seçili varsayılan GLM (`-p` model bayrağı sunmaz) + Z.AI monitor kotası (5 saat / haftalık, plan seviyesi) | `zcode login zai` |
 | **Qwen CLI** (`qwen`) | `token_plan`, `subscription`, `free` | `~/.qwen/settings.json` model keşfi (`qwen3.8-max`, `deepseek-v4` vb.) | `qwen` |
-| **MiniMax Code** (`mcode`) | `token_plan`, `free_credits`, `subscription` | `~/.minimax/config.yaml` (`MiniMax-M3`, `MiniMax-M2.7`) keşfi | `mcode` |
-| **MiniMax CLI** (`mmx`) | `free_credits` (günlük kredi), `token_plan`, `subscription` | `mmx quota show` ve `mmx auth status` ile plan/kredi durumu | `mmx auth login` |
-| **Kimi Code** (`kimi`) | `token_plan`, `subscription` | `~/.kimi-code/config.toml` (`kimi-code/k3-256k`) + `cclimits` kotası | `kimi login` |
-| **Xiaomi MiMo** (`mimo`) | `token_plan`, `subscription` | `~/.mimocode` CLI keşfi (`mimo-v2-pro`) | `mimo` |
-| **Antigravity** (`agy`) | `subscription` | `%LOCALAPPDATA%\agy\bin\agy.cmd` + `cclimits` Gemini/AGY kotası | `agy` |
+| **MiniMax Code** (`mcode`) | `token_plan`, `free_credits`, `subscription` | `~/.minimax/config.yaml` (`MiniMax-M3`, `MiniMax-M2.7`) keşfi + Coding Plan kalan kotası | `mcode login --region global` |
+| **MiniMax CLI** (`mmx`) | `free_credits` (günlük kredi), `token_plan`, `subscription` | `mmx quota show` ve `mmx auth status` ile plan/kredi durumu | `mmx auth login --recommend --region=global` |
+| **Kimi Code** (`kimi`) | `token_plan`, `subscription` | `~/.kimi-code/config.toml` (`kimi-code/k3-256k`) + Kimi Code kullanım kotası | `kimi login --region global` |
+| **Xiaomi MiMo** (`mimo`) | `token_plan`, `subscription` | `~/.mimocode` CLI keşfi (`mimo-v2-pro`) | `mimo providers login` |
+| **Antigravity** (`agy`) | `subscription` | `agy models` + Cloud Code grup (5 saat / haftalık) ve model kotası; Argon kotası bildirilmezse bilinmiyor | `agy` |
 | **OmniRoute** (`omniroute`) | `token_plan`, `free` | Yerel OmniRoute yönlendirici keşfi | `omniroute` |
 | **LM Studio / Ollama** (`lmstudio`, `ollama`) | `free` (yerel) | `lms ls --json` ve `~/.ollama/models` yerel model keşfi | `lms status` / `ollama list` |
 | **Aider / Kilo / Hermes / Custom** (`aider`, `kilocode`, `hermes`, `custom`) | `subscription`, `token_plan`, `free` | Otomatik ikili keşfi ve şablon tabanlı (`argsTemplate`) güvenli yürütme | İlgili CLI komutu |
 
+### Büyük model sağlayıcıları ve token planları
+
+Havuz modellere her zaman bir CLI üzerinden bağlanır; böylece modelin kendi araçları ve izin
+sistemi bozulmadan çalışır. Resmî CLI'ı olan sağlayıcılar (OpenAI Codex, Anthropic Claude Code,
+Google Antigravity/Gemini Argon, Qwen, Z.AI ZCode, Kimi, MiniMax, Xiaomi MiMo) doğrudan kendi
+adaptörüyle kullanılır. Resmî CLI'ı olmayan veya token planını API anahtarıyla veren sağlayıcılar
+(DeepSeek, xAI Grok, Meta Muse Spark API, OpenRouter ücretli/ücretsiz, kendi sağlayıcınız)
+**Özel API / Token Planı Ekle** ile eklenir: Anthropic uyumlu uç noktalar Claude Code CLI,
+OpenAI uyumlu uç noktalar OpenCode CLI üzerinden çalışır. Z.AI/BigModel, OpenRouter ve MiniMax
+anahtarlarında kota/bakiye otomatik okunur; diğerlerinde bilinmiyor olarak gösterilir.
+OpenRouter'ın OpenCode'a kayıtlı anahtarı için bakiye ve ücretsiz model günlük istek sınırı
+(kredi 10$ altındaysa 50, üstündeyse 1000) OpenCode kartında görünür. Meta Muse Code gibi kurulu
+başka bir CLI **Özel CLI** şablonuyla (`argsTemplate`) eklenebilir; doğrulanmamış yerleşik
+adaptör uydurulmaz.
+
 Yönetim ekranındaki **Kota, Plan ve Kredi Durumu** bölümü her bağlantının plan türünü,
 varsa kalan kota yüzdesini, API protokol yuvasını ve giriş yapılması gerektiğinde
 çalıştırılacak CLI komutunu gösterir.
+
+Herhangi bir mevcut yerel proje klasörü MCP veya CLI üzerinden doğrudan kullanılabilir.
+Havuzda klasör kaydı veya proje başına ek izin gerekmez; native CLI izinleri korunur.
 
 ## MCP Bağlantısı
 
@@ -147,7 +164,7 @@ Dashboard bağlantısı tek kullanımlıktır; açıldıktan sonra adres temizle
 credential'ı, API anahtarı veya kalıcı MCP/yönetim anahtarı verilmez.
 
 Ekranda kurulu CLI'lar, CLI bağlantısı ekleme, Özel API / Token Planı ekleme (Anthropic
-veya OpenAI yuvası), izinli klasörler, manuel model grupları, ücretsiz model/plan rozetleri,
+veya OpenAI yuvası), manuel model grupları, ücretsiz model/plan rozetleri,
 model/efor seçimi, görev başlatma, iptal, geçmiş ve kota/giriş durumu bulunur.
 
 ### Havuz ve çalışma alanı
@@ -191,7 +208,12 @@ Kotalar varsayılan açık başlar. Büyük kalan yüzdesi, kalan miktarı göst
 kullanım ve yenilenme zamanı görünür. **Kotaları gizle / göster** tümünü; her modelin
 Kota başlığı yalnızca o modeli açar/kapatır. Kullanım yüzdeleri hesap kotasıdır; hesap ortak kotası
 model başına ayrı bakiye gibi sunulmaz. Kota, kapalı bağlantılar için de okunabilir.
-Codex native app-server, Claude kurulu `cclimits` gözlemcisi üzerinden sorgulanır.
+Kotalar harici bir araç olmadan havuzun kendi `src/quotas.js` katmanında okunur: Codex
+native app-server; Claude, Z.AI, Antigravity, Kimi, MiniMax ve OpenRouter kendi resmî
+kullanım uç noktalarından. Kimlik bilgisi resmî CLI'ın kendi deposundan yalnızca bellekte
+okunur; kopyalanmaz, yazılmaz, yenilenen jeton geri kaydedilmez. Jetonun süresi dolmuşsa
+bu "giriş gerekli" sayılmaz (CLI bir sonraki çalıştırmada yeniler); yalnızca hiç oturum yoksa
+giriş istenir.
 Desteklenmeyen veya ulaşılamayan bilgiler açıkça belirtilir. Yeni işten önce uygun
 bağlantıların kotaları 15 saniyelik önbellekle yenilenir. Kota doluysa yeni iş aynı
 havuzdaki uygun alternatife atanabilir; başlamış iş otomatik tekrarlanmaz.

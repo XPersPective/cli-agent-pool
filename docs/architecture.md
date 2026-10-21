@@ -55,7 +55,8 @@ block `subscription` and `token_plan` routes but allow `free_credits` routes (su
 ## Verified capabilities
 
 - Local Windows system-wide discovery across 16 CLI adapters (13 installed CLIs and 64 models discovered automatically on the host, including `codex`, `claude`, `opencode`, `zcode`, `qwen`, `mcode`, `mmx`, `kimi`, `mimo`, `agy`, `omniroute`, `lmstudio`, `hermes`):
-  - ZCode (`C:\Program Files\ZCode\resources\glm\zcode.cjs`) discovery, `GLM-5.3` / `GLM-5.2` / `GLM-5-Turbo` model extraction from `~/.zcode/v2/config.json`, `stream-json` result parsing, read-only tool disallowing, and live Z.AI quota windows via `cclimits`.
+  - ZCode (`C:\Program Files\ZCode\resources\glm\zcode.cjs`) headless `-p --json` execution with its bundled provider catalog supplied through `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE`, the single ZCode default model (ZCode `-p` has no model flag), read-only tool disallowing, and native Z.AI monitor quota.
+  - Native quota layer (`src/quotas.js`): Claude OAuth usage, Z.AI monitor, Antigravity Cloud Code, Kimi Code, MiniMax Coding Plan and OpenRouter key/credits; no external quota tool. Credentials are read from each CLI's own store into memory for one request only.
   - Real Codex model discovery and live MCP task execution.
   - OpenCode JSONL event parsing, automatic free model catalog discovery (`opencode models --verbose --pure`), and OpenAI-compatible custom API execution via `OPENCODE_CONFIG_CONTENT`.
   - Claude Code subscription verification (`claude.ai`), token-plan / third-party Coding Plan support (`billing: 'token_plan'`), and Anthropic-compatible custom API execution via isolated environment variables.
@@ -78,7 +79,7 @@ requests. Only its members are eligible. Fixed membership effort cannot be overr
 by the requester. In `auto` mode ungrouped catalog selection is also permitted;
 explicit groups remain hard filters. Auto is the compatibility default.
 `groupingMode` separately controls whether agents may edit membership. Agents
-cannot change selection mode, billing, permission policy or workspace roots.
+cannot change selection mode, billing, native CLI permission policy.
 
 Selection/admission refreshes quota snapshots before running the existing selector.
 Shared account windows and model-specific windows remain distinguishable. Numeric
@@ -108,7 +109,7 @@ without pagination. Quota details default open with readable remaining percentag
 model-specific/global toggles and remaining-value progress bars. Scroll position and
 individual disclosure state survive quota refresh. No project is auto-selected from
 configuration or the installation directory; native project selection still uses
-server-side allowed-root validation. Save/discard controls reflect owner draft state.
+server-side existing-directory validation. Save/discard controls reflect owner draft state.
 The human dashboard formats quota responses; agent MCP/JSON responses are unchanged.
 
 Owner `modelFilters` are persisted alongside configuration and shared by catalog
@@ -135,7 +136,7 @@ all task paths. Project task messages are rendered as plain text, with model met
 in a disclosure; historical prompts are not implicitly replayed into new requests.
 
 Owner-only skills/skill operations enumerate bounded immediate SKILL.md directories
-in the selected authorized project and central Skills Manager library. Project roots
+in the selected local project and central Skills Manager library. Project roots
 that resolve outside the selected project, symlink files, oversized files and forged
 skill IDs are rejected or excluded. No skill executes during discovery. Explicit
 attachment sends text plus its source path as task instructions, without installation.
@@ -155,10 +156,35 @@ are included. A failed save leaves the draft pending and reports the error.
 Pool 1.5 replaces the owner chat composer with a read-only calls monitor and fixed
 text probes. Agent submit/skills/folder APIs remain available for compatibility.
 Only owner probe_model can mark an internal runtime probe workspace; agent requests
-cannot forge that flag or expand workspace roots. The normal policy, quota and CLI
+cannot forge that flag. The normal policy, quota and CLI
 permission checks still apply. Client labels are self-reported metadata, not identity.
 Completed payloads expire after seven days or 500 completed entries; durable keys,
 fingerprints and quarantine survive cleanup. Active jobs are prioritized in snapshots.
 Antigravity effort variants are canonical catalog entries with exact native ID maps;
 merges stage changes atomically and reject conflicting memberships. Provider-declared
 quota scopes apply identically in the UI and selector, including explicit Argon groups.
+
+
+Local project admission accepts any existing absolute directory through CLI and MCP
+without registration or configuration writes. Canonical paths preserve workspace
+overlap locks and quarantine across junction aliases. Legacy workspaceRoots is
+accepted for compatibility only; deleted entries do not prevent startup. Internal
+model probes retain explicit containment. Project skill discovery still rejects
+paths escaping the selected project. Native CLI sandbox and task scopes remain.
+
+
+Windows dashboard launches use a native GUI helper with a named mutex and a
+dedicated browser profile in private runtime data. Repeated launches restore the
+existing Pool window and retire duplicates belonging to that profile. The helper
+captures Node service startup output and verifies a visible window before success.
+Desktop and Start menu shortcuts target the helper directly, avoiding hidden
+VBScript console handles. Personal browser profiles and workers are separate.
+
+
+The installed runtime locator in the user profile binds CLI and desktop to one
+physical runtime across MSIX file virtualization. Explicit CLI_AGENT_POOL_HOME
+still overrides it. Antigravity native event/result envelopes are parsed directly;
+structured permission failures override a conversational SUCCESS. No prose-only
+completion heuristic or automatic write replay is used. Non-paid autoSelect:false
+is honored as well as paid_api policy. Queued task details expose workspace review
+locks through queueReason and blockedBy. A text probe does not certify write tools.

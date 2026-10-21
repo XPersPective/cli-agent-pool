@@ -16,7 +16,7 @@ If the `cli-agent-pool` MCP server is connected in your environment, use its nat
 - `pool_list_pools` — Read high/medium/low memberships, exact model IDs, fixed effort and cached quota windows in one call.
 - `pool_list_models` — List all available models, manual groups, supported task kinds (`text`, `read`, `write`), and reasoning efforts.
 - `pool_get_policy` — Read owner grouping mode and current configuration revision.
-- `pool_assign_groups` — Only when `groupingMode` is `agent`, upsert memberships with `{ revision, assignments: [{ routeId, modelId, group, effort? }] }` or remove one with `remove: true`. Other memberships survive. This never grants permission to alter routes, billing or workspace roots.
+- `pool_assign_groups` — Only when `groupingMode` is `agent`, upsert memberships with `{ revision, assignments: [{ routeId, modelId, group, effort? }] }` or remove one with `remove: true`. Other memberships survive. This never grants permission to alter routes or billing.
 - `pool_get_quotas` — Inspect live remaining quota percentages and subscription/credit status for a `routeId`.
 - `pool_select` — Select the highest-priority available route/model for a task `kind` (`read`, `write`, `text`) without starting a task.
 - `pool_submit` — Submit a bounded task (`prompt`, `workspace`, `kind`, `idempotencyKey`, and optional `routeId`, `modelId`, `group`, `effort`).
@@ -106,8 +106,12 @@ Keep Project Brain separate. Brain 3.3.0+ owns task plans, local research, quali
 checks and evidence; it connects to this Pool for discovery and execution through
 `cli-agent-pool rpc`. Its normal L/M/H tasks select low/medium/high pools. Do not
 ask for a second model approval when the owner already configured Pool rules.
-Never weaken fixed effort or quota reserves, change billing/trust, or replay an
+Never weaken fixed effort or quota reserves, change billing/native CLI trust, or replay an
 interrupted write. Pool owns worker process containment and state recovery.
+
+Any existing absolute local project directory can be submitted directly through MCP
+or CLI. No Pool workspace allowlist, dashboard registration or per-project approval
+is required. Native CLI permissions and read/write task scopes still apply.
 
 `cli-agent-pool rpc` accepts `{ "tool": "pool_select", "arguments": {...} }` on
 stdin and returns one JSON result/error on stdout. Only agent MCP tools are allowed.
@@ -119,3 +123,11 @@ Freebuff Desktop/CLI reads `~/.agents/mcp.json` and can call Pool as an MCP clie
 Preserve existing MCP entries and native trust prompts. Installed Freebuff 0.2.29
 has no supported headless model/effort execution contract, so do not represent its
 models as Pool workers or extract desktop credentials/private endpoints.
+
+A route with autoSelect:false is excluded from automatic selection regardless of
+billing mode. Do not pin it to work around a failed live test. A successful text
+probe proves a reply only, not write tools or task completion. Check structured
+errors, queueReason and blockedBy; native permission denials require review.
+
+Use RPC/status to inspect runtime state; do not assume a hard-coded LocalAppData
+config path. Desktop and CLI share the installed runtime locator across MSIX hosts.

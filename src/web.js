@@ -87,7 +87,7 @@ export function managementOperation(pool, management, body) {
 export function browserUI(pool, management) {
   let folderPicker = null;
   const catalogFor = async route => {
-    const cwd = pool.config.workspaceRoots[0] || management.directory;
+    const cwd = management.directory;
     if (route.adapter === 'codex' && !route.api) {
       try { return await codexControl(route, cwd, pool.config.python, 'models'); }
       catch { return routeCatalog(route, cwd, pool.config.python); }

@@ -74,9 +74,9 @@ export async function main(args = process.argv.slice(2)) {
     return;
   }
   if (command === 'open' || command === 'ui' || command === 'dashboard') {
-    const config = ensureInitialized(directory, true);
+    const config = ensureInitialized(directory, false);
     const info = await ensureDaemon(directory, config);
-    const windowInfo = openDashboardWindow(info.dashboard);
+    const windowInfo = await openDashboardWindow(info.dashboard);
     print({ ...info, ...windowInfo });
     return;
   }
@@ -131,7 +131,7 @@ export async function main(args = process.argv.slice(2)) {
     print(out);
     return;
   }
-  if (command === 'init') { initialize(directory); print({ configuration: path.join(directory, 'config.json'), tokenFile: path.join(directory, 'access-token'), next: 'Configure workspaceRoots and routes; secrets stay outside the repository.' }); return; }
+  if (command === 'init') { initialize(directory); print({ configuration: path.join(directory, 'config.json'), tokenFile: path.join(directory, 'access-token'), next: 'Configure routes; secrets stay outside the repository.' }); return; }
   if (command === 'discover') { print(discover()); return; }
   if (command === 'scan-import') {
     initialize(directory);
@@ -139,7 +139,7 @@ export async function main(args = process.argv.slice(2)) {
     const imported = importDiscoveredRoutes(view.config);
     const catalogErrors = [];
     for (const route of imported.config.routes.filter(route => !route.api && ['claude','agy'].includes(route.adapter))) {
-      try { imported.addedModels += mergeCatalogModels(route, await routeCatalog(route, imported.config.workspaceRoots[0] || directory, imported.config.python), imported.config.modelFilters); }
+      try { imported.addedModels += mergeCatalogModels(route, await routeCatalog(route, directory, imported.config.python), imported.config.modelFilters); }
       catch { catalogErrors.push(route.id); }
     }
     saveConfig(directory, imported.config, view.revision);
@@ -150,13 +150,13 @@ export async function main(args = process.argv.slice(2)) {
   if (command === 'stdio') { await stdioBridge(directory, config); return; }
   if (command === 'validate') {
     for (const route of config.routes) executableArgv(route.executable);
-    const python = await capture([config.python, '--version'], config.workspaceRoots[0] || directory, config.python);
+    const python = await capture([config.python, '--version'], directory, config.python);
     if (python.code !== 0 || !/Python 3\.(?:1[1-9]|[2-9]\d)/.test(python.output + python.stderr)) throw new PoolError('PYTHON_REQUIRED', 'Python 3.11 veya üstünü kurun.');
     print({ valid: true, connections: config.routes.length, enabled: config.routes.filter(r => r.enabled).length }); return;
   }
   if (command === 'models' || command === 'refresh-models') {
     const route = config.routes.find(r => r.id === rest[0]);
-    const cwd = config.workspaceRoots[0] || directory;
+    const cwd = directory;
     if (!route) throw new PoolError('NOT_FOUND', 'Bağlantı kimliği bulunamadı.');
     let catalog;
     if (route.adapter === 'codex' && !route.api) {

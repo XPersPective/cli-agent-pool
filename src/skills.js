@@ -5,7 +5,7 @@ import { allowedWorkspace, PoolError } from './config.js';
 
 export function workspaceSkills(workspace, workspaceRoots, libraryRoot = path.join(homedir(), '.skills-manager', 'skills')) {
   if (typeof workspace !== 'string' || workspace.length > 4096) throw new PoolError('INVALID_WORKSPACE', 'Geçerli bir proje seçin.');
-  const project = workspace ? allowedWorkspace(workspace, workspaceRoots) : null;
+  const project = workspace ? allowedWorkspace(workspace) : null;
   const roots = [...(project ? ['.agents/skills','.codex/skills','.claude/skills','skills'].map(dir => ({root:path.join(project,dir),source:'Proje'})) : []), {root:libraryRoot,source:'Kütüphane'}];
   const skills=[], seen=new Set();
   for (const {root,source} of roots) {

@@ -15,14 +15,14 @@ import { configSchema } from '../src/config.js';
 import { Store } from '../src/store.js';
 import { Pool } from '../src/pool.js';
 import { createServer } from '../src/server.js';
-import { ensureDaemon } from '../src/daemon.js';
+import { ensureDaemon, runTaskFromCli } from '../src/daemon.js';
 import { version } from '../src/version.js';
 
 async function application(t) {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-mcp-'));
   const executable = path.join(root, 'fake-codex.js');
   writeFileSync(executable, `if(process.argv.includes('login')){console.log('Logged in using ChatGPT')}else{process.stdin.resume();process.stdin.on('end',()=>{console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'verified result'}}));console.log(JSON.stringify({type:'turn.completed'}))})}`);
-  const config = configSchema.parse({ workspaceRoots: [root], routes: [{ id: 'test', adapter: 'codex', executable, enabled: true, billing: 'subscription', models: [{ id: 'test-model', alias: 'Test', group: 'default', kinds: ['read'] }] }] });
+  const config = configSchema.parse({ workspaceRoots: [], routes: [{ id: 'test', adapter: 'codex', executable, enabled: true, billing: 'subscription', models: [{ id: 'test-model', alias: 'Test', group: 'default', kinds: ['read'] }] }] });
   const store = new Store(path.join(root, 'pool.sqlite'));
   const pool = new Pool(config, store, { directory: root });
   store.saveQuota('test', { status: 'available', windows: [], observedAt: new Date().toISOString() });
@@ -153,8 +153,8 @@ test('real MCP client discovers tools and executes shell-free fake CLI through p
   assert.equal(pool.list()[0].result, undefined);
   const conflict = await client.callTool({ name: 'pool_submit', arguments: { ...input, prompt: 'different' } });
   assert.ok(conflict.isError); assert.match(conflict.content[0].text, /IDEMPOTENCY_CONFLICT/);
-  const denied = await client.callTool({ name: 'pool_submit', arguments: { ...input, workspace: tmpdir(), idempotencyKey: 'denied-request-123' } });
-  assert.ok(denied.isError); assert.match(denied.content[0].text, /WORKSPACE_DENIED/);
+  const denied = await client.callTool({ name: 'pool_submit', arguments: { ...input, workspace: path.join(root, 'missing'), idempotencyKey: 'denied-request-123' } });
+  assert.ok(denied.isError); assert.match(denied.content[0].text, /INVALID_WORKSPACE/);
 });
 
 test('MCP exposes grouping permission and only owner-enabled assignments can change groups', async t => {
@@ -181,4 +181,16 @@ test('MCP exposes grouping permission and only owner-enabled assignments can cha
   assert.ok(missingPool.isError); assert.match(missingPool.content[0].text, /POOL_REQUIRED/);
   const selected = await client.callTool({ name: 'pool_select', arguments: { kind: 'read', group: 'medium' } });
   assert.equal(selected.structuredContent.data.selected.id, 'test-model');
+});
+
+test('CLI submits an unregistered project without changing owner configuration', async t => {
+  const { root, pool } = await application(t);
+  const project = mkdtempSync(path.join(tmpdir(), 'pool-unregistered-'));
+  t.after(() => rm(project, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  const before = JSON.stringify(pool.config);
+  const result = await runTaskFromCli(root, { workspace: project, prompt: 'Read only', kind: 'read', idempotencyKey: 'unregistered-cli-123' });
+  assert.equal(result.state, 'succeeded');
+  assert.equal(result.workspace, project);
+  assert.equal(JSON.stringify(pool.config), before);
+  assert.deepEqual(JSON.parse((await import('node:fs')).readFileSync(path.join(root, 'config.json'), 'utf8')).workspaceRoots, []);
 });

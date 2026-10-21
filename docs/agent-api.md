@@ -70,7 +70,7 @@ modunu değiştiremez. Revizyon çakışırsa güncel politika ve havuzları yen
 | CONFIG_CONFLICT | Yeni revision ve havuz listesini okuyun; değişikliği yeniden değerlendirin. |
 | INVALID_REQUEST | Araç şemasındaki alan/tür/sınırları düzeltin. |
 | IDEMPOTENCY_CONFLICT | Aynı anahtarı farklı görev içeriğiyle kullanmayın. |
-| WORKSPACE_DENIED | İzinli proje klasörü kullanın; yönetim erişimini aşmaya çalışmayın. |
+| INVALID_WORKSPACE | Mevcut bir klasörün mutlak yolunu verin; Pool proje kaydı gerektirmez. |
 
 CLI eşdeğeri:
 

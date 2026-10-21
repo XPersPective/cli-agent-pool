@@ -5,7 +5,8 @@ import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { configSchema } from '../src/config.js';
-import { mergeCatalogModels, buildArguments, execute, antigravityQuotaWindows, routeCatalog } from '../src/adapters.js';
+import { mergeCatalogModels, buildArguments, execute, routeCatalog } from '../src/adapters.js';
+import { antigravityGroupWindows } from '../src/quotas.js';
 import { quotaWindows } from '../web/pool-state.js';
 import { Pool } from '../src/pool.js';
 import { Store } from '../src/store.js';
@@ -28,7 +29,7 @@ test('native effort variants migrate atomically and keep the actual CLI ID and p
 });
 
 test('provider family quota scopes do not invent an Argon weekly balance',()=>{
- const windows=antigravityQuotaWindows([{name:'Gemini Models',short_name:'Gemini',description:'Models within this group: Gemini Flash, Gemini Pro',buckets:{weekly:{remaining_pct:23}}},{name:'Argon',short_name:'Gemini',buckets:{weekly:{remaining_pct:71}}}]);
+ const windows=antigravityGroupWindows({groups:[{displayName:'Gemini Models',description:'Models within this group: Gemini Flash, Gemini Pro',buckets:[{window:'weekly',remainingFraction:0.23}]},{displayName:'Argon',buckets:[{window:'weekly',remainingFraction:0.71}]}]});
  assert.deepEqual(quotaWindows({windows},'gemini-4-argon').map(w=>w.remaining),[71]);
  assert.deepEqual(quotaWindows({windows},'gemini-3.8-flash').map(w=>w.remaining),[23]);
  assert.deepEqual(quotaWindows({windows:windows.slice(0,1)},'gemini-4-argon'),[]);
@@ -59,3 +60,36 @@ test('history expiration keeps admission keys, active writes and review quaranti
  }finally{store.close();}
 });
 
+
+test('Antigravity native stream parses the terminal response and retains permission failures',async t=>{
+ const root=mkdtempSync(path.join(tmpdir(),'pool-agy-native-')),file=path.join(root,'agy.cjs');
+ t.after(()=>rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:100}));
+ const route={id:'agy',adapter:'agy',executable:file},model={id:'sonnet',efforts:[]};
+ const run=async(events)=>{writeFileSync(file,'for(const e of '+JSON.stringify(events)+')console.log(JSON.stringify(e));');return execute(route,model,{kind:'write',workspace:root,prompt:'fixture',timeoutSeconds:5},process.platform==='win32'?'python':'python3',()=>{}).done;};
+ const complete={event:'result',result:{status:'SUCCESS',response:'OK'}};
+ assert.deepEqual(await run([{event:'init',init:{model:'sonnet'}},complete]),{result:'OK'});
+ const denied={event:'step_update',step_update:{state:'ERROR',step_type:'tool',tool_name:'edit_file',tool_info:{error:{type:'TOOL_ERROR',message:'permission check failed: Matches user-configured deny rule.'}}}};
+ assert.deepEqual(await run([denied,complete]),{error:'PERMISSION_REQUIRED'});
+ assert.deepEqual(await run([{...denied,step_update:{...denied.step_update,tool_info:{error:{message:'File not found'}}}},complete]),{result:'OK'});
+ assert.deepEqual(await run([{event:'step_update',step_update:{state:'DONE',step_type:'agent_response'}}]),{error:'INVALID_RESULT'});
+ assert.equal((await run([{event:'result',result:{status:'ERROR',response:'Failed'}}])).error,'CLI_FAILED');
+});
+
+test('unverified non-paid routes are excluded from automatic selection and queue exposes review locks',async t=>{
+ const route=(id,autoSelect)=>({id,adapter:'custom',executable:process.execPath,argsTemplate:['--version'],enabled:true,billing:'free',autoSelect,models:[{id:'model',alias:id,group:'medium',kinds:['read']}]});
+ const config=configSchema.parse({routes:[route('first',false),route('second',true)]}),store=new Store(':memory:'),pool=new Pool(config,store);
+ t.after(async()=>{await pool.close();store.close();});
+ assert.equal(pool.select({kind:'read',group:'medium'}).selected.routeId,'second');
+ assert.equal(pool.select({kind:'read',group:'medium',routeId:'first'}).selected.routeId,'first');
+ const queried=[];pool.getQuota=async id=>{queried.push(id);return {};};
+ assert.equal((await pool.selectLive({kind:'read',group:'medium'})).selected.routeId,'second');assert.deepEqual(queried,['second']);
+ for(const id of ['held','waiting'])store.insert({id,key:id,fingerprint:id,workspace:process.cwd(),request:{routeId:'first',kind:'write'}});
+ store.update('held','needs_review',null,'CLI_FAILED');
+ assert.equal(pool.get('waiting').queueReason,'WORKSPACE_REVIEW_REQUIRED');assert.equal(pool.get('waiting').blockedBy,'held');
+});
+
+test('Kimi provider subscription refusal is not reported as a generic CLI failure',async t=>{
+ const root=mkdtempSync(path.join(tmpdir(),'pool-kimi-plan-')),file=path.join(root,'kimi.cjs');t.after(()=>rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:100}));
+ writeFileSync(file,"console.error('provider.auth_error: 403 Your current subscription does not have access to Kimi Code right now.');process.exit(1)");
+ assert.equal(await execute({id:'kimi',adapter:'kimi',executable:file},{id:'model'},{kind:'text',workspace:root,prompt:'fixture',timeoutSeconds:5},process.platform==='win32'?'python':'python3',()=>{}).done.then(r=>r.error),'SUBSCRIPTION_REQUIRED');
+});

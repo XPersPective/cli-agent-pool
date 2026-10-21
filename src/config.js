@@ -31,7 +31,8 @@ const apiBlockSchema = z.object({
 export const configSchema = z.object({
   port: z.number().int().min(1024).max(65535).default(43127),
   python: z.string().min(1).default(process.platform === 'win32' ? 'python' : 'python3'),
-  workspaceRoots: z.array(z.string().min(1)).max(50),
+  // Legacy configuration only; local projects require no Pool allowlist.
+  workspaceRoots: z.array(z.string().min(1)).max(50).default([]),
   concurrency: z.number().int().min(1).max(8).default(1),
   groupingMode: z.enum(['manual', 'agent']).default('manual'),
   selectionMode: z.enum(['manual', 'auto']).default('auto'),
@@ -90,7 +91,14 @@ export const configSchema = z.object({
 });
 
 export function dataDirectory() {
-  return process.env.CLI_AGENT_POOL_HOME || path.join(process.env.LOCALAPPDATA || path.join(homedir(), '.local', 'share'), 'cli-agent-pool');
+  if (process.env.CLI_AGENT_POOL_HOME) return process.env.CLI_AGENT_POOL_HOME;
+  const locator = path.join(homedir(), '.cli-agent-pool', 'runtime-path');
+  if (existsSync(locator)) {
+    const directory = readFileSync(locator,'utf8').trim();
+    if (!path.isAbsolute(directory)) throw new PoolError('INVALID_RUNTIME_DIRECTORY','Kayitli Pool veri dizini mutlak bir yol olmali.');
+    return directory;
+  }
+  return path.join(process.env.LOCALAPPDATA || path.join(homedir(), '.local', 'share'), 'cli-agent-pool');
 }
 
 export function initialize(directory) {
@@ -113,12 +121,11 @@ export function initialize(directory) {
 export function loadConfig(directory) {
   try {
     const config = configSchema.parse(JSON.parse(readFileSync(path.join(directory, 'config.json'), 'utf8')));
-    config.workspaceRoots = config.workspaceRoots.map(root => realpathSync(root));
     return config;
   } catch (error) {
     // Field paths only: values may contain private local paths and are never echoed.
-    const fields = error instanceof z.ZodError ? [...new Set(error.issues.map(issue => issue.path.join('.') || '(root)'))].slice(0, 5).join(', ') : error?.code === 'ENOENT' ? 'workspaceRoots (klasör bulunamadı) veya config.json' : 'JSON söz dizimi';
-    throw new PoolError('INVALID_CONFIG', `Yerel config.json geçersiz (${fields}). Ayarları ve çalışma klasörlerini kontrol edin.`);
+    const fields = error instanceof z.ZodError ? [...new Set(error.issues.map(issue => issue.path.join('.') || '(root)'))].slice(0, 5).join(', ') : error?.code === 'ENOENT' ? 'config.json bulunamadı' : 'JSON söz dizimi';
+    throw new PoolError('INVALID_CONFIG', `Yerel config.json geçersiz (${fields}). Ayarları kontrol edin.`);
   }
 }
 
@@ -129,7 +136,6 @@ export function configView(directory) {
 
 export function saveConfig(directory, input, revision) {
   const config = configSchema.parse(input);
-  config.workspaceRoots = config.workspaceRoots.map(root => realpathSync(root));
   if (configView(directory).revision !== revision) throw new PoolError('CONFIG_CONFLICT', 'Ayarlar başka bir yerde değişti. Yenileyip tekrar kaydedin.');
   const filename = path.join(directory, 'config.json');
   const temporary = `${filename}.${randomBytes(8).toString('hex')}.tmp`;
@@ -147,9 +153,11 @@ export function saveConfig(directory, input, revision) {
 }
 
 export function allowedWorkspace(workspace, roots) {
+  if (typeof workspace !== 'string' || !path.isAbsolute(workspace) || workspace.includes('\0')) throw new PoolError('INVALID_WORKSPACE', 'Mutlak bir çalışma klasörü yolu gerekli.');
   let actual;
   try { actual = realpathSync(workspace); } catch { throw new PoolError('INVALID_WORKSPACE', 'Çalışma klasörü bulunamadı.'); }
-  if (!lstatSync(actual).isDirectory() || !roots.some(root => {
+  if (!lstatSync(actual).isDirectory()) throw new PoolError('INVALID_WORKSPACE', 'Çalışma yolu bir klasör olmalı.');
+  if (roots && !roots.some(root => {
     const relative = path.relative(root, actual);
     return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
   })) throw new PoolError('WORKSPACE_DENIED', 'Bu çalışma klasörü izin listesinde değil.');

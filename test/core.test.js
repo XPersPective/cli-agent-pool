@@ -5,10 +5,10 @@ import { mkdtempSync, mkdirSync, symlinkSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { configSchema, allowedWorkspace, overlaps, redact, configView, saveConfig } from '../src/config.js';
+import { loadConfig, configSchema, allowedWorkspace, overlaps, redact, configView, saveConfig } from '../src/config.js';
 import { writeFileSync } from 'node:fs';
 import { existsSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { Store } from '../src/store.js';
 import { Pool } from '../src/pool.js';
@@ -37,10 +37,16 @@ test('canonical workspace containment rejects siblings, traversal and symlink es
   t.after(() => rm(outside, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const child = path.join(root, 'child'); mkdirSync(child);
   assert.equal(allowedWorkspace(child, [root]), child);
+  assert.equal(allowedWorkspace(outside), outside);
+  assert.throws(() => allowedWorkspace('relative'), { code: 'INVALID_WORKSPACE' });
+  assert.throws(() => allowedWorkspace(path.join(root, 'missing')), { code: 'INVALID_WORKSPACE' });
+  const file = path.join(root, 'file'); writeFileSync(file, 'test');
+  assert.throws(() => allowedWorkspace(file), { code: 'INVALID_WORKSPACE' });
   assert.throws(() => allowedWorkspace(outside, [root]), { code: 'WORKSPACE_DENIED' });
   assert.throws(() => allowedWorkspace(path.dirname(root), [root]), { code: 'WORKSPACE_DENIED' });
   symlinkSync(outside, path.join(root, 'escape'), process.platform === 'win32' ? 'junction' : 'dir');
   assert.throws(() => allowedWorkspace(path.join(root, 'escape'), [root]), { code: 'WORKSPACE_DENIED' });
+  assert.equal(allowedWorkspace(path.join(root, 'escape')), outside);
   assert.ok(overlaps(root, child)); assert.ok(!overlaps(root, outside));
 });
 
@@ -161,7 +167,11 @@ test('auth checks enforce subscription vs token_plan vs free_credits and reject 
   const claude = (authMethod, baseURL, billing = 'subscription') => ({ id: 'c', adapter: 'claude', billing, trustedSettings: true, executable: fake(`claude-${authMethod}-${Boolean(baseURL)}-${billing}`,
     `if(a==='auth status --json')console.log(JSON.stringify({loggedIn:true,authMethod:${JSON.stringify(authMethod)},apiProvider:'firstParty'}));else if(a==='auth status --text')console.log(${JSON.stringify(baseURL ? `Auth token: ANTHROPIC_AUTH_TOKEN\nAnthropic base URL: ${baseURL}` : 'Login method: Claude Max account')});else process.exit(2)`) });
   await assert.rejects(checkAuth(claude('oauth_token', 'https://example.invalid/anthropic', 'subscription'), root, py), { code: 'AUTH_REQUIRED' });
-  await assert.rejects(checkAuth(claude('claude.ai', 'https://example.invalid/anthropic', 'subscription'), root, py), { code: 'THIRD_PARTY_ENDPOINT' });
+  // A user-settings endpoint redirect is skipped by subscription runs, so it no longer blocks the claude.ai login.
+  await checkAuth(claude('claude.ai', 'https://example.invalid/anthropic', 'subscription'), root, py);
+  const subscriptionArgs = buildArguments(claude('claude.ai', null, 'subscription'), { id: 'claude-x' }, { kind: 'text', workspace: root });
+  assert.deepEqual(subscriptionArgs.slice(subscriptionArgs.indexOf('--setting-sources'), subscriptionArgs.indexOf('--setting-sources') + 2), ['--setting-sources', 'project,local']);
+  assert.ok(!buildArguments(claude('oauth_token', null, 'token_plan'), { id: 'x' }, { kind: 'text', workspace: root }).includes('--setting-sources'));
   await checkAuth(claude('claude.ai', null, 'subscription'), root, py);
   // When explicitly declared as token_plan, Claude Code redirected to a Coding Plan endpoint is allowed.
   await checkAuth(claude('oauth_token', 'https://example.invalid/anthropic', 'token_plan'), root, py);
@@ -192,6 +202,13 @@ test('OpenCode JSON events, free model catalog and custom API routes work with w
   const cat = await opencodeCatalog(freeRoute, root, py);
   assert.equal(cat.models.length, 1);
   assert.equal(cat.models[0].free, true);
+  const routerScript=path.join(root,'router.cjs');
+  writeFileSync(routerScript, `for(const [id,cost] of [['openrouter/vendor/free:free',0],['openrouter/vendor/paid',1]])console.log(id+'\\n'+JSON.stringify({cost:{input:cost,output:cost}}));`);
+  for(const billing of ['free','free_credits','token_plan','paid_api']) {
+    const models=(await opencodeCatalog({...freeRoute,executable:routerScript,billing},root,py)).models;
+    assert.deepEqual(models.map(model=>model.id),billing==='paid_api'?['openrouter/vendor/free:free','openrouter/vendor/paid']:['openrouter/vendor/free:free']);
+  }
+
   const apiRoute = { id: 'custom-openai', adapter: 'opencode', billing: 'token_plan', trustedSettings: true, executable: script, api: { protocol: 'openai', baseUrl: 'https://example.invalid/v1', secretRef: 'my-api' }, models: [{ id: 'qwen-max', alias: 'Qwen Max', group: 'api', efforts: [], kinds: ['text', 'read', 'write'] }] };
   await checkAuth(apiRoute, root, py, root);
   const outcome = await execute(apiRoute, apiRoute.models[0], { prompt: 'hello', workspace: root, kind: 'read', timeoutSeconds: 10 }, py, () => {}, root).done;
@@ -210,7 +227,7 @@ test('Qwen stream-json result envelope is parsed, errors fail and writes stay di
   const ok = script('ok', `[{type:'system',subtype:'init'},{type:'assistant',message:{role:'assistant',content:[{type:'text',text:p}]}},{type:'result',subtype:'success',is_error:false,result:'echo:'+p}]`);
   assert.deepEqual(await run(ok), { result: 'echo:say ok' });
   const failed = script('failed', `[{type:'result',subtype:'error_during_execution',is_error:true,error:{message:'x'}}]`);
-  assert.deepEqual(await run(failed), { error: 'CLI_FAILED' });
+  assert.equal((await run(failed)).error, 'CLI_FAILED');
   assert.throws(() => buildArguments({ adapter: 'qwen', executable: ok }, { id: 'm' }, { kind: 'write' }), { code: 'WRITE_NOT_SUPPORTED' });
 });
 
@@ -299,4 +316,22 @@ test('a hard parent exit closes the supervisor control pipe and kills the owned 
   const pid = Number(readFileSync(pidFile, 'utf8'));
   for (let i = 0; i < 100; i++) { try { process.kill(pid, 0); } catch { return; } await delay(20); }
   assert.fail('Owned CLI survived its parent');
+});
+
+test('obsolete workspace registrations do not block config loading or saving', t => {
+  const { root, config } = fixture(t);
+  config.workspaceRoots = [path.join(root, 'deleted-project')];
+  writeFileSync(path.join(root, 'config.json'), JSON.stringify(config));
+  assert.deepEqual(loadConfig(root).workspaceRoots, config.workspaceRoots);
+  const view = configView(root);
+  assert.doesNotThrow(() => saveConfig(root, view.config, view.revision));
+  assert.deepEqual(configSchema.parse({ routes: [] }).workspaceRoots, []);
+});
+
+test('runtime locator is shared across launch contexts and explicit override wins',t=>{
+ const {root}=fixture(t),canonical=path.join(root,'canonical'),locator=path.join(root,'.cli-agent-pool');mkdirSync(locator);writeFileSync(path.join(locator,'runtime-path'),canonical+'\n');
+ const script='import {dataDirectory} from '+JSON.stringify(new URL('../src/config.js',import.meta.url).href)+';console.log(dataDirectory())';
+ const env={...process.env,USERPROFILE:root,HOME:root,CLI_AGENT_POOL_HOME:''};
+ const result=spawnSync(process.execPath,['--input-type=module','-e',script],{env,encoding:'utf8',windowsHide:true});assert.equal(result.status,0,result.stderr);assert.equal(result.stdout.trim(),canonical);
+ const explicit=spawnSync(process.execPath,['--input-type=module','-e',script],{env:{...env,CLI_AGENT_POOL_HOME:root},encoding:'utf8',windowsHide:true});assert.equal(explicit.status,0,explicit.stderr);assert.equal(explicit.stdout.trim(),root);
 });

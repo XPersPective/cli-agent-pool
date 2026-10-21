@@ -217,3 +217,157 @@ Mevcut kullanıcı politikası yükseltme sırasında değiştirilmez.
 her iki seçim modu, düzenleme izni, havuz üyeliği ve sabit efor kaydı doğrulandı.
 Tarayıcı localStorage temizlendikten sonra yeniden yüklemede seçimler korundu;
 ayrı diskten yükleme regresyonu da eklendi.
+
+
+## 1.5.2 yerel giriş yönlendirmesi düzeltmesi
+
+20 Ekim 2026: MiniMax Code ve mmx giriş düğmeleri açık global bölgeyi kullanır;
+Kimi girişine de global bölge eklenmiştir. MiMo düğmesi doğrudan Xiaomi sağlayıcısını
+seçer. Kurulu native CLI yardımlarıyla seçenekler doğrulandı; giriş launcher testi
+her adaptörün gerçek argüman dizisini denetler. Qwen giriş komutu native etkileşimli
+`qwen` olarak korunur; eski OAuth/ücretli API fallback eklenmez.
+
+Yerel kullanıcı isteğiyle Qwen ayarlarının hook/MCP ve endpoint metadata incelemesi
+yapıldı; hook ve MCP bulunmadı, mevcut endpointler uluslararası token-plan adresleri.
+Yalnızca Qwen güven onayı kaydedildi; diğer bağlantıların güven kontrolleri gevşetilmedi.
+MiMo native giriş akışı platform.xiaomimimo.com üzerinden tarayıcı yetkilendirmesi
+sunuyor; anahtar elle yazmak zorunlu kabul edilmez. Hesap onayı tamamlanmadan
+başarılı giriş veya geçerli abonelik iddia edilmez. .com hostname sunucunun fiziksel
+bölgesini kanıtlamaz; MiMo için doğrulanmış bir bölge bayrağı yoktur.
+
+
+MiMo günlük kredi düzeltmesi: kullanıcı Desktop ödül/günlük kredisi kullandığını
+belirtti. Native giriş düğmesi sağlayıcıya sabitlenmez; `mimo providers login`
+menüsü MiMo Auto/free ve platform/API yöntemlerinin ayrımını korur. Yerel Pool
+ödeme bildirimi free_credits olarak düzeltildi. Bu değişiklik Desktop ödüllerinin
+CLI/API'ye taşınabildiğinin veya gerçek günlük bakiyenin doğrulandığının kanıtı
+değildir. Resmi README native MiMo Auto kanalını ayrı ve süreli ücretsiz kanal
+olarak tanımlar; platform OAuth ise geçerli plan veya platform bakiyesi ister.
+
+
+## 1.5.3 kota görünümü ve OpenRouter
+
+Kota bilgisine göre Tümü/Bilinen/Bilinmeyen filtresi hem havuz üyelerine hem model
+kataloğuna uygulanır. Model kapsamına uyan sayısal kalan kota bilinen sayılır;
+yüzde sıfır bilinendir, null/NaN/başka modele ait kota bilinmeyendir. Seçim diğer
+browser görünüm tercihleriyle saklanır; routing veya kullanıcı havuzları değişmez.
+Dar ekran, iki panel ve yeniden yükleme gerçek browser üzerinde doğrulandı.
+
+OpenRouter yerel OpenCode provider listesinde kayıtlıdır; bu tek başına geçerli
+anahtar/bakiye kanıtı değildir. Kullanıcı yalnızca ücretsiz kullanım istediği için
+OpenCode bağlantısı free olarak kaydedildi. Native katalogda sıfır giriş/çıkış
+fiyatı doğrulanan :free model için bir sabit kısa probe başlatıldı; başka modele
+replay veya ücretli fallback yok. Ücretli OpenRouter modellerini owner açıkça
+paid_api seçse bile dışlayan katalog koşulu düzeltildi; free/free_credits/token_plan
+üzerinden ücretli OpenRouter katalogları açılmaz. Dört billing modu regresyonla
+kontrol edilir. 55 node:test, syntax/secrets/audit geçti (0 bağımlılık açığı).
+
+
+OpenRouter gerçek probe sonucu: native katalogda ücretsiz olduğu doğrulanan model
+admission'dan geçti fakat TIMEOUT ile sonlandı; yanıt alınmadı. Giriş reddi veya
+başarılı native inference kanıtı yok. Görev tekrar edilmedi, ücretli fallback yok.
+OpenRouter sağlayıcı yürütmesinin neden yanıt vermediği açık takip işidir.
+
+
+## 1.5.4 yerel proje erişimi
+
+20 Ekim 2026: kullanıcı kararıyla Pool proje izin listesi kaldırıldı. CLI, MCP,
+yeniden başlayan kuyruk ve proje skill keşfi mevcut mutlak klasörleri kabul eder.
+CLI artık proje eklemek için owner yapılandırmasını yazmaz. Eski workspaceRoots
+yalnızca dosya biçimi uyumluluğu için okunur; silinmiş proje kaydı servisi engellemez.
+Katalog/kota sorguları runtime dizinini kullanır. Native CLI izinleri, görev kapsamı,
+canonical overlap kilidi, karantina ve izole kart testi sınırları korunur.
+
+57 node:test geçti; kayıtsız MCP/CLI yürütmesi, yapılandırmanın değişmemesi,
+geçersiz dosya/yol, junction canonicalization ve eski kayıtlar kontrol edildi.
+Sözdizimi, secrets ve npm audit kontrolleri geçti (0 bağımlılık açığı).
+
+Kurulu global paket ve çalışan servis 1.5.4 olarak doğrulandı. Aktif görev/çocuk
+süreç yokken servis yenilendi. Gerçek chatimus yolu canlı MCP admission denetimini
+geçti; var olmayan test rotası NO_ROUTE ile durdu, model çağrısı yapılmadı.
+Skills Manager yerel kaynaktan güncellendi ve mevcut 41 ajan dağıtımı doğrulandı.
+Setup helper global npm kurulumunda timeout verdi; paket doğrudan npm ile kuruldu.
+Bu bakım sırasında commit veya push yapılmadı.
+
+
+## 1.5.8 Windows panel baslatma ve singleton
+
+20 Ekim 2026: gercek kisayol hatasi DAEMON_IDENTITY_CONFLICT olarak yakalandi.
+Codex MSIX LocalAppData sanallastirmasi nedeniyle ayni mantiksal yol desktop
+ve Codex baglaminda farkli token/config dosyalarina gidiyordu. Native GUI
+baslaticisi runtime dizinini kendi fiziksel exe konumundan alir; Node ensure
+ciktisini UTF-8 pipe ile okur, SQLite uyarisini JSON hatasindan ayirir.
+VBScript yerine iki Windows kisayolu bu helper'i kullanir. Ayni runtime icin
+named mutex ve profil kapsamli pencere kesfi tekrar tiklamada mevcut pencereyi
+one getirir, ek Pool pencerelerini kapatir. Kisisel browser ve worker'lar ayridir.
+
+58 node:test, syntax/secrets/audit gecti; native kaynak kurulu .NET compiler ile
+derlendi. Panel kapaliyken kisayol exit 0, gorunur Pool penceresi ve uc
+eszamanli kisayol cagrisinda tek pencere dogrulandi. Onceki Computer Use denemeleri fiziksel Escape sinyaliyle kesildi. Iki Antigravity aboneligi icin hesap izolasyonu
+eklenmedi. Kota kaynagi Gemini ve Claude/GPT gruplarini veriyor; Argon grubu
+bulunmadigi icin bu kaynaktan Argon bakiyesi dogrulanamaz.
+
+Gercek UI kontrolu tamamlandi: panel Alt+F4 ile kapatildi; Explorer Masaustu
+klasorundeki CLI Agent Pool simgesine sky.click(click_count:2) ile tiklandi.
+MSEdge CLI Agent Pool penceresi olustu. Ikinci gercek cift tiklamada ayni tek
+pencere kaldi. DAEMON_IDENTITY_CONFLICT kaydi MSIX fiziksel runtime duzeltmesinin
+kokusudur; SQLite ExperimentalWarning tek basina acilis hatasi degildir.
+1.5.8 global paket ve yeni native kisayollar kuruldu; commit/push yapilmadi.
+
+
+## 1.5.9 gercek isci sonuclari ve ortak runtime
+
+21 Ekim 2026: Antigravity event/step_update/result protokolu gercek kayittan
+dogrulandi. Native SUCCESS, tool_info.error icindeki izin reddini ortmuyordu;
+artik PERMISSION_REQUIRED donuyor ve yazma sonucu inceleme gerektiriyor. Ham
+NDJSON bir ajan yaniti olarak basarili sayilmiyor. Runtime ayarinda Antigravity
+modellerinin write yetenegi kaldirildi; native deny kurallari degistirilmedi.
+
+Tek fiziksel runtime user-profile locator ile paylasiliyor. Eski kabul kayitlari
+ve karantinalar korunuyor. Kuyruk yaniti inceleme kilidini ve engelleyen gorevi
+acikliyor. autoSelect:false tum billing turleri icin otomatik secimden disliyor;
+ajanlar basarisiz testi route pinleyerek asmayacak sekilde skill guncellendi.
+
+Gercek kisa testler: Codex Astra metin yaniti ve izole klasorde probe.txt yazma
+icerigi dogrulandi. Antigravity Sonnet metin yaniti alindi; yazma izinleri reddediliyor.
+Kimi saglayicisi mevcut aboneligin Code erisimi olmadigini 403 ile bildirdi;
+SUBSCRIPTION_REQUIRED siniflandirmasi eklendi. Claude/ZCode CLI_FAILED, Qwen ve
+MiniMax Code 20 saniyelik testte TIMEOUT, MiMo QUOTA_EXHAUSTED dondu. MMX icin
+atanmis test modeli yok. Bu baglantilar otomatik secimden cikarildi; ucretli
+API inference testi veya ucretli fallback yapilmadi. Yeni yazma gorevleri icin
+medium havuzunda dogrulanmis uygun baglanti yoksa NO_ROUTE donuyor; guc grubu
+sessizce yukseltilmiyor. Bu saglayicilar calisiyor diye ilan edilmedi.
+
+Son kontroller: 62 node:test, syntax/secrets/audit gecti. Codex yazma probunun
+dosya icerigi gercekten OK olarak okundu. Antigravity dosya okuma probu 20 saniyede
+TIMEOUT verdi; su an yalnizca text yetenegi acik birakildi. Yerel canli kontrol
+sonuclari runtime icinde tutulur; proje kodu veya task promptu Git
+e eklenmedi.
+
+
+## 1.6.0 kendi kota katmani ve CLI duzeltmeleri
+
+21 Ekim 2026: harici cclimits bagimliligi kaldirildi. `src/quotas.js` Claude OAuth
+kullanimi, Z.AI monitor, Antigravity Cloud Code (Windows Kimlik Bilgisi Yoneticisi
+salt okunur), Kimi Code, MiniMax Coding Plan ve OpenRouter anahtar/bakiye sorgularini
+kendisi yapar. Kimlik bilgisi CLI deposundan yalnizca bellekte okunur; yenilenen jeton
+geri yazilmaz. Suresi dolan jeton "giris gerekli" sayilmaz; yalnizca oturum yoksa sayilir.
+Kullanici API rotalarinda Z.AI/BigModel, OpenRouter ve MiniMax anahtar kotasi okunur.
+
+Kok nedenler ve duzeltmeler (gercek CLI ile dogrulandi, her biri "OK" yaniti verdi):
+- Claude: kullanici settings.json DashScope'a yonlendiriyordu; abonelik rotasi artik
+  `--setting-sources project,local` ile claude.ai Pro uzerinden calisir.
+- ZCode 0.17: `-p` saglayici katalogunu bulamiyordu ve `--output-format` secenegi yok.
+  `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE` + `--json` kullanilir. `-p` model secemedigi icin
+  katalog tek "ZCode varsayilan modeli" gosterir. Kullanici yetkisiyle ZCode'un kendi
+  `zai-api` saglayicisina Lite planli anahtar ZCode'un eski config.json kaydindan tasindi
+  (yedek: provider_config.json.bak-pool-20261021); Pool'a anahtar kopyalanmadi.
+- MiniMax Code: exec olay semasi ayristirilir (agent_message / exec.completed).
+- OpenCode/MiMo: `summary` alt ajan oldugu icin metin gorevleri `plan` ajaniyla calisir.
+- Hata kodlarinin yanina maskeli kisa saglayici mesaji `error_detail` olayi olarak eklenir.
+
+Hesap kaynakli acik engeller (kod hatasi degil): Kimi aboneligi Kimi Code icermiyor (403,
+kota yaniti bos); MiMo Xiaomi API bakiyesi yetersiz (402) ve ucretsiz MiMo Auto kapandi;
+mmx'te etkin token plan yok ve bakiye bitmis (1008); OpenRouter bakiyesi negatif, ucretsiz
+modeller gunluk 50 istekle sinirli. Antigravity kota servisi Argon icin deger bildirmiyor.
+Meta Muse Code bu makinede kurulu degil; yerlesik adaptor uydurulmadi.

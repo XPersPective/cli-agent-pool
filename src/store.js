@@ -28,7 +28,7 @@ export class Store {
   get(id) { return this.db.prepare('SELECT * FROM tasks WHERE id=?').get(id); }
   list(limit = 50, offset = 0, activeFirst = false) { return this.db.prepare("SELECT id,state,created,updated,error,workspace,json_extract(request,'$.routeId') AS routeId,json_extract(request,'$.modelId') AS modelId,json_extract(request,'$.kind') AS kind,json_extract(request,'$.group') AS 'group',json_extract(request,'$.effort') AS effort,json_extract(request,'$.clientLabel') AS clientLabel FROM tasks ORDER BY "+(activeFirst?"state IN ('queued','starting','running','cancelling') DESC, ":'')+"created DESC, rowid DESC LIMIT ? OFFSET ?").all(limit, offset); }
   queued() { return this.db.prepare("SELECT * FROM tasks WHERE state='queued' ORDER BY created, rowid").all(); }
-  held() { return this.db.prepare("SELECT workspace FROM tasks WHERE state IN ('starting','running','cancelling','needs_review')").all(); }
+  held() { return this.db.prepare("SELECT id,state,workspace FROM tasks WHERE state IN ('starting','running','cancelling','needs_review')").all(); }
   insert(task) {
     const now = new Date().toISOString();
     this.db.prepare('INSERT INTO tasks(id,key,fingerprint,state,workspace,request,created,updated) VALUES(?,?,?,?,?,?,?,?)')

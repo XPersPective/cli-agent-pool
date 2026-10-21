@@ -74,6 +74,12 @@ export function quotaWindows(snapshot, modelId = '') {
   });
 }
 
+export function quotaMatches(snapshot, modelId, mode = 'all') {
+  if (mode === 'all') return true;
+  const known = quotaWindows(snapshot, modelId).length > 0;
+  return mode === 'known' ? known : !known;
+}
+
 export function quotaApplies(window, modelId = '') {
   const id=modelId.toLowerCase();
   return !id || !window.models?.length || window.models.some(scope => ['gemini-flash','gemini-pro'].includes(scope) ? id.includes('gemini') && id.includes(scope.slice(7)) : id.includes(scope.toLowerCase()));
@@ -103,4 +109,4 @@ export function initialTaskGroup(models, mode, previous, initialized = false) {
   return ['high','medium','low'].find(group => models.some(model => model.enabled && model.group === group)) || 'high';
 }
 
-export function restoredWorkspace(saved, roots) { return typeof saved === 'string' && roots.includes(saved) ? saved : ''; }
+export function restoredWorkspace(saved) { return typeof saved === 'string' ? saved : ''; }

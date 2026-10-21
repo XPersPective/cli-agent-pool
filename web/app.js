@@ -1,4 +1,4 @@
-import { memberships, mergeScanDraft, addMembership, modelSaveConfig, preferenceSaveConfig, quotaWindows, effortLabel, modelIdentity, modelFamily, modelFiltered, sortModels } from '/pool-state.js';
+import { memberships, mergeScanDraft, addMembership, modelSaveConfig, preferenceSaveConfig, quotaWindows, quotaMatches, effortLabel, modelIdentity, modelFamily, modelFiltered, sortModels } from '/pool-state.js';
 const $ = id => document.getElementById(id);
 const labels = { queued: 'Sırada', starting: 'Başlatılıyor', running: 'Çalışıyor', succeeded: 'Tamamlandı', failed: 'Başarısız', timed_out: 'Süre doldu', cancelling: 'Durduruluyor', cancelled: 'Durduruldu', needs_review: 'Elle inceleme gerekli' };
 const billingLabels = { subscription: 'Abonelik', token_plan: 'Token planı', free_credits: 'Günlük / ücretsiz kredi', free: 'Ücretsiz', paid_api: 'Ücretli API', unknown: 'Doğrulanmadı' };
@@ -27,7 +27,7 @@ for (const [key,value] of Object.entries(viewPreferences.quotaStates || {})) if 
 function rememberView() {
   try { localStorage.setItem('pool-view', JSON.stringify({ ...viewPreferences, selectedRoute, selectedFamily, selectedGroup, quotasOpen, quotaStates: Object.fromEntries(quotaStates) })); } catch { /* Current-page choices still work. */ }
 }
-for (const id of ['catalog-view','catalog-sort','member-view']) {
+for (const id of ['catalog-view','catalog-sort','member-view','quota-filter']) {
   if ([...$(id).options].some(option => option.value === viewPreferences[id])) $(id).value = viewPreferences[id];
   $(id).addEventListener('change', () => { viewPreferences[id] = $(id).value; rememberView(); $('pool-models').scrollTop = 0; renderPool(); });
 }
@@ -110,6 +110,10 @@ function showDetail(value) {
 }
 function button(text, operation) { const node = element('button', text); node.type = 'button'; node.disabled = busy; node.addEventListener('click', () => void action(operation)); return node; }
 function formatQuotaSummary(conn, q) {
+  const text = formatQuotaText(conn, q);
+  return q?.note && !text.includes(q.note) ? `${text} · ${q.note}` : text;
+}
+function formatQuotaText(conn, q) {
   if (!q) return conn.protocol ? `${conn.protocol.toUpperCase()} API · ${conn.baseUrl}` : `Giriş komutu: ${conn.loginCommand || conn.adapter}`;
   if (q.status === 'unknown' && !q.windows?.length) return 'Kota bilgisi bu bağlantıda bilinmiyor';
   if (q.status === 'auth_required') return `Giriş gerekli: terminalde "${q.loginCommand || conn.loginCommand}" çalıştırın`;
@@ -216,11 +220,11 @@ function renderSettings() {
       enabled.disabled = !activeBillings.has(value);
       enabled.dataset.locked = String(!activeBillings.has(value));
     }, billingChoices));
-    if (route.billing === 'paid_api') {
+    {
       const autoLabel = element('label', null, 'route-header'); const autoCheck = document.createElement('input');
-      autoCheck.type = 'checkbox'; autoCheck.checked = Boolean(route.autoSelect);
+      autoCheck.type = 'checkbox'; autoCheck.checked = route.autoSelect ?? route.billing !== 'paid_api';
       autoCheck.addEventListener('change', () => { route.autoSelect = autoCheck.checked; });
-      autoLabel.append(autoCheck, element('span', 'Ücretli API’nin otomatik model seçimine girmesine izin ver')); body.append(autoLabel);
+      autoLabel.append(autoCheck, element('span', route.billing === 'paid_api' ? 'Ücretli API’nin otomatik model seçimine girmesine izin ver' : 'Bu bağlantıyı otomatik model seçiminde kullan')); body.append(autoLabel);
     }
     if (route.api) {
       body.append(settingField('API adresi', route.api.baseUrl, value => { route.api.baseUrl = value; }));
@@ -410,6 +414,7 @@ function quotaBody(q, modelId = '', error) {
     const bar = document.createElement('progress'); bar.max = 100; bar.value = window.remaining; bar.setAttribute('aria-label', `${name} kalan kota`);
     line.append(heading, bar, element('small', `%${window.used.toFixed(0)} kullanıldı${window.resetsAt ? ` · Yenilenme: ${new Date(typeof window.resetsAt === 'number' && window.resetsAt < 1e12 ? window.resetsAt * 1000 : window.resetsAt).toLocaleString('tr-TR')}` : ''}`)); cell.append(line);
   }
+  if (q?.note) cell.append(element('small', q.note, 'quota-note'));
   if (!windows.length) cell.append(element('p', error || (quotasRefreshing ? 'Kota sorgulanıyor…' : q?.status === 'auth_required' ? 'Giriş gerekli' : q ? 'Sağlayıcı yüzde kotası bildirmiyor' : 'Kota henüz sorgulanmadı'), 'hint'));
   if (windows.length) cell.append(element('small', `${q.scope === 'model' ? 'Model kotası' : 'Hesap kotası'}${q.observedAt ? ` · Ölçüm: ${new Date(q.observedAt).toLocaleTimeString('tr-TR')}` : ''}${Date.now() - Date.parse(q.observedAt) >= 60000 ? ' · eski ölçüm' : ''}${error ? ' · son sorgu başarısız' : ''}`, 'quota-stamp'));
   return cell;
@@ -429,7 +434,7 @@ function renderPool() {
   $('grouping-mode').value = settings.config.groupingMode;
   updateSave();
   $('group-summary').replaceChildren(...strengthGroups.map(group => {
-    const count = settings.config.routes.reduce((total, route) => total + route.models.filter(model => !modelFiltered(settings.config.modelFilters, route.id, model.id) && memberships(model).some(member => member.group === group)).length, 0);
+    const count = settings.config.routes.reduce((total, route) => total + route.models.filter(model => !modelFiltered(settings.config.modelFilters, route.id, model.id) && quotaMatches(snapshot?.quotas?.[route.id], model.id, $('quota-filter').value) && memberships(model).some(member => member.group === group)).length, 0);
     const card = element('button', null, `group-card group-${group}`); card.type = 'button'; card.setAttribute('aria-pressed', String(selectedGroup === group));
     card.append(element('strong', groupLabel(group)), element('span', `${count} model`));
     card.addEventListener('click', () => { selectedGroup = group; rememberView(); renderPool(); }); return card;
@@ -438,14 +443,14 @@ function renderPool() {
   $('filter-count').textContent = settings.config.modelFilters?.length || 0;
   const memberScroll = $('pool-members').scrollLeft, memberTop = $('pool-members').scrollTop;
   const rows = [];
-  const entries = sortModels(settings.config.routes.flatMap(route => route.models.filter(model => !modelFiltered(settings.config.modelFilters, route.id, model.id)).map(model => ({route, model}))), 'az', $('member-view').value === 'family');
+  const entries = sortModels(settings.config.routes.flatMap(route => route.models.filter(model => !modelFiltered(settings.config.modelFilters, route.id, model.id) && quotaMatches(snapshot?.quotas?.[route.id], model.id, $('quota-filter').value)).map(model => ({route, model}))), 'az', $('member-view').value === 'family');
   if ($('member-view').value === 'route') entries.sort((a,b) => a.route.id.localeCompare(b.route.id));
   for (const {route,model} of entries) {
     const member = memberships(model).find(item => item.group === selectedGroup);
     if (!member) continue;
     rows.push(modelCard(route,model,member));
   }
-  $('pool-members').replaceChildren(...(rows.length ? rows : [element('p', `Bu havuz boş. Aşağıdan Codex, Claude veya başka bir araç seçip modelleri ekleyin.`, 'empty')]));
+  $('pool-members').replaceChildren(...(rows.length ? rows : [element('p', `Bu görünümde model yok. Kota filtresini kontrol edin veya aşağıdaki katalogdan model ekleyin.`, 'empty')]));
   $('pool-members').scrollLeft = memberScroll; $('pool-members').scrollTop = memberTop;
   renderCatalog();
 }
@@ -459,7 +464,7 @@ function renderCatalog() {
   if (!settings) return;
   const scroll = $('pool-models').scrollTop;
   const routes = settings.config.routes;
-  const all = routes.flatMap(route => route.models.filter(model => !modelFiltered(settings.config.modelFilters, route.id, model.id)).map(model => ({route,model})));
+  const all = routes.flatMap(route => route.models.filter(model => !modelFiltered(settings.config.modelFilters, route.id, model.id) && quotaMatches(snapshot?.quotas?.[route.id], model.id, $('quota-filter').value)).map(model => ({route,model})));
   const byFamily = $('catalog-view').value === 'family';
   if (!routes.some(route => route.id === selectedRoute)) selectedRoute = routes.find(route => route.adapter === 'codex')?.id || routes[0]?.id || '';
   const families = [...new Set(all.map(({model}) => modelFamily(model.id)))].sort();
@@ -603,11 +608,11 @@ $('refresh-quotas').addEventListener('click', () => { void refreshQuotas(); });
 const activeStates = new Set(['queued', 'starting', 'running', 'cancelling']);
 function taskDetails(task) {
   const metadata = element('dl', null, 'call-metadata');
-  for (const [label, value] of [['Durum', labels[task.state] || task.state], ['İstemci', task.clientLabel || 'Bilinmeyen istemci'], ['Bağlantı', task.routeId], ['Model', task.modelId], ['Havuz', groupLabel(task.group)], ['Efor', effortLabel(task.effort)], ['Başlangıç', new Date(task.created).toLocaleString('tr-TR')], ['Çalışma klasörü', task.workspace], ['CLI’ın bildirdiği model', task.reportedModel]]) {
+  for (const [label, value] of [['Durum', labels[task.state] || task.state], ['Bekleme nedeni', ({WORKSPACE_REVIEW_REQUIRED:'Önceki dosya değişikliklerinin incelenmesi bekleniyor',WORKSPACE_BUSY:'Çalışma klasöründe başka bir iş var',WORKER_LIMIT:'Boş işçi bekleniyor'})[task.queueReason]], ['Engelleyen görev', task.blockedBy], ['İstemci', task.clientLabel || 'Bilinmeyen istemci'], ['Bağlantı', task.routeId], ['Model', task.modelId], ['Havuz', groupLabel(task.group)], ['Efor', effortLabel(task.effort)], ['Başlangıç', new Date(task.created).toLocaleString('tr-TR')], ['Çalışma klasörü', task.workspace], ['CLI’ın bildirdiği model', task.reportedModel]]) {
     if (value) metadata.append(element('dt', label), element('dd', value));
   }
-  const errors={AUTH_REQUIRED:'CLI oturumu veya sağlayıcı anahtarı doğrulanamadı. Giriş durumunu kontrol edin.',PROVIDER_RESTRICTION:'Sağlayıcı bu CLI erişim yolunu kabul etmiyor. Ücretli başka bir yola otomatik geçilmedi.',QUOTA_EXHAUSTED:'Sağlayıcı kota veya bakiye sınırı bildirdi.',MODEL_UNAVAILABLE:'Seçilen model bu sağlayıcıda kullanılamıyor. Kataloğu yenileyin.',PERMISSION_REQUIRED:'CLI çalışma alanı veya izin onayı gerekiyor.',SETTINGS_NOT_TRUSTED:'Yerel CLI ayarları henüz doğrulanmadı. Bağlantı ayarlarını kontrol edin.',CLI_FAILED:'CLI çağrısı başarısız oldu; sağlayıcı veya CLI kurulumunu kontrol edin.'};
-  const result = task.historyExpired?'Bu çağrının ayrıntıları saklama süresi dolduğu için temizlendi.':task.result || errors[task.error] || task.error || (activeStates.has(task.state) ? 'Çağrı devam ediyor; sonuç burada güncellenecek.' : 'Bu çağrı sonuç metni bildirmedi.');
+  const errors={SUBSCRIPTION_REQUIRED:'Bu CLI için gerekli etkin abonelik/plan doğrulanamadı.',AUTH_REQUIRED:'CLI oturumu veya sağlayıcı anahtarı doğrulanamadı. Giriş durumunu kontrol edin.',PROVIDER_RESTRICTION:'Sağlayıcı bu CLI erişim yolunu kabul etmiyor. Ücretli başka bir yola otomatik geçilmedi.',QUOTA_EXHAUSTED:'Sağlayıcı kota veya bakiye sınırı bildirdi.',MODEL_UNAVAILABLE:'Seçilen model bu sağlayıcıda kullanılamıyor. Kataloğu yenileyin.',PERMISSION_REQUIRED:'CLI çalışma alanı veya izin onayı gerekiyor.',SETTINGS_NOT_TRUSTED:'Yerel CLI ayarları henüz doğrulanmadı. Bağlantı ayarlarını kontrol edin.',CLI_FAILED:'CLI çağrısı başarısız oldu; sağlayıcı veya CLI kurulumunu kontrol edin.'};
+  const result = task.historyExpired?'Bu çağrının ayrıntıları saklama süresi dolduğu için temizlendi.':task.result || errors[task.error] || task.error || (task.queueReason === 'WORKSPACE_REVIEW_REQUIRED' ? 'İşçi başlamadı: önceki yazma görevinin dosya incelemesi bekleniyor.' : activeStates.has(task.state) ? 'Çağrı devam ediyor; sonuç burada güncellenecek.' : 'Bu çağrı sonuç metni bildirmedi.');
   const nodes = [metadata, element('h3', 'İstek'), element('div', task.prompt || 'İstek metni bulunmuyor.', 'call-text'), element('h3', 'Yanıt'), element('div', result, `call-text${task.error ? ' call-error' : ''}`)];
   if (task.events?.length) {
     const events = element('details', null, 'call-events'); events.append(element('summary', 'İşlem adımları'));

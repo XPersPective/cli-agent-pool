@@ -5,6 +5,7 @@ import path from 'node:path';
 import { capture, runProcess } from './process.js';
 import { PoolError, redact, activeBillings, dataDirectory } from './config.js';
 import { loadSecret, hasSecret } from './secrets-store.js';
+import { claudeQuota, zaiQuota, antigravityQuota, kimiQuota, minimaxQuota, minimaxWindows, openrouterQuota, apiRouteQuota } from './quotas.js';
 
 export const adapterSpecs = [
   { adapter: 'codex', label: 'OpenAI Codex CLI', binaries: ['codex'], pkg: '@openai/codex', defaultBilling: 'subscription', loginCommand: 'codex login' },
@@ -12,9 +13,9 @@ export const adapterSpecs = [
   { adapter: 'opencode', label: 'OpenCode CLI', binaries: ['opencode'], pkg: 'opencode-ai', defaultBilling: 'free', loginCommand: 'opencode providers login' },
   { adapter: 'zcode', label: 'ZCode / Z.AI (GLM)', binaries: ['zcode'], pkg: null, defaultBilling: 'token_plan', loginCommand: 'zcode login zai' },
   { adapter: 'qwen', label: 'Qwen Code CLI', binaries: ['qwen'], pkg: '@qwen-code/qwen-code', defaultBilling: 'token_plan', loginCommand: 'qwen' },
-  { adapter: 'mcode', label: 'MiniMax Code (mcode)', binaries: ['mcode'], pkg: '@minimax-ai/code', defaultBilling: 'token_plan', loginCommand: 'mcode login' },
-  { adapter: 'mmx', label: 'MiniMax CLI (mmx)', binaries: ['mmx'], pkg: 'mmx-cli', defaultBilling: 'free_credits', loginCommand: 'mmx auth login' },
-  { adapter: 'kimi', label: 'Moonshot Kimi Code', binaries: ['kimi'], pkg: null, defaultBilling: 'token_plan', loginCommand: 'kimi login' },
+  { adapter: 'mcode', label: 'MiniMax Code (mcode)', binaries: ['mcode'], pkg: '@minimax-ai/code', defaultBilling: 'token_plan', loginCommand: 'mcode login --region global' },
+  { adapter: 'mmx', label: 'MiniMax CLI (mmx)', binaries: ['mmx'], pkg: 'mmx-cli', defaultBilling: 'free_credits', loginCommand: 'mmx auth login --recommend --region=global' },
+  { adapter: 'kimi', label: 'Moonshot Kimi Code', binaries: ['kimi'], pkg: null, defaultBilling: 'token_plan', loginCommand: 'kimi login --region global' },
   { adapter: 'mimo', label: 'Xiaomi MiMoCode', binaries: ['mimo'], pkg: '@mimo-ai/cli', defaultBilling: 'token_plan', loginCommand: 'mimo providers login' },
   { adapter: 'agy', label: 'Google Antigravity CLI', binaries: ['agy', 'antigravity'], pkg: null, defaultBilling: 'subscription', loginCommand: 'agy' },
   { adapter: 'omniroute', label: 'OmniRoute Gateway CLI', binaries: ['omniroute'], pkg: 'omniroute', defaultBilling: 'token_plan', loginCommand: 'omniroute' },
@@ -160,22 +161,8 @@ export function localModelsFor(adapter) {
   };
 
   if (adapter === 'zcode') {
-    const cfg = readJsonSafe(path.join(home, '.zcode', 'v2', 'config.json'));
-    const providers = cfg.provider && typeof cfg.provider === 'object' ? cfg.provider : {};
-    for (const [provKey, provVal] of Object.entries(providers)) {
-      if (!provVal || typeof provVal !== 'object' || provVal.enabled === false) continue;
-      const provModels = provVal.models && typeof provVal.models === 'object' ? provVal.models : {};
-      for (const [mKey, mVal] of Object.entries(provModels)) {
-        const fullId = `${provKey}/${mKey}`;
-        const isFree = /:free$|-free$/i.test(fullId);
-        const label = mVal?.name ? `${mVal.name} (${provKey.replace(/^builtin:/, '')})` : fullId;
-        add(fullId, label, isFree ? 'free' : 'zai-plan', [], ['text', 'read', 'write'], isFree);
-      }
-    }
-    if (!models.length) {
-      add('builtin:zai-coding-plan/GLM-5.3', 'GLM-5.3 (Z.AI Coding Plan)', 'zai-plan');
-      add('builtin:zai-coding-plan/GLM-5.3-Flash', 'GLM-5.3-Flash (Z.AI Coding Plan)', 'zai-plan');
-    }
+    // Headless ZCode cannot pick a model per call; expose exactly what it will run.
+    add('zcode-default', 'ZCode varsayılan modeli (ZCode içinde seçilen GLM)', 'zai-plan');
   } else if (adapter === 'qwen') {
     const cfg = readJsonSafe(path.join(home, '.qwen', 'settings.json'));
     const selectedName = cfg.model?.name;
@@ -364,6 +351,8 @@ export function routeEnvironment(route, directory = dataDirectory(), taskKind = 
         },
       });
     }
+  } else if (route.adapter === 'zcode') {
+    Object.assign(extra, zcodeEnvironment(route.executable));
   } else if (route.adapter === 'opencode' || route.adapter === 'mimo') {
     const permission = taskKind === 'write'
       ? { question: 'deny', external_directory: 'deny' }
@@ -371,6 +360,17 @@ export function routeEnvironment(route, directory = dataDirectory(), taskKind = 
     extra.OPENCODE_CONFIG_CONTENT = JSON.stringify({ permission });
   }
   return extra;
+}
+
+// A claude.ai subscription route skips user settings so an env redirect there cannot reroute or bill it elsewhere.
+export function claudeSettingSources(route) {
+  return route.api ? ['--setting-sources', 'user'] : route.billing === 'subscription' ? ['--setting-sources', 'project,local'] : [];
+}
+
+// ZCode 0.17 locates its bundled provider catalog relative to the desktop install; headless runs need it explicitly.
+export function zcodeEnvironment(executable, home = homedir()) {
+  const bundled = path.resolve(path.dirname(executable), '..', 'config', 'provider', 'zcode-builtin.json');
+  return existsSync(bundled) ? { ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: bundled, ZCODE_PERSONAL_PROVIDER_CONFIG_FILE: path.join(home, '.zcode', 'v2', 'provider_config.json') } : {};
 }
 
 export function buildArguments(route, model, task) {
@@ -382,9 +382,10 @@ export function buildArguments(route, model, task) {
     return [...argv, ...built];
   }
   if (route.adapter === 'codex') return [...argv, '-a', 'never', 'exec', '--ignore-user-config', '--ephemeral', '--skip-git-repo-check', '--json', '--sandbox', task.kind === 'write' ? 'workspace-write' : 'read-only', '-C', task.workspace, ...(process.platform === 'win32' ? ['-c', 'windows.sandbox="elevated"'] : []), '-c', 'model_provider="openai"', '-m', model.id, ...(effort ? ['-c', `model_reasoning_effort=${JSON.stringify(effort)}`] : []), '-'];
-  if (route.adapter === 'claude') return [...argv, '-p', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--permission-mode', task.kind === 'write' ? 'acceptEdits' : 'dontAsk', '--permission-prompts', 'none', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--disable-slash-commands', ...(route.api ? ['--setting-sources', 'user'] : []), '--tools', task.kind === 'text' ? '' : task.kind === 'read' ? 'Read,Glob,Grep' : 'Read,Glob,Grep,Edit,Write', '--model', model.id, ...(effort ? ['--effort', effort] : [])];
-  if (route.adapter === 'opencode' || route.adapter === 'mimo') return [...argv, 'run', '--format', 'json', '--pure', '-m', opencodeModelId(route, model.id), '--agent', task.kind === 'text' ? 'summary' : task.kind === 'read' ? 'plan' : 'build', ...(effort ? ['--variant', effort] : [])];
-  if (route.adapter === 'zcode') return [...argv, '--cwd', task.workspace, '--mode', task.kind === 'write' ? 'edit' : 'plan', '--disallowed-tools', task.kind === 'write' ? 'Bash' : 'Bash,Edit,Write', '--output-format', 'stream-json', '--no-color', '-p', task.prompt];
+  if (route.adapter === 'claude') return [...argv, '-p', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--permission-mode', task.kind === 'write' ? 'acceptEdits' : 'dontAsk', '--permission-prompts', 'none', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--disable-slash-commands', ...claudeSettingSources(route), '--tools', task.kind === 'text' ? '' : task.kind === 'read' ? 'Read,Glob,Grep' : 'Read,Glob,Grep,Edit,Write', '--model', model.id, ...(effort ? ['--effort', effort] : [])];
+  if (route.adapter === 'opencode' || route.adapter === 'mimo') return [...argv, 'run', '--format', 'json', '--pure', '-m', opencodeModelId(route, model.id), '--agent', task.kind === 'write' ? 'build' : 'plan', ...(effort ? ['--variant', effort] : [])];
+  // ZCode -p has no model flag: it runs the default model selected in ZCode itself.
+  if (route.adapter === 'zcode') return [...argv, '--cwd', task.workspace, '--mode', task.kind === 'write' ? 'edit' : 'plan', '--disallowed-tools', task.kind === 'write' ? 'Bash' : 'Bash,Edit,Write', '--json', '--no-color', '-p', task.prompt];
   if (route.adapter === 'mcode') return [...argv, 'exec', '--input', '-', '--cwd', task.workspace, '--model', model.id, '--prompt-mode', 'coding', '--permission', task.kind === 'write' ? 'full' : 'smart', '--mode', 'lightweight', '--output-format', 'stream-json', ...(effort ? ['--effort', effort] : [])];
   if (route.adapter === 'kimi') return [...argv, '-m', model.id, '--output-format', 'stream-json', ...(task.kind === 'write' ? ['--auto'] : []), '-p', task.prompt];
   if (route.adapter === 'agy') {
@@ -421,13 +422,8 @@ export async function checkAuth(route, cwd, python, directory = dataDirectory())
     let status;
     try { status = JSON.parse(result.output); } catch { /* Fail closed on CLI protocol drift. */ }
     if (result.code !== 0 || !status?.loggedIn) throw new PoolError('AUTH_REQUIRED', `Claude Code içinde giriş yapın (${loginCommands.claude}).`);
-    const text = await capture([...argv, 'auth', 'status', '--text'], cwd, python);
-    const endpoint = /base URL:\s*(\S+)/i.exec(text.output + text.stderr)?.[1];
-    const thirdParty = endpoint && !/^https:\/\/api\.anthropic\.com\/?$/i.test(endpoint);
-    if (route.billing === 'subscription') {
-      if (status.authMethod !== 'claude.ai') throw new PoolError('AUTH_REQUIRED', `Claude aboneliği için claude.ai hesabıyla giriş yapın (${loginCommands.claude}) veya bağlantı ödeme türünü token_plan / paid_api olarak seçin.`);
-      if (text.code !== 0 || thirdParty) throw new PoolError('THIRD_PARTY_ENDPOINT', 'Claude Code başka bir API adresine yönlendirilmiş. Bu bağlantıyı kullanmak için ödeme türünü token_plan veya paid_api olarak ayarlayın.');
-    }
+    // Subscription runs skip user settings (claudeSettingSources), so a user-level endpoint redirect cannot bill elsewhere.
+    if (route.billing === 'subscription' && status.authMethod !== 'claude.ai') throw new PoolError('AUTH_REQUIRED', `Claude aboneliği için claude.ai hesabıyla giriş yapın (${loginCommands.claude}) veya bağlantı ödeme türünü token_plan / paid_api olarak seçin.`);
   } else if (route.adapter === 'opencode' || route.adapter === 'mimo' || route.adapter === 'lmstudio' || route.adapter === 'ollama') {
     if (route.billing !== 'free' && !route.trustedSettings) throw new PoolError('SETTINGS_NOT_TRUSTED', 'Yerel CLI ayarları incelenerek trustedSettings etkinleştirilmeli.');
   } else {
@@ -442,7 +438,17 @@ export async function checkAuth(route, cwd, python, directory = dataDirectory())
   }
 }
 
-const strictJsonlAdapters = new Set(['codex', 'claude', 'qwen', 'opencode', 'mimo']);
+export function classifyFailure(message) {
+  if (/current subscription does not have access|active subscription (?:is )?required|no resource package|\b1113\b/i.test(message)) return 'SUBSCRIPTION_REQUIRED';
+  if (/only.*(?:within|official)|unsupported client|client.*not allowed/i.test(message)) return 'PROVIDER_RESTRICTION';
+  if (/unauthorized|not logged|login required|token expired|invalid.{0,20}(?:api.?key|token)|\b401\b/i.test(message)) return 'AUTH_REQUIRED';
+  if (/rate.?limit|quota|insufficient.{0,20}(?:credit|balance)|\b429\b/i.test(message)) return 'QUOTA_EXHAUSTED';
+  if (/model.{0,30}(?:not found|unavailable|not exist|not supported)|unknown model|select a model/i.test(message)) return 'MODEL_UNAVAILABLE';
+  if (/workspace.{0,20}trust|permission denied/i.test(message)) return 'PERMISSION_REQUIRED';
+  return 'CLI_FAILED';
+}
+
+const strictJsonlAdapters = new Set(['codex', 'claude', 'qwen', 'opencode', 'mimo', 'agy', 'mcode']);
 const promptArgAdapters = new Set(['zcode', 'kimi', 'aider', 'agy']);
 
 export function execute(route, model, task, python, progress, directory = dataDirectory()) {
@@ -451,6 +457,7 @@ export function execute(route, model, task, python, progress, directory = dataDi
   let productError = false;
   let sawResult = false;
   let failureText = '';
+  let permissionDenied = false;
   const argv = buildArguments(route, model, task);
   const extraEnv = { ...routeEnvironment(route, directory, task.kind), CLI_AGENT_POOL_WORKER: '1' };
   const usesStdin = route.promptStdin ?? !promptArgAdapters.has(route.adapter);
@@ -464,11 +471,33 @@ export function execute(route, model, task, python, progress, directory = dataDi
         rawLines.push(line);
         return;
       }
+      if (route.adapter === 'agy' && event.event) {
+        if (event.event === 'init') {
+          progress('started');
+          const model = event.init?.model;
+          if (typeof model === 'string' && model.length <= 100 && !/[\u0000-\u001f]/.test(model)) progress('model:' + model);
+        } else if (event.event === 'step_update') {
+          const step = event.step_update;
+          if (step?.state === 'ERROR' && /permission check failed|permission denied|user.configured deny rule/i.test(step.tool_info?.error?.message || '')) permissionDenied = true;
+        } else if (event.event === 'result') {
+          const result = event.result;
+          sawResult = true;
+          answer = typeof result?.response === 'string' ? result.response : '';
+          productError ||= result?.status !== 'SUCCESS';
+          if (productError) failureText = JSON.stringify(result?.error || result?.status || '');
+        }
+        return;
+      }
       if(event.error || event.is_error)failureText=JSON.stringify(event.error || event.result || '');
       if (route.adapter === 'codex') {
         if (event.type === 'item.completed' && event.item?.type === 'agent_message') answer = event.item.text || '';
         if (event.type === 'turn.completed') sawResult = true;
         if (event.type === 'turn.failed' || event.type === 'error') productError = true;
+      } else if (route.adapter === 'mcode') {
+        if (event.type === 'item.completed' && event.item?.type === 'agent_message') answer = event.item.content || answer;
+        if (event.type === 'exec.completed') { sawResult = true; productError ||= event.result?.status !== 'succeeded'; if (typeof event.result?.output === 'string' && event.result.output) answer = event.result.output; }
+        if (/.failed$/.test(event.type || '')) { productError = true; failureText = JSON.stringify(event.error || event.result?.error || ''); }
+        if (event.type === 'turn.completed' && typeof event.model?.modelId === 'string') progress('model:' + event.model.modelId.slice(0, 100));
       } else if (route.adapter === 'opencode' || route.adapter === 'mimo') {
         if (event.type === 'text' && event.part?.text) answer += event.part.text;
         if (event.type === 'step_finish') sawResult = true;
@@ -501,17 +530,19 @@ export function execute(route, model, task, python, progress, directory = dataDi
           sawResult = Boolean(answer);
           productError = Boolean(json.error || body.base_resp?.status_code);
         } catch { productError = true; }
+      } else if (route.adapter === 'zcode' && result.code === 0 && !result.stopReason) {
+        try { const body = JSON.parse(result.output); answer = typeof body.response === 'string' ? body.response : ''; sawResult = Boolean(answer); } catch { productError = true; }
       } else if (!sawResult && !strictJsonlAdapters.has(route.adapter) && result.code === 0 && !result.stopReason) {
         const fallback = answer.trim() || rawLines.join('\n').trim() || result.output.trim();
         if (fallback) { answer = fallback; sawResult = true; }
       }
-      if (result.stopReason) return { error: result.stopReason };
-      if (result.code !== 0 || productError) {
-        const message=`${failureText} ${result.stderr}`;
-        const error=/only.*(?:within|official)|unsupported client|client.*not allowed/i.test(message)?'PROVIDER_RESTRICTION':/unauthorized|not logged|login required|invalid.{0,20}(?:api.?key|token)|\b401\b/i.test(message)?'AUTH_REQUIRED':/rate.?limit|quota|insufficient.{0,20}(?:credit|balance)|\b429\b/i.test(message)?'QUOTA_EXHAUSTED':/model.{0,30}(?:not found|unavailable)|unknown model/i.test(message)?'MODEL_UNAVAILABLE':/workspace.{0,20}trust|permission denied/i.test(message)?'PERMISSION_REQUIRED':'CLI_FAILED';
-        return { error };
-      }
-      if (!sawResult || !answer.trim()) return { error: 'INVALID_RESULT' };
+      // Keep a short redacted vendor message so the calls screen can explain a failure.
+      const detail = redact(`${failureText} ${result.stderr} ${sawResult ? '' : rawLines.join('\n')}`.replace(/\s+/g, ' ').trim()).slice(-600);
+      const failed = error => ({ error, ...(detail ? { detail } : {}) });
+      if (result.stopReason) return failed(result.stopReason);
+      if (permissionDenied) return { error: 'PERMISSION_REQUIRED' };
+      if (result.code !== 0 || productError) return failed(classifyFailure(`${failureText} ${result.stderr} ${rawLines.join('\n')}`));
+      if (!sawResult || !answer.trim()) return failed('INVALID_RESULT');
       return { result: redact(answer) };
     }),
   };
@@ -532,7 +563,7 @@ export async function opencodeCatalog(route, cwd, python) {
       const meta = JSON.parse(block.slice(brace));
       const provider = id.slice(0, id.indexOf('/'));
       const free = meta.cost?.input === 0 && meta.cost?.output === 0 && (provider === 'opencode' || id.endsWith(':free') || /-free$/i.test(id));
-      if (route.billing === 'free' ? !free : (provider === 'openrouter' && !free)) continue;
+      if (!free && (route.billing === 'free' || provider === 'openrouter' && route.billing !== 'paid_api')) continue;
       models.push({
         id,
         name: `${meta.name || id}${free ? ' (Ücretsiz)' : ''}`,
@@ -548,7 +579,7 @@ export async function opencodeCatalog(route, cwd, python) {
 
 export async function claudeCatalog(route, cwd, python) {
   let response;
-  const handle = runProcess({ argv: [...executableArgv(route.executable), '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--tools', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--settings', '{"disableAllHooks":true}'], cwd, python, relay: true, timeoutMs: 20_000,
+  const handle = runProcess({ argv: [...executableArgv(route.executable), '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--tools', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--settings', '{"disableAllHooks":true}', ...claudeSettingSources(route)], cwd, python, relay: true, timeoutMs: 20_000,
     onLine(line) {
       const message = JSON.parse(line);
       if (message.type === 'control_response' && message.response?.request_id === 'pool-catalog') {
@@ -583,7 +614,7 @@ export function mergeCatalogModels(route, catalog, filters = []) {
 
 function mergeCatalogModelsInto(route, catalog, filters) {
   let added = 0;
-  if(route.adapter==='mimo' || route.adapter==='opencode' && route.billing==='free') {
+  if(route.adapter==='mimo' || route.adapter==='zcode' || route.adapter==='opencode' && route.billing==='free') {
     const available=new Set(catalog.models.map(model=>model.id));
     for(const model of route.models) if(!available.has(model.id))model.enabled=false;
   }
@@ -687,110 +718,42 @@ export async function routeCatalog(route, cwd, python) {
   };
 }
 
-export function antigravityQuotaWindows(groups) {
-  return groups.flatMap(group => {
-    const label=`${group.name || ''} ${group.description || ''}`.toLowerCase();
-    const explicit=[...label.matchAll(/gemini\s+(flash|pro)|\b(argon|opus|sonnet|haiku|gpt)\b/g)].map(match=>match[1]?`gemini-${match[1]}`:match[2]);
-    // Prefer provider-declared model families over a lossy short_name such as "Gemini".
-    const models=[...new Set(explicit.length?explicit:label.match(/gemini|claude|gpt/g) || (group.short_name || '').toLowerCase().match(/gemini|claude|gpt/g) || [])];
-    return Object.entries(group.buckets || {}).flatMap(([period,bucket]) => Number.isFinite(bucket.remaining_pct) ? [{ name: `${group.short_name || group.name}:${period}`, remainingPercent: Math.max(0,Math.min(100,bucket.remaining_pct)), resetsAt: bucket.reset_time || null, ...(models.length ? {models} : {}) }] : []);
-  });
-}
-
-export function claudeQuotaWindows(usage) {
-  if (usage?.error) return [];
-  return ['five_hour', 'seven_day', 'opus'].flatMap(name => {
-      const raw = usage?.[name];
-      if (!raw) return [];
-      const used = Number.parseFloat(raw.used);
-      const remaining = Number.parseFloat(raw.remaining);
-      if (!Number.isFinite(used) && !Number.isFinite(remaining)) return [];
-      return [{ name, remainingPercent: Math.max(0, Math.min(100, Number.isFinite(remaining) ? remaining : 100 - used)), resetsAt: raw.resets_at || null, ...(name === 'opus' ? { models: ['opus'] } : {}) }];
-    });
-}
-
-let cclimitsCache = { at: 0, data: null };
-async function readCclimitsCached(cwd, python) {
-  if (Date.now() - cclimitsCache.at < 15_000 && cclimitsCache.data) return cclimitsCache.data;
-  const roamingApp = process.env.APPDATA || path.join(homedir(), 'AppData', 'Roaming');
-  const ccPy = path.join(roamingApp, 'npm', 'node_modules', 'cclimits', 'lib', 'cclimits.py');
-  if (!existsSync(ccPy)) return null;
-  try {
-    const res = await capture([python, ccPy, '--json', '--cached'], cwd, python);
-    if (res.code === 0 && res.output.trim()) {
-      cclimitsCache = { at: Date.now(), data: JSON.parse(res.output) };
-      return cclimitsCache.data;
-    }
-  } catch {}
-  return null;
-}
+const nativeQuota = { claude: claudeQuota, zcode: zaiQuota, agy: antigravityQuota, kimi: kimiQuota, mcode: minimaxQuota };
 
 export async function quota(route, cwd, python, directory = dataDirectory()) {
   const observedAt = new Date().toISOString();
   const base = { connection: route.id, adapter: route.adapter, billing: route.billing, loginCommand: loginCommands[route.adapter], observedAt };
   if (route.api) {
     const configured = !route.api.secretRef || hasSecret(directory, route.api.secretRef);
-    return { ...base, status: configured ? 'available' : 'auth_required', auth: configured ? 'api_key' : 'missing', endpoint: route.api.baseUrl, protocol: route.api.protocol, windows: [], source: 'custom-api' };
+    const fallback = { ...base, status: configured ? 'available' : 'auth_required', auth: configured ? 'api_key' : 'missing', endpoint: route.api.baseUrl, protocol: route.api.protocol, windows: [], source: 'custom-api' };
+    const vendor = configured && route.api.secretRef ? await apiRouteQuota(route.api.baseUrl, loadSecret(directory, route.api.secretRef)) : null;
+    return vendor ? { ...fallback, ...vendor, auth: 'api_key' } : fallback;
   }
   const argv = executableArgv(route.executable);
-  if (route.adapter === 'claude') {
-    const cc = await readCclimitsCached(cwd, python);
-    const usage = cc?.claude;
-    const windows = claudeQuotaWindows(usage);
-    if (windows.length) return { ...base, status: 'available', scope: 'account', windows, source: 'cclimits-claude', observedAt: new Date(Date.now() - Math.max(0, Number(usage.source_age_seconds) || 0) * 1000).toISOString() };
-    const statusRes = await capture([...argv, 'auth', 'status', '--json'], cwd, python);
-    const textRes = await capture([...argv, 'auth', 'status', '--text'], cwd, python);
-    let status = {};
-    try { status = JSON.parse(statusRes.output); } catch {}
-    const endpoint = /base URL:\s*(\S+)/i.exec(textRes.output + textRes.stderr)?.[1] || 'https://api.anthropic.com';
-    const loggedIn = statusRes.code === 0 && Boolean(status?.loggedIn);
-    return { ...base, status: loggedIn ? 'available' : 'auth_required', auth: loggedIn ? (status.authMethod || 'logged_in') : 'missing', endpoint, windows: [], source: 'claude-auth' };
+  if (route.adapter === 'claude' && route.billing !== 'subscription') {
+    // Token-plan Claude routes use the user's configured endpoint; claude.ai usage does not apply.
+    const text = await capture([...argv, 'auth', 'status', '--text'], cwd, python);
+    const endpoint = /base URL:\s*(\S+)/i.exec(text.output + text.stderr)?.[1] || 'https://api.anthropic.com';
+    return { ...base, status: 'unknown', auth: 'token_plan', endpoint, windows: [], source: 'claude-settings', note: `Uç nokta: ${endpoint} · Bu sağlayıcı kota yüzdesi bildirmiyor.` };
   }
-  if (route.adapter === 'zcode') {
-    const cc = await readCclimitsCached(cwd, python);
-    const zai = cc?.zai;
-    if (zai?.status === 'ok' && Array.isArray(zai.quota_windows)) {
-      const windows = zai.quota_windows.map(w => ({ name: w.name, remainingPercent: Number(w.remaining_pct), resetsAt: w.resets_at || null }));
-      const limited = windows.some(w => w.remainingPercent <= 0);
-      return { ...base, status: limited ? 'rate_limited' : 'available', auth: `zai (${zai.plan || 'plan'})`, windows, source: 'cclimits-zai' };
-    }
-    const hasModels = localModelsFor('zcode').length > 0;
-    return { ...base, status: hasModels ? 'available' : 'unknown', auth: hasModels ? 'zcode-config' : 'unknown', windows: [], source: 'zcode' };
-  }
-  if (route.adapter === 'agy') {
-    const cc = await readCclimitsCached(cwd, python);
-    const ag = cc?.antigravity;
-    if (ag?.status === 'ok' && Array.isArray(ag.quota_groups)) {
-      const windows = antigravityQuotaWindows(ag.quota_groups);
-      return { ...base, status: 'available', auth: ag.subscription_tier || 'antigravity', windows, source: 'cclimits-antigravity' };
-    }
-    return { ...base, status: 'unknown', auth: 'unverified', windows: [], source: 'antigravity' };
-  }
-  if (route.adapter === 'kimi') {
-    const cc = await readCclimitsCached(cwd, python);
-    const km = cc?.kimi_code;
-    if (km?.error) return { ...base, status: /auth|login|credential|401|403/i.test(km.error)?'auth_required':'unknown', auth: 'unverified', windows: [], source: 'cclimits-kimi' };
-    return { ...base, status: 'unknown', auth: 'unverified', windows: [], source: 'kimi' };
-  }
-  if (route.adapter === 'mcode') {
-    const hasCreds = existsSync(path.join(homedir(), '.minimax', 'local-runtime.auth.json'));
-    return { ...base, status: 'unknown', auth: hasCreds ? 'credentials_present' : 'unverified', windows: [], source: 'mcode' };
-  }
+  if (nativeQuota[route.adapter]) return { ...base, ...(await nativeQuota[route.adapter]()) };
   if (route.adapter === 'opencode' || route.adapter === 'mimo') {
+    let snapshot = { status: 'unknown', auth: 'unverified', windows: [], source: route.adapter };
     try {
-      const result=await capture([...argv,'providers','list','--pure'],cwd,python);
-      const count=/(\d+)\s+credentials?/i.exec(result.output)?.[1];
-      if(result.code===0 && count!==undefined) return {...base,status:Number(count)===0 && route.billing!=='free'?'auth_required':'unknown',auth:Number(count)>0?'credentials_present':'unverified',windows:[],source:'native-provider-list'};
-    }catch{ /* A failed inspection is not proof that the user is logged out. */ }
-    return {...base,status:'unknown',auth:'unverified',windows:[],source:route.adapter};
+      const result = await capture([...argv, 'providers', 'list', '--pure'], cwd, python);
+      const count = /(\d+)\s+credentials?/i.exec(result.output)?.[1];
+      if (result.code === 0 && count !== undefined) snapshot = { status: Number(count) === 0 && route.billing !== 'free' ? 'auth_required' : 'unknown', auth: Number(count) > 0 ? 'credentials_present' : 'unverified', windows: [], source: 'native-provider-list' };
+    } catch { /* A failed inspection is not proof that the user is logged out. */ }
+    if (route.adapter === 'opencode' && route.models.some(model => model.id.startsWith('openrouter/'))) {
+      const openrouter = await openrouterQuota();
+      if (openrouter) snapshot = { ...snapshot, ...openrouter, auth: openrouter.auth === 'missing' ? snapshot.auth : 'credentials_present', status: snapshot.status === 'unknown' ? 'available' : snapshot.status };
+    }
+    return { ...base, ...snapshot };
   }
   if (route.adapter === 'lmstudio' || route.adapter === 'ollama') {
     return { ...base, status: 'available', auth: route.billing === 'free' ? 'builtin_free' : 'configured', windows: [], source: route.adapter };
   }
-  if (route.adapter === 'qwen' || route.adapter === 'omniroute' || route.adapter === 'aider' || route.adapter === 'kilocode' || route.adapter === 'hermes' || route.adapter === 'custom') {
-    return { ...base, status: 'unknown', auth: route.trustedSettings ? 'credentials_unverified' : 'unverified', windows: [], source: route.adapter };
-  }
-  if (route.adapter !== 'mmx') return { ...base, status: 'unknown', windows: [], source: 'unsupported' };
+  if (route.adapter !== 'mmx') return { ...base, status: 'unknown', auth: 'unverified', windows: [], source: route.adapter, note: 'Bu CLI kota sorgusu sunmuyor.' };
   const authRes = await capture([...argv, 'auth', 'status', '--output', 'json'], cwd, python);
   let authJson = {};
   try { authJson = JSON.parse(authRes.output); } catch {}
@@ -800,6 +763,7 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
   try { body = JSON.parse(result.output); } catch { /* Unknown output never proves an active plan. */ }
   const failure = result.code !== 0 || !body || body.error || body.base_resp?.status_code;
   const subscription = !failure ? 'active' : /no active (?:token )?plan/i.test(result.output + result.stderr) ? 'none' : 'unknown';
-  const status = !loggedIn ? 'auth_required' : (subscription === 'active' || route.billing === 'free_credits' || route.billing === 'paid_api') ? 'available' : 'unknown';
-  return { ...base, status, auth: loggedIn ? authJson.method : 'missing', subscription, windows: [], source: 'mmx', ...(failure ? {} : { vendor: redact(result.output) }) };
+  const windows = failure ? [] : minimaxWindows(body.data || body);
+  const status = !loggedIn ? 'auth_required' : windows.some(window => window.remainingPercent <= 0) ? 'rate_limited' : (subscription === 'active' || route.billing === 'free_credits' || route.billing === 'paid_api') ? 'available' : 'unknown';
+  return { ...base, status, auth: loggedIn ? authJson.method : 'missing', subscription, windows, source: 'mmx' };
 }

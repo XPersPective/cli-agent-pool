@@ -99,8 +99,8 @@ export class Pool {
       const fresh = snapshot && Date.now() - Date.parse(snapshot.observedAt) < 60_000;
       const missingPlan = snapshot?.subscription === 'none' && (route.billing === 'subscription' || route.billing === 'token_plan');
       const quotaBlocked = fresh && (snapshot.status === 'rate_limited' || snapshot.status === 'auth_required' || missingPlan || snapshot.windows?.some(window => quotaApplies(window,model.id) && window.remainingPercent != null && window.remainingPercent <= Math.max(route.minRemainingPercent, request.minRemainingPercent ?? 0)));
-      const paidAllowed = model.billing !== 'paid_api' || Boolean(request.routeId) || Boolean(model.autoSelect);
-      return !quotaBlocked && model.enabled && activeBillings.has(model.billing) && paidAllowed && model.kinds.includes(request.kind) &&
+      const automaticAllowed = Boolean(request.routeId) || Boolean(model.autoSelect);
+      return !quotaBlocked && model.enabled && activeBillings.has(model.billing) && automaticAllowed && model.kinds.includes(request.kind) &&
       (!request.routeId || model.routeId === request.routeId) && (!request.modelId || model.id === request.modelId) &&
       (!request.group || model.group === request.group) && (!request.effort || model.efforts.includes(request.effort)) &&
       (!request.effort || !model.fixedEffort || request.effort === model.fixedEffort); })
@@ -119,7 +119,7 @@ export class Pool {
     if (!force && cached && Date.now() - Date.parse(cached.observedAt) < 15_000) return cached;
     if (this.quotaRequests.has(routeId)) return this.quotaRequests.get(routeId);
     const request = (async () => {
-      const cwd = this.config.workspaceRoots[0] || process.cwd();
+      const cwd = this.directory;
       let snapshot;
       if (route.adapter === 'codex' && !route.api) {
         try { snapshot = { ...(await codexControl(route, cwd, this.config.python, 'quotas')), adapter: route.adapter, billing: route.billing, loginCommand: loginCommands.codex }; }
@@ -141,7 +141,7 @@ export class Pool {
   async selectLive(request) {
     const routes = new Set(this.models().filter(model => model.enabled && model.kinds.includes(request.kind) &&
       (!request.group || model.group === request.group) && (!request.routeId || model.routeId === request.routeId) &&
-      (!request.modelId || model.id === request.modelId) && (model.billing !== 'paid_api' || request.routeId || model.autoSelect)).map(model => model.routeId));
+      (!request.modelId || model.id === request.modelId) && (request.routeId || model.autoSelect)).map(model => model.routeId));
     // Unsupported/offline quota probes stay unknown; never invent a balance.
     await Promise.allSettled([...routes].map(id => this.getQuota(id)));
     return this.select(request);
@@ -155,14 +155,14 @@ export class Pool {
   }
   async submitLive(input, probe = false) {
     const request = taskSchema.parse(input);
-    allowedWorkspace(request.workspace, probe?[path.join(this.directory,'probes')]:this.config.workspaceRoots);
+    allowedWorkspace(request.workspace, probe?[path.join(this.directory,'probes')]:undefined);
     if (!this.store.byKey(request.idempotencyKey)) await this.selectLive(request);
     return this.submit(input,probe);
   }
   submit(input, probe = false) {
     if (this.closed) throw new PoolError('SHUTTING_DOWN', 'Havuz kapanıyor. Yeniden bağlanın.');
     const request = taskSchema.parse(input);
-    request.workspace = allowedWorkspace(request.workspace, probe?[path.join(this.directory,'probes')]:this.config.workspaceRoots);
+    request.workspace = allowedWorkspace(request.workspace, probe?[path.join(this.directory,'probes')]:undefined);
     const fingerprint = createHash('sha256').update(JSON.stringify(request)).digest('hex');
     const existing = this.store.byKey(request.idempotencyKey);
     if (existing) {
@@ -187,7 +187,9 @@ export class Pool {
     const request = JSON.parse(task.request);
     const events = this.store.events(id, after);
     const reportedModel = this.store.reportedModel(id);
-    return { id: task.id, state: task.state, routeId: request.routeId, modelId: request.modelId, reportedModel, group: request.group, effort: request.effort || null, clientLabel:request.clientLabel || null, historyExpired:Boolean(request.historyExpired), kind: request.kind, workspace: request.workspace, prompt: request.prompt || null, created: task.created, updated: task.updated, result: task.result, error: task.error, events };
+    const blocker = task.state === 'queued' ? this.store.held().find(held => overlaps(held.workspace,task.workspace)) : null;
+    const queueReason = blocker ? blocker.state === 'needs_review' ? 'WORKSPACE_REVIEW_REQUIRED' : 'WORKSPACE_BUSY' : task.state === 'queued' && this.active.size >= this.config.concurrency ? 'WORKER_LIMIT' : null;
+    return { id: task.id, state: task.state, routeId: request.routeId, modelId: request.modelId, reportedModel, queueReason, blockedBy:blocker?.id || null, group: request.group, effort: request.effort || null, clientLabel:request.clientLabel || null, historyExpired:Boolean(request.historyExpired), kind: request.kind, workspace: request.workspace, prompt: request.prompt || null, created: task.created, updated: task.updated, result: task.result, error: task.error, events };
   }
   list(limit = 50, offset = 0, activeFirst = false) {
     return this.store.list(limit, offset, activeFirst);
@@ -231,7 +233,7 @@ export class Pool {
   }
   async run(task, request, route, handle) {
     try {
-      request.workspace = allowedWorkspace(request.workspace, request.probe?[path.join(this.directory,'probes')]:this.config.workspaceRoots);
+      request.workspace = allowedWorkspace(request.workspace, request.probe?[path.join(this.directory,'probes')]:undefined);
       const model = this.select(request).selected;
       await this.checkAuth(route, request.workspace, this.config.python, this.directory);
       if (handle.cancelled || this.closed) { this.store.update(task.id, 'cancelled', null, 'CANCELLED'); return; }
@@ -241,6 +243,7 @@ export class Pool {
         if (events++ < 100) this.store.event(task.id, 'progress', detail);
       }, this.directory);
       const outcome = await handle.run.done;
+      if (outcome.detail) this.store.event(task.id, 'error_detail', outcome.detail);
       if (handle.cancelled) this.store.update(task.id, request.kind === 'write' ? 'needs_review' : 'cancelled', null, 'CANCELLED');
       else if (outcome.error) this.store.update(task.id, request.kind === 'write' ? 'needs_review' : outcome.error === 'TIMEOUT' ? 'timed_out' : 'failed', null, outcome.error);
       else this.store.update(task.id, 'succeeded', outcome.result);
