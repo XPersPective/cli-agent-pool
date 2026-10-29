@@ -10,4 +10,4 @@ Use shell-free process invocation and preserve conservative retry behavior.
 Non-trivial logic must have a runnable node:test check. Run npm test, npm run check,
 npm run secrets, and npm audit before pushing. Never commit runtime configuration,
 account identifiers, prompts, task results, browser artifacts or tokens.
-Do not use Store Automation or Project Brain as dependencies or project workflows.
+Do not use Project Brain as a dependency or project workflow.

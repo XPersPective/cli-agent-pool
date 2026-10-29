@@ -6,7 +6,7 @@ işler tamamlanmış sayılmaz. Üretim sürümü başlangıç noktası: **1.4.3
 
 ## Çalışma kararı
 
-Pool geliştirmesi Project Brain veya Store Automation çalışma akışına bağlanmayacak.
+Pool geliştirmesi Project Brain çalışma akışına bağlanmayacak.
 Pool ile Brain ayrı ürünlerdir; geliştirmede kullanılan skill'i aynı anda değiştirme
 karmaşası yerine bu belge ve Git geçmişi üzerinden devam edilecek. Brain kaynakları,
 kurulu kopyaları ve dağıtımı bu bakım planının parçası olarak değiştirilmedi.
