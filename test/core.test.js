@@ -90,7 +90,7 @@ test('overlapping workspace stays reserved until cancellation cleanup finishes',
 });
 
 test('serial and parallel admission follows the configured task limit for separate workspaces', async t => {
-  for (const [mode, limit, expectedBeforeRelease] of [['serial', 1, 1], ['parallel', 2, 2]]) {
+  for (const [mode, limit] of [['serial', 1], ['parallel', 20]]) {
     const pending = [];
     let starts = 0;
     const { root, pool, request } = fixture(t, { execute: () => {
@@ -99,23 +99,32 @@ test('serial and parallel admission follows the configured task limit for separa
     } });
     pool.config.concurrency = limit;
     pool.config.routes[0].maxConcurrent = limit;
-    const workspaces = [path.join(root, 'one'), path.join(root, 'two')];
-    mkdirSync(workspaces[0]); mkdirSync(workspaces[1]);
-    const first = pool.submit({ ...request, workspace: workspaces[0] });
-    const second = pool.submit({ ...request, workspace: workspaces[1], idempotencyKey: 'second-workspace-123' });
+    const workspaces = Array.from({ length: 20 }, (_, index) => path.join(root, `workspace-${index}`));
+    workspaces.forEach(workspace => mkdirSync(workspace));
+    const tasks = workspaces.map((workspace, index) => pool.submit({ ...request, workspace, idempotencyKey: `workspace-task-${index}-123` }));
     await delay(40);
-    assert.equal(starts, expectedBeforeRelease, `${mode} should admit ${expectedBeforeRelease} distinct-workspace tasks`);
+    assert.equal(starts, limit, `${mode} should admit ${limit} distinct-workspace tasks`);
     if (mode === 'serial') {
-      pending.shift()({ result: 'done' });
-      await terminal(pool, first.id);
-      await delay(40);
-      assert.equal(starts, 2, 'serial mode should admit the next task after the first settles');
+      for (let index = 0; index < tasks.length; index++) {
+        pending.shift()({ result: 'done' });
+        await terminal(pool, tasks[index].id);
+        if (index + 1 < tasks.length) {
+          await delay(40);
+          assert.equal(starts, index + 2, 'serial mode should admit the next task after the previous one settles');
+        }
+      }
+    } else {
+      for (const resolve of pending) resolve({ result: 'done' });
+      await Promise.all(tasks.map(task => terminal(pool, task.id)));
     }
-    for (const resolve of pending) resolve({ result: 'done' });
-    if (mode === 'parallel') {
-      await terminal(pool, first.id); await terminal(pool, second.id);
-    } else await terminal(pool, second.id);
   }
+});
+
+test('concurrency and route concurrency reject values above the supported cap', () => {
+  assert.throws(() => configSchema.parse({ concurrency: 33, routes: [] }));
+  assert.throws(() => configSchema.parse({ routes: [{ id: 'test', adapter: 'codex', executable: process.execPath, maxConcurrent: 33, models: [] }] }));
+  assert.equal(configSchema.parse({ routes: [] }).concurrency, 20);
+  assert.equal(configSchema.parse({ routes: [{ id: 'test', adapter: 'codex', executable: process.execPath, models: [] }] }).routes[0].maxConcurrent, 20);
 });
 
 test('write failure quarantines the workspace and never retries', async t => {

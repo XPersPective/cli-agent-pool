@@ -46,7 +46,7 @@ test('pool policy autosave is durable without committing unrelated drafts', () =
   const base = { selectionMode: 'auto', groupingMode: 'manual', concurrency: 1, modelFilters: [], routes: [{ id: 'codex', billing: 'subscription', models: [{ id: 'luna', memberships: [{ group: 'low', effort: 'low' }] }] }] };
   const draft = structuredClone(base);
   draft.selectionMode = 'manual'; draft.groupingMode = 'agent';
-  draft.concurrency = 2;
+  draft.concurrency = 20;
   draft.routes[0].billing = 'paid_api';
   const saved = preferenceSaveConfig(base, draft, 'selectionMode');
   assert.equal(saved.selectionMode, 'manual');
@@ -58,7 +58,7 @@ test('pool policy autosave is durable without committing unrelated drafts', () =
   assert.equal(permissions.groupingMode, 'agent');
   assert.equal(permissions.concurrency, 1);
   const execution = preferenceSaveConfig(permissions, draft, 'concurrency');
-  assert.equal(execution.concurrency, 2);
+  assert.equal(execution.concurrency, 20);
   assert.equal(execution.selectionMode, 'manual');
   assert.deepEqual(permissions.routes, base.routes);
   assert.throws(() => preferenceSaveConfig(base, draft, 'routes'));

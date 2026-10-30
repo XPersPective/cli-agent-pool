@@ -378,8 +378,8 @@ yapilir. Gercek servis uzerinden kisa gorevler: ZCode, MiniMax Code, Qwen ve Ant
 "OK" dondu. Codex `gpt-6-luna` ChatGPT hesabiyla desteklenmiyor (OpenAI 400); bu
 makinede model kapatildi.
 
-30 Ekim 2026: Ayarlar ekranina Seri (1) ve Paralel (2-8) gorev siniri secimi eklendi;
-mevcut `concurrency` konfigurasyon alani kullaniliyor. Gercek havuz admission testi
-ayri workspace'lerde seri/paralel sinirlarini, preference testi yalnizca secilen
-ayari kaydederken diger taslaklari korumayi dogrular. Ayni/ic ice workspace kilidi
-degistirilmedi.
+30 Ekim 2026: Ayarlar ekranina Seri (1) ve Paralel (2-32; varsayilan 20) gorev siniri
+eklendi; `concurrency` ve rota `maxConcurrent` alanlari 32 ile sinirli. Gercek havuz
+admission testi 20 ayri workspace'i paralel baslatir; seri 1 ve 33 reddi de dogrulanir.
+Preference testi yalnizca secilen ayari kaydederken diger taslaklari korur. Ayni/ic ice
+workspace kilidi degistirilmedi.

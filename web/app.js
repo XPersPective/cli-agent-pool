@@ -316,7 +316,7 @@ $('add-route').addEventListener('click', () => void action(async () => {
   const initialModels = modelId
     ? [{ id: modelId, alias: modelId, group: billing === 'free' ? 'free' : 'unassigned', enabled: true, efforts: [], kinds }]
     : (cli.discoveredModels || []).map(({ free, ...m }) => m);
-  const route = { id, adapter, executable: cli.executable, enabled: false, billing, trustedSettings: true, priority: 100, maxConcurrent: 1, models: initialModels };
+  const route = { id, adapter, executable: cli.executable, enabled: false, billing, trustedSettings: true, priority: 100, maxConcurrent: 20, models: initialModels };
   settings.config.routes.push(route);
   settings = await call('save', settings);
   if (!modelId && ['codex', 'opencode', 'mimo'].includes(adapter)) {
@@ -345,7 +345,7 @@ $('add-api-route').addEventListener('click', () => void action(async () => {
   if (!cli) throw new Error(`${protocol} API yuvası için bilgisayarınızda ${hostAdapter} CLI kurulu olmalıdır.`);
   const route = {
     id, adapter: hostAdapter, executable: cli.executable, enabled: true, billing, trustedSettings: true,
-    priority: billing === 'paid_api' ? 200 : 100, maxConcurrent: 1,
+    priority: billing === 'paid_api' ? 200 : 100, maxConcurrent: 20,
     api: { protocol, baseUrl, secretRef: id },
     models: modelNames.map(m => ({ id: m, alias: m, group: billing === 'free' ? 'free' : 'api', enabled: true, efforts: [], kinds: ['text', 'read', 'write'] })),
   };
@@ -367,7 +367,7 @@ $('add-custom-cli').addEventListener('click', () => void action(async () => {
   if (!modelNames.length) throw new Error('En az bir model kimliği girin.');
   const route = {
     id, adapter: 'custom', executable, argsTemplate, promptStdin: !argsTemplate.some(a => a.includes('{prompt}')),
-    enabled: false, billing, trustedSettings: true, priority: 100, maxConcurrent: 1,
+    enabled: false, billing, trustedSettings: true, priority: 100, maxConcurrent: 20,
     models: modelNames.map(m => ({ id: m, alias: m, group: 'custom', enabled: true, efforts: [], kinds: ['text', 'read', 'write'] })),
   };
   settings.config.routes.push(route);
