@@ -377,3 +377,9 @@ abonelik kontrolu artik calistirmayla ayni `--setting-sources project,local` kap
 yapilir. Gercek servis uzerinden kisa gorevler: ZCode, MiniMax Code, Qwen ve Antigravity
 "OK" dondu. Codex `gpt-6-luna` ChatGPT hesabiyla desteklenmiyor (OpenAI 400); bu
 makinede model kapatildi.
+
+30 Ekim 2026: Ayarlar ekranina Seri (1) ve Paralel (2-8) gorev siniri secimi eklendi;
+mevcut `concurrency` konfigurasyon alani kullaniliyor. Gercek havuz admission testi
+ayri workspace'lerde seri/paralel sinirlarini, preference testi yalnizca secilen
+ayari kaydederken diger taslaklari korumayi dogrular. Ayni/ic ice workspace kilidi
+degistirilmedi.

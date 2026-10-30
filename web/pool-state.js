@@ -33,7 +33,7 @@ export function mergeScanDraft(scanned, before, draft) {
       }
     }
   }
-  for (const key of ['selectionMode', 'groupingMode', 'workspaceRoots', 'modelFilters']) if (JSON.stringify(draft[key]) !== JSON.stringify(before[key])) merged[key] = structuredClone(draft[key]);
+  for (const key of ['selectionMode', 'groupingMode', 'workspaceRoots', 'modelFilters', 'concurrency']) if (JSON.stringify(draft[key]) !== JSON.stringify(before[key])) merged[key] = structuredClone(draft[key]);
   return merged;
 }
 export function addMembership(model, group, effort = '') {
@@ -63,7 +63,7 @@ export function modelSaveConfig(base, draft, routeId, modelId, enableRoute = fal
 }
 
 export function preferenceSaveConfig(base, draft, key) {
-  if (!['selectionMode', 'groupingMode', 'modelFilters'].includes(key)) throw new Error('Geçersiz havuz ayarı.');
+  if (!['selectionMode', 'groupingMode', 'modelFilters', 'concurrency'].includes(key)) throw new Error('Geçersiz havuz ayarı.');
   return { ...structuredClone(base), [key]: structuredClone(draft[key]) };
 }
 

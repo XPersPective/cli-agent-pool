@@ -199,6 +199,7 @@ function settingField(label, value, update, choices, markDirty = true) {
   input.addEventListener('change', () => { update(input.value); if (markDirty) dirty(); }); wrapper.append(input); return wrapper;
 }
 function renderSettings() {
+  $('execution-mode').value = String(settings.config.concurrency ?? 1);
   const expanded = new Set([...$('settings-routes').querySelectorAll('details[open]')].map(node => node.dataset.routeId));
   const previousAdapter = $('new-adapter').value;
   const adapters = snapshot.installed.filter(cli => cli.status === 'installed');
@@ -390,6 +391,7 @@ $('calls-tab').addEventListener('click', () => switchPage('calls'));
 $('pool-search').addEventListener('input', () => { $('pool-models').scrollTop = 0; renderCatalog(); });
 $('selection-mode').addEventListener('change', () => void action(async () => { settings.config.selectionMode = $('selection-mode').value; await savePreference('selectionMode'); notice('Model seçimi kaydedildi.'); }));
 $('grouping-mode').addEventListener('change', () => void action(async () => { settings.config.groupingMode = $('grouping-mode').value; await savePreference('groupingMode'); notice('Havuz düzenleme yetkisi kaydedildi.'); }));
+$('execution-mode').addEventListener('change', () => void action(async () => { settings.config.concurrency = Number($('execution-mode').value); await savePreference('concurrency'); notice('Görev çalışma biçimi kaydedildi.'); }));
 $('discard-settings').addEventListener('click', () => void action(async () => { settings = await call('settings'); poolDirty = false; baseConfig = structuredClone(settings.config); renderSettings(); renderPool(); updateSave(); }));
 $('toggle-quotas').addEventListener('click', () => {
   quotasOpen = [...document.querySelectorAll('.quota-details')].some(node => !node.open);

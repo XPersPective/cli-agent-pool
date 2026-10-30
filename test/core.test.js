@@ -89,6 +89,35 @@ test('overlapping workspace stays reserved until cancellation cleanup finishes',
   pool.cancel(second.id); release({ error: 'CANCELLED' });
 });
 
+test('serial and parallel admission follows the configured task limit for separate workspaces', async t => {
+  for (const [mode, limit, expectedBeforeRelease] of [['serial', 1, 1], ['parallel', 2, 2]]) {
+    const pending = [];
+    let starts = 0;
+    const { root, pool, request } = fixture(t, { execute: () => {
+      starts++;
+      return { cancel() {}, done: new Promise(resolve => pending.push(resolve)) };
+    } });
+    pool.config.concurrency = limit;
+    pool.config.routes[0].maxConcurrent = limit;
+    const workspaces = [path.join(root, 'one'), path.join(root, 'two')];
+    mkdirSync(workspaces[0]); mkdirSync(workspaces[1]);
+    const first = pool.submit({ ...request, workspace: workspaces[0] });
+    const second = pool.submit({ ...request, workspace: workspaces[1], idempotencyKey: 'second-workspace-123' });
+    await delay(40);
+    assert.equal(starts, expectedBeforeRelease, `${mode} should admit ${expectedBeforeRelease} distinct-workspace tasks`);
+    if (mode === 'serial') {
+      pending.shift()({ result: 'done' });
+      await terminal(pool, first.id);
+      await delay(40);
+      assert.equal(starts, 2, 'serial mode should admit the next task after the first settles');
+    }
+    for (const resolve of pending) resolve({ result: 'done' });
+    if (mode === 'parallel') {
+      await terminal(pool, first.id); await terminal(pool, second.id);
+    } else await terminal(pool, second.id);
+  }
+});
+
 test('write failure quarantines the workspace and never retries', async t => {
   let starts = 0;
   const { pool, request } = fixture(t, { execute: () => { starts++; return { cancel() {}, done: Promise.resolve({ error: 'CLI_FAILED' }) }; } });
