@@ -69,7 +69,8 @@ test('Antigravity native stream parses the terminal response and retains permiss
  const complete={event:'result',result:{status:'SUCCESS',response:'OK'}};
  assert.deepEqual(await run([{event:'init',init:{model:'sonnet'}},complete]),{result:'OK'});
  const denied={event:'step_update',step_update:{state:'ERROR',step_type:'tool',tool_name:'edit_file',tool_info:{error:{type:'TOOL_ERROR',message:'permission check failed: Matches user-configured deny rule.'}}}};
- assert.deepEqual(await run([denied,complete]),{error:'PERMISSION_REQUIRED'});
+ const deniedResult=await run([denied,complete]);
+ assert.equal(deniedResult.error,'PERMISSION_REQUIRED');assert.match(deniedResult.detail,/edit_file.*user-configured deny rule/);assert.equal(deniedResult.result,'OK');
  assert.deepEqual(await run([{...denied,step_update:{...denied.step_update,tool_info:{error:{message:'File not found'}}}},complete]),{result:'OK'});
  assert.deepEqual(await run([{event:'step_update',step_update:{state:'DONE',step_type:'agent_response'}}]),{error:'INVALID_RESULT'});
  assert.equal((await run([{event:'result',result:{status:'ERROR',response:'Failed'}}])).error,'CLI_FAILED');

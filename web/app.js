@@ -641,6 +641,8 @@ function taskDetails(task) {
       nodes.push(list);
     }
   }
+  if (task.errorDetail) nodes.push(element('h3', 'Araç hatası'), element('div', task.errorDetail, 'call-text call-error'));
+  if (task.error === 'PERMISSION_REQUIRED') nodes.push(element('p', 'CLI araç izni reddedildi. Araç/komut ayrıntısı için yerel CLI izinlerini inceleyin; havuz izinleri değiştirmedi ve görevi yeniden çalıştırmadı.', 'call-error'));
   if (task.error === 'INVALID_REPORT') nodes.push(element('p', 'İcra raporu beklenen biçimde değil. Dosyaları ve yukarıdaki özgün çıktıyı inceleyin; görev yeniden çalıştırılmadı.', 'call-error'));
   if (task.error === 'WORK_INCOMPLETE') nodes.push(element('p', 'Alt ajan işi eksik veya engellenmiş bildirdi. Rapordaki kalan işleri inceleyin.', 'call-error'));
   if (task.events?.length) {

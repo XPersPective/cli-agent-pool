@@ -188,3 +188,20 @@ limit using stored model kinds. Catalog exposes configuredKinds, toolSupport and
 permissionAuthority separately; do not equate capability with permission or a live
 model guarantee. Chat-only CLI commands (MMX, Ollama/LM Studio, OmniRoute chat) have
 no local editing tools. Custom CLI templates must enforce their declared scopes.
+
+### Antigravity execution and recovery (1.8.1)
+
+Antigravity execute uses its native `--json-schema` report contract. Permission
+denials retain the native tool name/message in `errorDetail` (also in compact
+polls) and preserve any blocked report. A SUCCESS envelope with denied_actions
+is still a permission failure. Read these facts before diagnosing login/models.
+On Windows native command grants may require `command(regex:...)` for complete
+command lines. Native deny rules win; Pool does not change them or skip checks.
+Only owner-authorized CLI permission changes may unblock execution.
+
+After inspecting stopped write artifacts, the owner may run
+`cli-agent-pool resolve <task-id> --note "What was inspected"` against the live
+daemon; it preserves results/history and releases quarantine, without replay.
+Never resolve an uninspected or still-active task. The same root can host up to32
+readers; overlapping writes remain serialized. A separate process/cwd is not an
+OS sandbox. Do not automatically create worktrees or delete interrupted edits.

@@ -1,5 +1,5 @@
 import { modelFiltered } from '../web/pool-state.js';
-import { taskPrompt } from './task-protocol.js';
+import { taskPrompt, executionReportJsonSchema } from './task-protocol.js';
 import { existsSync, readFileSync, realpathSync, statSync, accessSync, constants, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -393,7 +393,7 @@ export function buildArguments(route, model, task) {
     const selectedEffort = effort || model.defaultEffort || Object.keys(model.variants || {})[0];
     if (model.variants && !model.variants[selectedEffort]) throw new PoolError('INVALID_EFFORT', 'Bu model için desteklenen bir efor seçin.');
     const promptArg = route.promptStdin === false ? [`--print=${task.prompt}`] : ['--input-format', 'stream-json'];
-    return [...argv, '--output-format', 'stream-json', ...promptArg, '--mode', task.kind === 'write' ? 'accept-edits' : 'plan', ...(task.kind === 'text' ? ['--disable-slash-commands'] : []), '--model', model.variants?.[selectedEffort] || model.id, ...(selectedEffort ? ['--effort', selectedEffort] : [])];
+    return [...argv, '--output-format', 'stream-json', ...promptArg, '--mode', task.kind === 'write' ? 'accept-edits' : 'plan', ...(task.mode === 'execute' ? ['--json-schema', JSON.stringify(executionReportJsonSchema)] : []), ...(task.kind === 'text' ? ['--disable-slash-commands'] : []), '--model', model.variants?.[selectedEffort] || model.id, ...(selectedEffort ? ['--effort', selectedEffort] : [])];
   }
   if (route.adapter === 'omniroute') return [...argv, 'chat', '--stdin', '--no-history', '-m', model.id, ...(effort ? ['--reasoning-effort', effort] : [])];
   if (route.adapter === 'mmx') return [...argv, 'text', 'chat', '--model', model.id, '--messages-file', '-', '--output', 'json'];
@@ -461,6 +461,7 @@ export function execute(route, model, task, python, progress, directory = dataDi
   let sawResult = false;
   let failureText = '';
   let permissionDenied = false;
+  let permissionDetail = '';
   const argv = buildArguments(route, model, task);
   const extraEnv = { ...routeEnvironment(route, directory, task.kind), CLI_AGENT_POOL_WORKER: '1' };
   const usesStdin = route.promptStdin ?? !promptArgAdapters.has(route.adapter);
@@ -481,9 +482,17 @@ export function execute(route, model, task, python, progress, directory = dataDi
           if (typeof model === 'string' && model.length <= 100 && !/[\u0000-\u001f]/.test(model)) progress('model:' + model);
         } else if (event.event === 'step_update') {
           const step = event.step_update;
-          if (step?.state === 'ERROR' && /permission check failed|permission denied|user.configured deny rule/i.test(step.tool_info?.error?.message || '')) permissionDenied = true;
+          const message = step?.tool_info?.error?.message;
+          if (step?.state === 'ERROR' && /permission check failed|permission denied|user.configured deny rule|user denied permission/i.test(message || '')) {
+            permissionDenied = true;
+            permissionDetail = redact(`${step.tool_info?.name || step.tool_name || 'native tool'}: ${message}`).slice(0, 600);
+          }
         } else if (event.event === 'result') {
           const result = event.result;
+          if (Array.isArray(result?.denied_actions) && result.denied_actions.length) {
+            permissionDenied = true;
+            permissionDetail ||= redact(`Native permission denied: ${result.denied_actions.slice(0, 5).map(action => action.display_name || action.action || 'native tool').join(', ')}. Review the CLI permission settings for this workspace.`).slice(0, 600);
+          }
           sawResult = true;
           answer = typeof result?.response === 'string' ? result.response : '';
           productError ||= result?.status !== 'SUCCESS';
@@ -543,7 +552,7 @@ export function execute(route, model, task, python, progress, directory = dataDi
       const detail = redact(`${failureText} ${result.stderr} ${sawResult ? '' : rawLines.join('\n')}`.replace(/\s+/g, ' ').trim()).slice(-600);
       const failed = error => ({ error, ...(detail ? { detail } : {}) });
       if (result.stopReason) return failed(result.stopReason);
-      if (permissionDenied) return { error: 'PERMISSION_REQUIRED' };
+      if (permissionDenied) return { error: 'PERMISSION_REQUIRED', detail: permissionDetail || 'Native tool permission denied.', ...(answer.trim() ? { result: redact(answer) } : {}) };
       if (result.code !== 0 || productError) return failed(classifyFailure(`${failureText} ${result.stderr} ${rawLines.join('\n')}`));
       if (!sawResult || !answer.trim()) return failed('INVALID_RESULT');
       return { result: redact(answer) };

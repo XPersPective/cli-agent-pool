@@ -1,5 +1,18 @@
 # Devralma ve düzeltme planı — 19 Ekim 2026
 
+## Antigravity execute repair — 30 October 2026
+
+Owner-approved scope: repair Antigravity first, prove native write/check execution and parallel scheduling, then update installed Pool. Existing project-root writes remain exclusive/queued; no new worktrees, automatic merge, cleanup or replay.
+
+- [x] Preserve redacted denied tool/error and blocked report, including native denied_actions with SUCCESS/empty response; show compact diagnostics and Calls panel.
+- [x] Resolve inspected failed writes through authenticated live owner, preserving report/history; prohibit active-process resolution and a second SQLite owner.
+- [x] Correct owner-approved native Windows command grants, prove real Flash write/check via Pool; no skip-permissions flags or other-adapter changes.
+- [x] Test 32-reader concurrency and same-root writer serialization/quarantine; npm test/check/secrets/audit, installed release/runtime proof.
+
+Source evidence:94 node:test PASS, syntax/secrets PASS, npm audit0. Real gemini-3.8-flash-medium: two text tasks overlapped; write created an actual .mjs and native node --check passed. A malformed first report was retained as INVALID_REPORT; after inspecting artifacts it was resolved without replay. The distinct queued writer then succeeded with native --json-schema and a valid completed report. Observed timestamps prove queued writes never overlapped. Runtime artifacts remain outside Git.
+
+Installed1.8.1 verified via authenticated daemon metadata, concurrency32, and a fresh live MCP write/execute: actual file content verified, native node --check passed, completed structured report accepted. Source/installed adapters and source/Codex/Antigravity skill hashes match; Skills Manager refreshed and deployed42existing targets. Before service update actual shared active/queued tasks were0; unrelated needs_review records preserved. Only this session's inspected failed jobs resolved via the repaired live-owner CLI. Existing product source/worktrees/results preserved; no automatic retry, worktree creation, OS-sandbox promise, paid fallback or other-adapter behavior change.
+
 ## Native CLI yetenekleri ve yayın
 
 İstenen kapsam: dosya aracı bulunan yerleşik CLI'larda istek text/read/write ile

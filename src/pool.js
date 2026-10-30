@@ -203,7 +203,7 @@ export class Pool {
     const routeBusy = [...this.active.values()].filter(active => active.routeId === request.routeId).length >= routeLimit;
     const queueReason = blocker ? blocker.state === 'needs_review' ? 'WORKSPACE_REVIEW_REQUIRED' : 'WORKSPACE_BUSY' : task.state === 'queued' && (this.active.size >= this.config.concurrency || routeBusy) ? 'WORKER_LIMIT' : null;
     const report = request.mode === 'execute' && task.result ? parseExecutionReport(task.result) : null;
-    return { id: task.id, state: task.state, mode: request.mode || null, report, routeId: request.routeId, modelId: request.modelId, reportedModel, queueReason, blockedBy:blocker?.id || null, group: request.group, effort: request.effort || null, clientLabel:request.clientLabel || null, historyExpired:Boolean(request.historyExpired), kind: request.kind, workspace: request.workspace, prompt: request.prompt || null, created: task.created, updated: task.updated, result: task.result, error: task.error, events };
+    return { id: task.id, state: task.state, mode: request.mode || null, report, routeId: request.routeId, modelId: request.modelId, reportedModel, queueReason, blockedBy:blocker?.id || null, group: request.group, effort: request.effort || null, clientLabel:request.clientLabel || null, historyExpired:Boolean(request.historyExpired), kind: request.kind, workspace: request.workspace, prompt: request.prompt || null, created: task.created, updated: task.updated, result: task.result, error: task.error, errorDetail: this.store.errorDetail(id), events };
   }
   list(limit = 50, offset = 0, activeFirst = false) {
     return this.store.list(limit, offset, activeFirst);
@@ -218,6 +218,16 @@ export class Pool {
       if (handle) { handle.cancelled = true; handle.run?.cancel('CANCELLED'); }
     }
     return this.get(id);
+  }
+  resolveInspected(input) {
+    const { taskId, note } = z.object({ taskId: z.string().uuid(), reviewed: z.literal(true), note: z.string().trim().min(1).max(600) }).strict().parse(input);
+    const task = this.store.get(taskId);
+    if (!task) throw new PoolError('NOT_FOUND', 'Görev bulunamadı.');
+    if (task.state !== 'needs_review' || this.active.has(taskId)) throw new PoolError('INVALID_STATE', 'Yalnızca durmuş ve dosyaları incelenmiş görev çözümlenebilir.');
+    this.store.event(taskId, 'review_resolution', note);
+    this.store.update(taskId, 'failed', task.result, 'MANUALLY_RESOLVED');
+    this.schedule();
+    return this.get(taskId);
   }
   schedule() {
     if (this.closed || this.pumping) return;
@@ -261,7 +271,7 @@ export class Pool {
       const outcome = await handle.run.done;
       if (outcome.detail) this.store.event(task.id, 'error_detail', outcome.detail);
       if (handle.cancelled) this.store.update(task.id, request.kind === 'write' ? 'needs_review' : 'cancelled', null, 'CANCELLED');
-      else if (outcome.error) this.store.update(task.id, request.kind === 'write' ? 'needs_review' : outcome.error === 'TIMEOUT' ? 'timed_out' : 'failed', null, outcome.error);
+      else if (outcome.error) this.store.update(task.id, request.kind === 'write' ? 'needs_review' : outcome.error === 'TIMEOUT' ? 'timed_out' : 'failed', outcome.result || null, outcome.error);
       else if (request.mode === 'execute') {
         const report = parseExecutionReport(outcome.result);
         const error = !report ? 'INVALID_REPORT' : report.status !== 'completed' ? 'WORK_INCOMPLETE' : null;

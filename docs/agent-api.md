@@ -223,3 +223,17 @@ bunlara dosya aracı varmış gibi etiket verilmez. Özel CLI şablonu read/writ
 kapsamını kendi native bayraklarıyla uygulamalıdır; Pool shell veya evrensel dosya
 aracı eklemez. Salt okunur kapsam bazı native CLI'larda işletim sistemi sandbox'ı
 olmayan plan/tool politikasıdır; ajan çıktıları güvenilir kanıt değildir.
+
+### Antigravity 1.8.1 tanılama ve kurtarma
+
+İcra istekleri native `--json-schema` rapor sözleşmesini kullanır. İzin hatasında
+`errorDetail`, reddedilen araç/komut ve red nedenini full/compact sonuçlarda korur;
+varsa ajanın engel raporu da korunur. SUCCESS+denied_actions boş başarı sayılmaz.
+Windows CLI izinleri tam komut satırı için `command(regex:...)` gerektirebilir.
+Havuz native izinleri değiştirmez; değişiklik yalnız kullanıcının yetkisiyle yapılır.
+
+Dosyaları incelenmiş durmuş bir yazma işi için sahibi
+`cli-agent-pool resolve <task-id> --note "İncelenen dosyalar ve karar"` çalıştırabilir.
+İşlem canlı daemon üzerinden yapılır, sonuçları saklar ve işi tekrar çalıştırmaz.
+Aynı dizinde yazma işleri sırayla, okumalar kapasite dahilinde paralel çalışır.
+Bu bakım yeni worktree/otomatik temizleme oluşturmaz; cwd/süreç ayrımı OS sandbox değildir.

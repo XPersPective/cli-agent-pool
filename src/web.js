@@ -71,6 +71,7 @@ function annotateView(view, directory) {
 }
 
 export function managementOperation(pool, management, body) {
+  if (body.operation === 'resolve') return pool.resolveInspected({ taskId: body.taskId, reviewed: body.reviewed, note: body.note });
   if (body.operation === 'save') {
     if (body.config?.port !== pool.config.port || body.config?.python !== pool.config.python) throw new PoolError('RESTART_REQUIRED', 'Port veya Python yolunu değiştirmek için servisi durdurup yerel ayarları değiştirin.');
     if (body.secrets && typeof body.secrets === 'object') {

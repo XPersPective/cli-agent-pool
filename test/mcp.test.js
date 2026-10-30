@@ -17,6 +17,8 @@ import { Pool } from '../src/pool.js';
 import { createServer } from '../src/server.js';
 import { ensureDaemon, runTaskFromCli } from '../src/daemon.js';
 import { version } from '../src/version.js';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 async function application(t) {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-mcp-'));
@@ -38,6 +40,19 @@ async function application(t) {
   t.after(async () => { app.server.close(); app.server.closeAllConnections(); await pool.close(); store.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   return { root, pool, token, managementToken, app, url: new URL(`http://127.0.0.1:${address.port}/mcp`) };
 }
+
+test('CLI resolve talks to the running authenticated owner without opening a second Store', async t => {
+ const {root,pool}=await application(t);
+ pool.config.routes[0].models[0].kinds=['write'];pool.checkAuth=async()=>{};
+ pool.execute=()=>({cancel(){},done:Promise.resolve({error:'PERMISSION_REQUIRED',detail:'run_command denied',result:'preserved native report'})});
+ const task=pool.submit({prompt:'synthetic denial',workspace:root,kind:'write',idempotencyKey:'cli-resolve-live-owner'});
+ for(let i=0;i<50 && pool.get(task.id).state!=='needs_review';i++)await delay(10);
+ assert.equal(pool.get(task.id).state,'needs_review');
+ const {stdout}=await promisify(execFile)(process.execPath,[fileURLToPath(new URL('../bin/pool.js',import.meta.url)),'resolve',task.id,'--note','Inspected synthetic workspace.'],{env:{...process.env,CLI_AGENT_POOL_HOME:root},timeout:10000});
+ assert.equal(JSON.parse(stdout).resolved,task.id);
+ assert.equal(pool.get(task.id).state,'failed');assert.equal(pool.get(task.id).result,'preserved native report');
+ assert.equal(pool.get(task.id).errorDetail,'run_command denied');
+});
 
 test('HTTP boundary rejects missing/wrong auth, foreign Host and browser Origin', async t => {
   const { url, token } = await application(t);

@@ -41,6 +41,7 @@ export class Store {
   event(id, kind, detail) { this.db.prepare('INSERT INTO events(task_id,time,kind,detail) VALUES(?,?,?,?)').run(id, new Date().toISOString(), kind, detail); }
   events(id, after = 0) { return this.db.prepare('SELECT seq,time,kind,detail FROM events WHERE task_id=? AND seq>? ORDER BY seq LIMIT 100').all(id, after); }
   reportedModel(id) { return this.db.prepare("SELECT detail FROM events WHERE task_id=? AND kind='progress' AND detail LIKE 'model:%' ORDER BY seq DESC LIMIT 1").get(id)?.detail.slice(6) || null; }
+  errorDetail(id) { return this.db.prepare("SELECT detail FROM events WHERE task_id=? AND kind='error_detail' ORDER BY seq DESC LIMIT 1").get(id)?.detail || null; }
   quota(routeId) { const row = this.db.prepare('SELECT snapshot FROM quotas WHERE route_id=?').get(routeId); return row ? JSON.parse(row.snapshot) : null; }
   saveQuota(routeId, snapshot) { this.db.prepare('INSERT INTO quotas(route_id,snapshot) VALUES(?,?) ON CONFLICT(route_id) DO UPDATE SET snapshot=excluded.snapshot').run(routeId, JSON.stringify(snapshot)); }
   pruneHistory(before = new Date(Date.now()-7*86400_000).toISOString()) {

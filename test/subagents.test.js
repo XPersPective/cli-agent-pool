@@ -106,3 +106,23 @@ test('cancelling a waiting writer releases its fairness barrier immediately',asy
  assert.equal(pool.get(later.id).state,'queued');pool.cancel(writer.id);await delay(30);
  assert.equal(pool.get(later.id).state,'running');for(const resolve of pending)resolve({result:'read'});
 });
+
+test('permission diagnostics survive compact polling; inspected resolution preserves report and releases queued writer', async t => {
+ const report=JSON.stringify({status:'blocked',summary:'Denied',files:[],checks:[],research:[],blockers:['run_command git status denied']});
+ const {pool,submit}=await fixture(t,()=>({cancel(){},done:Promise.resolve({error:'PERMISSION_REQUIRED',detail:'run_command: git status denied by owner rule',result:report})}));
+ const first=submit('denied','write',{mode:'execute'});await delay(40);
+ const blocked=compactTask(pool.get(first.id,999999));
+ assert.equal(blocked.errorDetail,'run_command: git status denied by owner rule');
+ assert.equal(blocked.report.status,'blocked');assert.equal(blocked.state,'needs_review');
+ const later=submit('later','write',{mode:'execute'});assert.equal(pool.get(later.id).blockedBy,first.id);
+ assert.throws(()=>pool.resolveInspected({taskId:first.id,reviewed:false,note:'not reviewed'}));
+ assert.throws(()=>pool.resolveInspected({taskId:later.id,reviewed:true,note:'queued'}),{code:'INVALID_STATE'});
+ pool.active.set(first.id,{});
+ assert.throws(()=>pool.resolveInspected({taskId:first.id,reviewed:true,note:'still active'}),{code:'INVALID_STATE'});
+ pool.active.delete(first.id);
+ const resolved=pool.resolveInspected({taskId:first.id,reviewed:true,note:'Inspected files and native denial; no replay.'});
+ assert.equal(resolved.result,report);assert.equal(resolved.error,'MANUALLY_RESOLVED');
+ assert(resolved.events.some(e=>e.kind==='review_resolution'));
+ assert.throws(()=>pool.resolveInspected({taskId:first.id,reviewed:true,note:'again'}),{code:'INVALID_STATE'});
+ await delay(40);assert.equal(pool.get(later.id).state,'needs_review');
+});

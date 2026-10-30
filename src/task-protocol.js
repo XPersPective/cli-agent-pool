@@ -10,6 +10,8 @@ export const executionReportSchema = z.object({
   blockers: z.array(z.string().min(1).max(300)).max(10),
 }).strict().refine(report => JSON.stringify(report).length <= 6000, 'Report must fit 6000 characters');
 
+export const executionReportJsonSchema = z.toJSONSchema(executionReportSchema);
+
 export function parseExecutionReport(result) {
   try {
     const json = JSON.parse(result.trim().replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```$/, ''));

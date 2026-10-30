@@ -12,7 +12,7 @@ import { codexControl } from '../src/codex-control.js';
 import { stdioBridge } from '../src/stdio.js';
 import { rpcRequest } from '../src/rpc.js';
 import { version } from '../src/version.js';
-import { ensureInitialized, ensureDaemon, openDashboardWindow, withMcpClient, callPoolTool, runTaskFromCli, installDesktopAndSkills } from '../src/daemon.js';
+import { ensureInitialized, ensureDaemon, managementRequest, openDashboardWindow, withMcpClient, callPoolTool, runTaskFromCli, installDesktopAndSkills } from '../src/daemon.js';
 
 function parseFlags(args) {
   const flags = {};
@@ -179,13 +179,11 @@ export async function main(args = process.argv.slice(2)) {
   }
   if (command === 'resolve') {
     if (!rest[0]) throw new PoolError('TASK_REQUIRED', 'Elle incelenen görev kimliğini belirtin.');
-    const store = new Store(path.join(directory, 'pool.sqlite'));
-    try {
-      const task = store.get(rest[0]);
-      if (task?.state !== 'needs_review') throw new PoolError('INVALID_STATE', 'Yalnızca inceleme bekleyen görev çözümlenebilir.');
-      store.update(task.id, 'failed', null, 'MANUALLY_RESOLVED');
-      print({ resolved: task.id });
-    } finally { store.close(); }
+    const config = ensureInitialized(directory, false);
+    await ensureDaemon(directory, config);
+    const { flags } = parseFlags(rest.slice(1));
+    const task = await managementRequest(directory, config, { operation: 'resolve', taskId: rest[0], reviewed: true, note: flags.note || 'Operator inspected the stopped task and workspace before invoking CLI resolve.' });
+    print({ resolved: task.id });
     return;
   }
   if (command !== 'serve') throw new PoolError('UNKNOWN_COMMAND', 'Bilinmeyen komut. help komutunu çalıştırın.');
