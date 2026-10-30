@@ -391,7 +391,8 @@ export function buildArguments(route, model, task) {
   if (route.adapter === 'agy') {
     const selectedEffort = effort || model.defaultEffort || Object.keys(model.variants || {})[0];
     if (model.variants && !model.variants[selectedEffort]) throw new PoolError('INVALID_EFFORT', 'Bu model için desteklenen bir efor seçin.');
-    return [...argv, '--output-format', 'stream-json', '--mode', task.kind === 'write' ? 'accept-edits' : 'plan', '--disable-slash-commands', '--model', model.variants?.[selectedEffort] || model.id, ...(selectedEffort ? ['--effort', selectedEffort] : []), `--print=${task.prompt}`];
+    const promptArg = route.promptStdin === false ? [`--print=${task.prompt}`] : ['--input-format', 'stream-json'];
+    return [...argv, '--output-format', 'stream-json', ...promptArg, '--mode', task.kind === 'write' ? 'accept-edits' : 'plan', '--disable-slash-commands', '--model', model.variants?.[selectedEffort] || model.id, ...(selectedEffort ? ['--effort', selectedEffort] : [])];
   }
   if (route.adapter === 'omniroute') return [...argv, 'chat', '--stdin', '--no-history', '-m', model.id, ...(effort ? ['--reasoning-effort', effort] : [])];
   if (route.adapter === 'mmx') return [...argv, 'text', 'chat', '--model', model.id, '--messages-file', '-', '--output', 'json'];
@@ -450,7 +451,7 @@ export function classifyFailure(message) {
 }
 
 const strictJsonlAdapters = new Set(['codex', 'claude', 'qwen', 'opencode', 'mimo', 'agy', 'mcode']);
-const promptArgAdapters = new Set(['zcode', 'kimi', 'aider', 'agy']);
+const promptArgAdapters = new Set(['zcode', 'kimi', 'aider']);
 
 export function execute(route, model, task, python, progress, directory = dataDirectory()) {
   let answer = '';
@@ -462,7 +463,7 @@ export function execute(route, model, task, python, progress, directory = dataDi
   const argv = buildArguments(route, model, task);
   const extraEnv = { ...routeEnvironment(route, directory, task.kind), CLI_AGENT_POOL_WORKER: '1' };
   const usesStdin = route.promptStdin ?? !promptArgAdapters.has(route.adapter);
-  const input = !usesStdin ? '' : route.adapter === 'mmx' ? JSON.stringify([{ role: 'user', content: task.prompt }]) : task.prompt;
+  const input = !usesStdin ? '' : route.adapter === 'mmx' ? JSON.stringify([{ role: 'user', content: task.prompt }]) : route.adapter === 'agy' ? `${JSON.stringify({ event: 'user', message: { content: task.prompt } })}\n` : task.prompt;
   const process = runProcess({ argv, cwd: task.workspace, input, extraEnv, python, timeoutMs: task.timeoutSeconds * 1000,
     onLine(line) {
       if (!line.trim()) return;

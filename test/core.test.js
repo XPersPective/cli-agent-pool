@@ -299,6 +299,28 @@ test('ZCode stream-json response, MiniMax Code, Custom CLI argsTemplate and impo
 });
 
 test('non-metered routes are preferred over paid_api and missing subscription plan only blocks subscription/token_plan', t => {
+test('Antigravity streams large Unicode prompts on stdin without changing explicit prompt argument or permission settings', async t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pool-agy-stdin-'));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  const prompt = `lead 🎤\n${'x'.repeat(40_000)}\nend 🧪`;
+  const executable = path.join(root, 'agy.js');
+  writeFileSync(executable, `let input='';process.stdin.on('data',c=>input+=c).on('end',()=>{const message=JSON.parse(input);const expected=${JSON.stringify(prompt)};const args=process.argv.slice(2);const ok=message.event==='user'&&message.message?.content===expected&&!args.some(arg=>arg.includes('lead 🎤'));console.log(JSON.stringify({event:'result',result:{status:ok?'SUCCESS':'ERROR',response:ok?'stdin-ok':'bad-input'}}))});`);
+  const route = { id: 'agy-test', adapter: 'agy', billing: 'subscription', executable, models: [] };
+  const model = { id: 'gemini-4-argon', defaultEffort: 'medium', variants: { medium: 'gemini-4-argon-medium' } };
+  const task = { prompt, workspace: root, kind: 'text', effort: 'medium', timeoutSeconds: 10 };
+  const argv = buildArguments(route, model, task);
+  assert.ok(argv.includes('--input-format') && argv[argv.indexOf('--input-format') + 1] === 'stream-json');
+  assert.ok(argv.includes('--output-format') && argv[argv.indexOf('--output-format') + 1] === 'stream-json');
+  assert.ok(!argv.some(arg => arg.includes(prompt) || arg.startsWith('--print=')));
+  assert.ok(argv.includes('--mode') && argv[argv.indexOf('--mode') + 1] === 'plan');
+  assert.ok(argv.includes('--model') && argv[argv.indexOf('--model') + 1] === 'gemini-4-argon-medium');
+  assert.ok(argv.includes('--effort') && argv[argv.indexOf('--effort') + 1] === 'medium');
+  const streamed = await execute(route, model, task, py, () => {}, root).done;
+  assert.deepEqual(streamed, { result: 'stdin-ok' });
+  const legacy = buildArguments({ ...route, promptStdin: false }, model, task);
+  assert.ok(legacy.some(arg => arg === `--print=${prompt}`));
+  assert.ok(!legacy.includes('--input-format'));
+});
   const root = mkdtempSync(path.join(tmpdir(), 'pool-select-'));
   const config = configSchema.parse({
     workspaceRoots: [root],

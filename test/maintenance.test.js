@@ -14,7 +14,7 @@ import { Store } from '../src/store.js';
 test('native effort variants migrate atomically and keep the actual CLI ID and prompt', async t=>{
  const root=mkdtempSync(path.join(tmpdir(),'pool-variants-')),file=path.join(root,'agy.cjs');
  t.after(()=>rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:100}));
- writeFileSync(file,`const a=process.argv.slice(2);if(a[0]==='models'){console.log('gemini-3.8-flash-high\\tFlash High\\ngemini-3.8-flash-low\\tFlash Low');process.exit(0)} const prompt=a.find(v=>v.startsWith('--print='));if(!prompt || a.includes('-p'))process.exit(2);console.log(JSON.stringify({type:'result',result:prompt.slice(8)}));`);
+ writeFileSync(file,`const a=process.argv.slice(2);if(a[0]==='models'){console.log('gemini-3.8-flash-high\\tFlash High\\ngemini-3.8-flash-low\\tFlash Low');process.exit(0)}let input='';process.stdin.on('data',c=>input+=c).on('end',()=>{const message=JSON.parse(input);if(a.includes('--print')||a.some(v=>v.startsWith('--print='))||a.includes('-p')||a[a.indexOf('--input-format')+1]!=='stream-json')process.exit(2);console.log(JSON.stringify({event:'result',result:{status:'SUCCESS',response:message.message?.content}}))});`);
  const route={id:'agy',adapter:'agy',executable:file,models:[{id:'gemini-3.8-flash-high',alias:'High',group:'high',enabled:true,efforts:['high']},{id:'gemini-3.8-flash-low',alias:'Low',group:'low',enabled:true,efforts:['low']}]};
  const catalog=await routeCatalog(route,root,process.platform==='win32'?'python':'python3');
  assert.equal(catalog.models.length,1);assert.deepEqual(catalog.models[0].efforts,['high','low']);
