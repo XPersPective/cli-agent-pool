@@ -7,6 +7,7 @@ import { PoolError, configView } from './config.js';
 import { browserUI, managementOperation } from './web.js';
 import { taskSchema, groupAssignmentSchema } from './pool.js';
 import { version } from './version.js';
+import { compactTask } from './task-protocol.js';
 
 export function mcpServer(pool) {
   const server = new McpServer({ name: 'cli-agent-pool', version });
@@ -25,11 +26,11 @@ export function mcpServer(pool) {
   register('pool_list_connections', 'List configured CLI and API routes without credentials or account identifiers.', {}, () => pool.config.routes.map(({ id, adapter, enabled, billing, autoSelect, api }) => ({ id, adapter, enabled, billing, autoSelect: autoSelect ?? (billing !== 'paid_api'), protocol: api?.protocol || null, baseUrl: api?.baseUrl || null, auth: 'unknown' })));
   register('pool_list_pools', 'Read the three strength pools, their exact model IDs, mandatory effort rules and cached quota windows. In manual mode select a pool with group; do not override fixedEffort.', {}, () => pool.pools());
   register('pool_list_models', 'List configured models. Manual groups are authoritative.', {}, () => pool.models());
-  register('pool_get_policy', 'Read admission policy and owner-controlled grouping permission. Read revision before assigning groups.', {}, () => ({ concurrency: pool.config.concurrency, groupingMode: pool.config.groupingMode, selectionMode: pool.config.selectionMode, strengthPools: ["high", "medium", "low"], fixedEffort: "owner-pool-effort-is-mandatory", revision: configView(pool.directory).revision, automaticRetry: false, overlappingWorkspaces: 'serialized', unknownQuota: 'bounded-task', billing: 'explicit-route-billing', paidApiAutoSelect: 'opt-in', maxQueued: 100, maxTimeoutSeconds: 3600 }));
+  register('pool_get_policy', 'Read admission policy and owner-controlled grouping permission. Read revision before assigning groups.', {}, () => ({ concurrency: pool.config.concurrency, groupingMode: pool.config.groupingMode, selectionMode: pool.config.selectionMode, strengthPools: ["high", "medium", "low"], fixedEffort: "owner-pool-effort-is-mandatory", revision: configView(pool.directory).revision, automaticRetry: false, overlappingWorkspaces: 'shared-read-exclusive-write', taskModes: ['response', 'execute'], executionReport: 'v1-json-6000-chars', unknownQuota: 'bounded-task', billing: 'explicit-route-billing', paidApiAutoSelect: 'opt-in', maxQueued: 100, maxTimeoutSeconds: 3600 }));
   register('pool_assign_groups', 'Assign model groups only when the owner enabled agent grouping. Cannot change billing, permissions or routes. Preserve owner groups unless asked to reclassify. Use the current policy revision.', groupAssignmentSchema.shape, input => pool.assignGroups(input), false);
-  register('pool_select', 'Recommend an allowed model without starting a task. minRemainingPercent can raise the owner quota reserve, never lower it.', { kind: z.enum(['text', 'read', 'write']), routeId: z.string().optional(), modelId: z.string().optional(), group: z.string().optional(), effort: z.string().optional(), minRemainingPercent: z.number().min(0).max(100).optional() }, input => pool.selectLive(input));
-  register('pool_submit', 'Start one bounded CLI task. Reuse the same idempotency key when retrying a lost response. Write tasks may change workspace files.', taskSchema.shape, input => pool.submitLive(input), false);
-  register('pool_get_task', 'Read task state, result and at most 100 events after a cursor.', { taskId: z.string().uuid(), after: z.number().int().min(0).default(0) }, ({ taskId, after }) => pool.get(taskId, after));
+  register('pool_select', 'Recommend an allowed model without starting a task. mode: execute requires write and native tool support. minRemainingPercent can raise the owner quota reserve, never lower it.', { kind: z.enum(['text', 'read', 'write']), mode: z.enum(['response', 'execute']).optional(), routeId: z.string().optional(), modelId: z.string().optional(), group: z.string().optional(), effort: z.string().optional(), minRemainingPercent: z.number().min(0).max(100).optional() }, input => pool.selectLive(input));
+  register('pool_submit', 'Start one bounded CLI task. For implementation use kind: write, mode: execute and the calling project/worktree absolute workspace. Native tools perform edits and checks, then return a short report. Reuse the same idempotency key for a lost response; poll the returned ID, never replay a started write.', taskSchema.shape, input => pool.submitLive(input), false);
+  register('pool_get_task', 'Read task state and result. compact: true omits prompt/events and bounds the report to reduce tokens. Queued is not failure; inspect queueReason/blockedBy.', { taskId: z.string().uuid(), after: z.number().int().min(0).default(0), compact: z.boolean().default(false) }, ({ taskId, after, compact }) => compact ? compactTask(pool.get(taskId, after)) : pool.get(taskId, after));
   register('pool_list_tasks', 'Read paginated local task history.', { limit: z.number().int().min(1).max(100).default(50), offset: z.number().int().min(0).max(1_000_000).default(0) }, ({ limit, offset }) => pool.list(limit, offset));
   register('pool_cancel_task', 'Request cancellation and wait for subsequent task state to confirm it.', { taskId: z.string().uuid() }, ({ taskId }) => pool.cancel(taskId), false);
   register('pool_get_quotas', 'Query vendor quota through the installed CLI. Unsupported quotas remain unknown.', { routeId: z.string() }, ({ routeId }) => pool.getQuota(routeId));
@@ -57,7 +58,7 @@ export function createServer(pool, token, port = pool.config.port, management) {
     if (req.url !== '/mcp' && !manage && !browser) return fail(404, 'NOT_FOUND', 'İstenen arayüz bulunamadı.');
     if (req.method !== 'POST') return fail(405, 'METHOD_NOT_ALLOWED', 'Bu arayüz POST isteği kabul eder.');
     if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) return fail(415, 'CONTENT_TYPE', 'JSON isteği gerekli.');
-    if (inflight >= 16) return fail(429, 'BUSY', 'Çok fazla eşzamanlı istek var. Biraz sonra deneyin.');
+    if (inflight >= 128) return fail(429, 'BUSY', 'Çok fazla eşzamanlı istek var. Biraz sonra deneyin.');
     inflight++;
     res.once('close', () => { inflight--; });
     let bytes = 0;

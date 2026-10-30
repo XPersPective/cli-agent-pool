@@ -194,3 +194,14 @@ test('CLI submits an unregistered project without changing owner configuration',
   assert.equal(JSON.stringify(pool.config), before);
   assert.deepEqual(JSON.parse((await import('node:fs')).readFileSync(path.join(root, 'config.json'), 'utf8')).workspaceRoots, []);
 });
+
+test('CLI execute infers write and MCP compact result returns the validated report without duplicated output', async t => {
+ const {root,pool}=await application(t);
+ const report={status:'completed',summary:'Created artifact',files:[{path:'artifact.txt',change:'Created'}],checks:[{command:'content check',outcome:'passed'}],research:[],blockers:[]};
+ pool.config.routes[0].models[0].kinds.push('write');
+ writeFileSync(path.join(root,'fake-codex.js'),`if(process.argv.includes('login')){console.log('Logged in using ChatGPT')}else{let input='';process.stdin.on('data',c=>input+=c).on('end',()=>{if(!input.includes('subagent protocol v1'))process.exit(2);require('node:fs').writeFileSync('artifact.txt','done');console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:${JSON.stringify(JSON.stringify(report))}}}));console.log(JSON.stringify({type:'turn.completed'}));});}`);
+ const result=await runTaskFromCli(root,{mode:'execute',workspace:root,prompt:'Implement the task',group:'default',idempotencyKey:'cli-execute-report-test',waitSeconds:5});
+ assert.equal(result.state,'succeeded');assert.equal(result.kind,'write');assert.deepEqual(result.report,report);
+ assert(!('prompt' in result));assert(!('events' in result));assert(!('result' in result));
+ const fs=await import('node:fs');assert.equal(fs.readFileSync(path.join(root,'artifact.txt'),'utf8'),'done');
+});

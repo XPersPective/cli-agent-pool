@@ -9,7 +9,7 @@ export function mergeScanDraft(scanned, before, draft) {
     const original = before.routes.find(item => item.id === route.id);
     if (!target) { if (!original) merged.routes.push(structuredClone(route)); continue; }
     if (!original) continue;
-    for (const key of ['enabled', 'billing', 'autoSelect', 'trustedSettings', 'priority', 'minRemainingPercent', 'api']) {
+    for (const key of ['enabled', 'billing', 'autoSelect', 'trustedSettings', 'toolPolicy', 'priority', 'maxConcurrent', 'minRemainingPercent', 'api']) {
       if (JSON.stringify(route[key]) !== JSON.stringify(original[key])) {
         if (route[key] === undefined) delete target[key]; else target[key] = structuredClone(route[key]);
       }
@@ -64,7 +64,11 @@ export function modelSaveConfig(base, draft, routeId, modelId, enableRoute = fal
 
 export function preferenceSaveConfig(base, draft, key) {
   if (!['selectionMode', 'groupingMode', 'modelFilters', 'concurrency'].includes(key)) throw new Error('Geçersiz havuz ayarı.');
-  return { ...structuredClone(base), [key]: structuredClone(draft[key]) };
+  const next = { ...structuredClone(base), [key]: structuredClone(draft[key]) };
+  if (key === 'concurrency' && Array.isArray(next.routes)) {
+    for (const route of next.routes) if (typeof route.maxConcurrent === 'number') route.maxConcurrent = draft.concurrency;
+  }
+  return next;
 }
 
 export function quotaWindows(snapshot, modelId = '') {

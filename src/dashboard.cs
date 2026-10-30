@@ -25,7 +25,7 @@ internal static class Dashboard {
         if (value.IndexOf('"') >= 0 || value.IndexOf('\r') >= 0 || value.IndexOf('\n') >= 0) throw new ArgumentException("Invalid launch argument");
         return "\"" + value + new string('\\', value.Length - value.TrimEnd('\\').Length) + "\"";
     }
-    static List<IntPtr> Windows(string profile) {
+    static HashSet<uint> ProfileProcesses(string profile) {
         var ids = new HashSet<uint>();
         using (var search = new ManagementObjectSearcher("SELECT ProcessId, CommandLine FROM Win32_Process WHERE Name='msedge.exe' OR Name='chrome.exe'"))
         using (var processes = search.Get()) {
@@ -35,6 +35,10 @@ internal static class Dashboard {
                     ids.Add(Convert.ToUInt32(process["ProcessId"]));
             }
         }
+        return ids;
+    }
+    static List<IntPtr> Windows(string profile) {
+        var ids = ProfileProcesses(profile);
         var windows = new List<IntPtr>();
         EnumWindows(delegate(IntPtr window, IntPtr data) {
             uint pid; GetWindowThreadProcessId(window, out pid);
@@ -45,6 +49,15 @@ internal static class Dashboard {
             return true;
         }, IntPtr.Zero);
         return windows;
+    }
+    static void RetireWindowlessProfile(string profile) {
+        var ids = ProfileProcesses(profile);
+        if (ids.Count == 0) return;
+        foreach (uint pid in ids) {
+            try { using (var proc = Process.GetProcessById((int)pid)) { proc.Kill(); proc.WaitForExit(2000); } }
+            catch { }
+        }
+        Thread.Sleep(250);
     }
     static void Activate(List<IntPtr> windows) {
         // Retire duplicate Pool windows only; workers and personal browser profiles are unrelated.
@@ -67,7 +80,14 @@ internal static class Dashboard {
                 catch (ApplicationException) { throw; }
                 catch { File.WriteAllText(Path.Combine(directory,"dashboard-start-error.log"), "Exit: " + process.ExitCode + "\r\n" + error.Result); throw new Exception("Pool servisi baslatilamadi (" + process.ExitCode + "): " + error.Result); }
             }
-            return Convert.ToString(new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(text)["dashboard"]);
+            int jsonStart = text.IndexOf('{');
+            Dictionary<string,object> payload = jsonStart >= 0 ? new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(text.Substring(jsonStart)) : null;
+            string dashboard = payload != null && payload.ContainsKey("dashboard") ? Convert.ToString(payload["dashboard"]) : null;
+            if (string.IsNullOrWhiteSpace(dashboard)) {
+                File.WriteAllText(Path.Combine(directory,"dashboard-start-error.log"), "Exit: 0\r\nStdout: " + text + "\r\nStderr: " + error.Result);
+                throw new Exception("Pool servisi panel baglantisini dondurmedi. Kurulumu (npm run setup) kontrol edin.");
+            }
+            return dashboard;
         }
     }
     [STAThread] static int Main(string[] args) {
@@ -86,6 +106,7 @@ internal static class Dashboard {
                 try {
                     var windows = Windows(profile);
                     if (windows.Count > 0) { Activate(windows); return 0; }
+                    RetireWindowlessProfile(profile);
                     string url = args[1] == "--url" ? args[2] : EnsureUrl(directory, args[1], args[2]);
                     var uri = new Uri(url);
                     if (uri.Scheme != "http" || uri.Host != "127.0.0.1") throw new Exception("Invalid local dashboard URL");
@@ -96,7 +117,7 @@ internal static class Dashboard {
                         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Google", "Chrome", "Application", "chrome.exe"),
                         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Google", "Chrome", "Application", "chrome.exe") }) if (File.Exists(candidate)) { browser=candidate; break; }
                     if (browser == null) throw new Exception("Microsoft Edge veya Google Chrome bulunamadi.");
-                    var start = new ProcessStartInfo(browser, Quote("--app="+url) + " --new-window " + Quote("--user-data-dir="+profile) + " --no-first-run --no-default-browser-check --disable-background-mode") { UseShellExecute=false, WindowStyle=ProcessWindowStyle.Normal };
+                    var start = new ProcessStartInfo(browser, Quote("--app="+url) + " --new-window " + Quote("--user-data-dir="+profile) + " --no-first-run --no-default-browser-check --disable-background-mode --no-service-autorun") { UseShellExecute=false, WindowStyle=ProcessWindowStyle.Normal };
                     using (var process = Process.Start(start)) { }
                     for (int i=0; i<100; i++) {
                         Thread.Sleep(200); windows=Windows(profile);

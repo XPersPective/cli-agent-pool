@@ -1,5 +1,71 @@
 # Devralma ve düzeltme planı — 19 Ekim 2026
 
+## Native CLI yetenekleri ve yayın
+
+İstenen kapsam: dosya aracı bulunan yerleşik CLI'larda istek text/read/write ile
+araç kapsamını seçer; Qwen'in eski yazma engeli kaldırılır ve Antigravity'nin
+eski text-only katalog kayıtları native yeteneklerle uzlaştırılır. Native izinler
+ve ücret/kota kuralları korunur. Sohbet CLI'larının araçsız oluşu açık ayrılır.
+Katalog yeteneği ile native izin reddi farklı bilgi olarak sunulur. İki ürünün
+sürümleri, testleri, Git yayınları ve yerel skill dağıtımları doğrulanacak.
+
+1.8 native deneme: Qwen token-plan aylık kotasının dolduğunu bildirdi; dosya
+oluşmadı. Antigravity native PERMISSION_REQUIRED döndü; hedef dosya oluşmadı.
+Bu izin reddi tool yeteneğinin yokluğu olarak katalogdan silinmez ve native deny
+kuralı aşılmaz. Qwen auto-edit, read plan, Antigravity native mode ve stale-kinds
+uzlaştırması supervisor üzerinden gerçek dosya değiştiren sentetik CLI ile testlidir.
+
+## 30 Ekim 2026 — paralel alt ajan ve yürütme protokolü
+
+Dağıtım devamı: Windows bağımsız npm paketini, native launcher/kısayollarını ve
+canlı UI sürümünü doğrula. Çağrı görünümünde response/execute ve yapılandırılmış
+raporu okunabilir göster. Ayrı Project Brain kaynağının execute/compact ve eski
+dispatch kayıtlarıyla migration uyumunu doğrulayıp Skills Manager ile dağıt.
+
+Ek kabul: bütün modal diyaloglar dışarı tıklama/Escape ile kapanmalı ve kapanış
+durumu temizlenmeli. NO_ROUTE hangi havuz, yetenek, efor, kota veya bağlantı
+koşulunun elediğini açıklamalı; hiçbir owner kuralı otomatik gevşetilmeyecek.
+
+1.7.2 doğrulaması: 87 node:test, syntax/secrets ve audit geçti (0 açık). Windows
+setup artık npm.cmd yerine Node/npm-cli.js kullanır, paketleme/kurulum hatalarını
+yutmaz ve geçici paketi repo dışında tutar. Bağımsız global npm paketi kuruldu;
+native launcher/kısayolları güncellendi ve uygulama penceresi açıldı. Canlı UI
+v1.7.2 gösteriyor. Gerçek Edge oturumunda diyalog içi tıklama açık bıraktı;
+dışarı tıklama ve Escape diyalogu kapatıp ayrıntı durumunu temizledi.
+NO_ROUTE aday eleme nedenlerini bildiriyor; yerel low/write seçimi kota,
+otomatik seçim kapalı ve yetenek sınırları nedeniyle uygun aday bulamıyor.
+Bu bir ödeme/izin kuralı gevşetilerek örtülmedi. Ayrı Brain 3.6.0'ın yeni modlar,
+oturum kapısı, intake/odak, migration/no-replay ve bağımsız Solo/native kontrolleri
+tam test setinden geçti; kurulu Pool üzerinden sentetik entegrasyon da geçti.
+
+Karar: salt okunur işler ortak workspace kilidi paylaşabilir; yazmalar ve inceleme
+karantinası dışlayıcı kalır. Bekleyen yazma yeni okumalarla aç bırakılmayacak.
+CLI kuyruk beklemesini yürütme timeout'undan ayırır ve görev kimliğini korur.
+`mode: execute` yalnızca write işlerinde gerçek uygulama/komut/test talimatı ve
+kısa sonuç sözleşmesi ekler; native izinler ve ödeme/kota rezervleri korunur.
+Çağıran ajan kendi workspace/worktree yolunu verir. Paralel yazma için ayrı
+worktree kullanır, entegrasyonu tek yazma göreviyle yapar; otomatik merge/replay yok.
+
+- [x] Paylaşımlı okuma, yazma adaleti, karantina ve hata sonrası kilit testleri.
+- [x] CLI bekleme, response/execute modları, kısa JSON raporu ve MCP/CLI sözleşmesi.
+- [x] Gerçek dosya yazan subprocess regresyonu; test/check/secrets/audit kanıtı.
+
+1.7.0 kanıtı: 83 node:test geçti; syntax/secrets ve npm audit geçti (0 açık).
+32 aynı-workspace okuyucu, yazma sırası, iptal edilen yazmanın bariyeri,
+worker promise hatası sonrası karantina, kuyruk beklemesinden görev kimliğiyle
+dönüş, bozuk/eksik rapor ve gerçek MCP/CLI execute akışı kontrol edildi.
+Native denemede iki Antigravity modeli aynı workspace içinde paralel yanıtladı;
+ayrı çalışma kökünde Codex dosyayı oluşturdu, içerik kontrolü çalıştırdı ve geçerli
+JSON raporu döndürdü. Dosya içeriği ana süreç tarafından ayrıca doğrulandı.
+Bir önceki denemede farklı bir Codex katalog modeli native MODEL_UNAVAILABLE
+döndü; katalogda bulunmak hesap erişimi garantisi değildir. O denemenin çalışma
+klasöründe hedef dosyanın oluşmadığı doğrulandı; ücretli fallback yapılmadı.
+Eski kesinti karantinaları korunuyor; bu bakım bunları otomatik çözmedi.
+Aktif servis işi yokken servis yenilendi; canlı MCP 1.7.0, iki mod ve rapor
+protokolünü bildirdi. Global npm junction bu repo'ya bağlı. Skills Manager yerel
+kaynaktan güncellendi; merkez, Codex ve Antigravity dağıtımları kaynak hash'iyle
+eşleşti. Commit/push yapılmadı.
+
 Bu dosya kullanıcının birikmiş taleplerinin uygulanabilir iş listesidir. İşaretlenmemiş
 işler tamamlanmış sayılmaz. Üretim sürümü başlangıç noktası: **1.4.3**, commit
 `368faf13e8770a992ea7925c08eb9c93787d202f`. Bu belge bir sürüm veya test başarı iddiası değildir.
@@ -378,8 +444,23 @@ yapilir. Gercek servis uzerinden kisa gorevler: ZCode, MiniMax Code, Qwen ve Ant
 "OK" dondu. Codex `gpt-6-luna` ChatGPT hesabiyla desteklenmiyor (OpenAI 400); bu
 makinede model kapatildi.
 
-30 Ekim 2026: Ayarlar ekranina Seri (1) ve Paralel (2-32; varsayilan 20) gorev siniri
-eklendi; `concurrency` ve rota `maxConcurrent` alanlari 32 ile sinirli. Gercek havuz
-admission testi 20 ayri workspace'i paralel baslatir; seri 1 ve 33 reddi de dogrulanir.
-Preference testi yalnizca secilen ayari kaydederken diger taslaklari korur. Ayni/ic ice
-workspace kilidi degistirilmedi.
+1.6.2 (30 Ekim 2026): Ayarlar ekranina Seri (1) ve Paralel (2-32; varsayilan 32) gorev siniri
+eklendi; `concurrency`, rota `maxConcurrent` ve `importDiscoveredRoutes` varsayilanlari
+32 ile hizalandi, eszamanli HTTP istek siniri (`inflight`) 128'e cikarildi ve `concurrency`
+kaydedildiginde mevcut rotalarin `maxConcurrent` degerleri eszamanli guncellenir. Global npm
+junction/symlink uzerinden calistirilan masaustu kisayolunun `bin/pool.js` icinde `realpathSync`
+cozumlenmedigi icin bos cikti verip `dashboard.cs` icinde `NullReferenceException` firlatmasi
+ve penceresiz kalan `dashboard-browser` profil kilidi (`RetireWindowlessProfile`)
+duzeltildi; symlink giris noktasi, 20/30/32 paralel workspace admission ve preference testleri
+eklendi. Ayni/ic ice workspace kilidi degistirilmedi.
+
+1.8 yayın kontrolü: 89 node:test geçti; npm run check, npm run secrets ve npm audit
+başarılı (0 açık). Yeni testler stale text-only kaydı, native/configured kapsamı,
+Qwen auto-edit dosya değişikliği ve Antigravity mode bayraklarını doğrular.
+Brain 3.6.1 Pool'un etkin kinds değerini kullanır; önceki değişmez işler korunur.
+
+Antigravity izin düzeltmesi: kullanıcının talebiyle native CLI settings yedeklendi;
+genel write_file(*) deny kaldırıldı. Komut ve sandbox dışı komut deny kuralları
+korundu; bypass bayrağı kullanılmadı. Yeni izole native çağrı succeeded/completed
+raporu verdi; input okundu, output yazıldı ve ana süreç tam içeriği doğruladı.
+Bu makineye özgü izin ayarı Git'e veya dağıtılan skill'e taşınmadı.

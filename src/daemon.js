@@ -12,6 +12,7 @@ import { initialize, loadConfig, configView, saveConfig, allowedWorkspace, dataD
 import { importDiscoveredRoutes } from './adapters.js';
 import { capture } from './process.js';
 import { version } from './version.js';
+import { waitForTask } from './task-protocol.js';
 
 const poolBinPath = fileURLToPath(new URL('../bin/pool.js', import.meta.url));
 const repoRootPath = fileURLToPath(new URL('..', import.meta.url));
@@ -134,6 +135,9 @@ export async function callPoolTool(client, name, args = {}) {
 }
 
 export async function runTaskFromCli(directory, options) {
+  const waitSeconds = Number(options.waitSeconds ?? 3600);
+  if (!Number.isInteger(waitSeconds) || waitSeconds < 1 || waitSeconds > 86400)
+    throw new PoolError('INVALID_REQUEST', '--wait 1-86400 saniye olmalı.');
   const workspace = allowedWorkspace(options.workspace || process.cwd());
   const config = loadConfig(directory);
   await ensureDaemon(directory, config);
@@ -142,7 +146,8 @@ export async function runTaskFromCli(directory, options) {
     const submitted = await callPoolTool(client, 'pool_submit', {
       prompt: options.prompt,
       workspace,
-      kind: options.kind || 'read',
+      kind: options.kind || (options.mode === 'execute' ? 'write' : options.mode === 'response' ? 'text' : 'read'),
+      ...(options.mode ? { mode: options.mode } : {}),
       ...(options.routeId ? { routeId: options.routeId } : {}),
       ...(options.modelId ? { modelId: options.modelId } : {}),
       ...(options.group ? { group: options.group } : {}),
@@ -151,15 +156,7 @@ export async function runTaskFromCli(directory, options) {
       idempotencyKey: options.idempotencyKey || `cli-${randomUUID()}`,
     });
     if (options.detach) return submitted;
-    const deadline = Date.now() + ((Number(options.timeoutSeconds) || 900) + 15) * 1000;
-    while (Date.now() < deadline) {
-      const current = await callPoolTool(client, 'pool_get_task', { taskId: submitted.id, after: 0 });
-      if (!['queued', 'starting', 'running', 'cancelling'].includes(current.state)) {
-        return current;
-      }
-      await delay(250);
-    }
-    throw new PoolError('CLI_WAIT_TIMEOUT', `Görev zaman aşımına uğradı: ${submitted.id}`);
+    return waitForTask(id => callPoolTool(client, 'pool_get_task', { taskId: id, compact: options.mode === 'execute' }), submitted.id, { waitSeconds, sleep: delay });
   });
 }
 
@@ -231,6 +228,12 @@ Write-Output (ConvertTo-Json @{ desktop = (Join-Path $desktop 'CLI Agent Pool.ln
   const skillFolder = existsSync(path.join(activeRoot, 'skills', 'cli-agent-pool'))
     ? path.join(activeRoot, 'skills', 'cli-agent-pool')
     : path.join(repoRootPath, 'skills', 'cli-agent-pool');
+  const agyConfigSkills = path.join(homedir(), '.gemini', 'config', 'skills');
+  if (existsSync(path.join(skillFolder, 'SKILL.md')) && existsSync(agyConfigSkills)) {
+    const targetDir = path.join(agyConfigSkills, 'cli-agent-pool');
+    mkdirSync(targetDir, { recursive: true });
+    writeFileSync(path.join(targetDir, 'SKILL.md'), readFileSync(path.join(skillFolder, 'SKILL.md')));
+  }
   const smCli = path.join(homedir(), '.skills-manager', 'bin', process.platform === 'win32' ? 'skills-manager-cli.exe' : 'skills-manager-cli');
   if (existsSync(skillFolder) && existsSync(smCli)) {
     const listRes = await capture([smCli, '--json', 'skills', 'list'], activeRoot, config.python);

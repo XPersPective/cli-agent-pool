@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { dataDirectory, initialize, loadConfig, configView, saveConfig, PoolError } from '../src/config.js';
@@ -50,7 +50,7 @@ export async function main(args = process.argv.slice(2)) {
       '  rpc                     Call one agent MCP tool using a JSON request on stdin (auto-starts service)',
       '  mcp-config              Print credential-free stdio configuration for editors and Freebuff',
       '  select                  Select best available model (--kind read|write|text --group <g>)',
-      '  run                     Execute a bounded task (--kind read|write|text --workspace <dir> --prompt <text>)',
+      '  run                     Run a task (--mode response|execute --workspace <dir> --prompt <text>; --wait seconds)',
       '  init                    Create private local configuration',
       '  discover                Scan system for all installed AI CLIs and local model configs',
       '  scan-import             Import all discovered CLIs and models into local config',
@@ -103,7 +103,8 @@ export async function main(args = process.argv.slice(2)) {
   if (command === 'select') {
     const { flags } = parseFlags(rest);
     const out = await withMcpClient(directory, client => callPoolTool(client, 'pool_select', {
-      kind: flags.kind || 'read',
+      kind: flags.kind || (flags.mode === 'execute' ? 'write' : flags.mode === 'response' ? 'text' : 'read'),
+      ...(flags.mode ? { mode: flags.mode } : {}),
       ...(flags.route ? { routeId: flags.route } : {}),
       ...(flags.model ? { modelId: flags.model } : {}),
       ...(flags.group ? { group: flags.group } : {}),
@@ -119,8 +120,10 @@ export async function main(args = process.argv.slice(2)) {
     const out = await runTaskFromCli(directory, {
       prompt,
       workspace: flags.workspace || process.cwd(),
-      kind: flags.kind || 'read',
+      kind: flags.kind || (flags.mode === 'execute' ? 'write' : flags.mode === 'response' ? 'text' : 'read'),
       routeId: flags.route,
+      mode: flags.mode,
+      waitSeconds: flags.wait,
       modelId: flags.model,
       group: flags.group,
       effort: flags.effort,
@@ -210,7 +213,15 @@ export async function main(args = process.argv.slice(2)) {
   } catch (error) { await stop(); throw error; }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+function isEntrypoint(entry) {
+  if (!entry) return false;
+  const resolved = path.resolve(entry);
+  if (import.meta.url === pathToFileURL(resolved).href) return true;
+  try { return import.meta.url === pathToFileURL(realpathSync(resolved)).href; }
+  catch { return false; }
+}
+
+if (isEntrypoint(process.argv[1])) {
   main().catch(error => {
     const report = process.argv[2] === 'rpc' ? console.log : console.error;
     report(JSON.stringify({ error: { code: error instanceof PoolError ? error.code : 'START_FAILED', message: error instanceof PoolError ? error.message : 'Havuz başlatılamadı. Servis zaten çalışıyor olabilir; yerel ayarları kontrol edin.' } }));

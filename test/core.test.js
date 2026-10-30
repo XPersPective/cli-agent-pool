@@ -76,6 +76,7 @@ test('overlapping workspace stays reserved until cancellation cleanup finishes',
   let cancelled = false;
   let starts = 0;
   const { pool, request } = fixture(t, { execute: () => { starts++; return { cancel: () => { cancelled = true; }, done: new Promise(resolve => { const timer = setTimeout(() => resolve({ error: 'TEST_TIMEOUT' }), 5000); release = value => { clearTimeout(timer); resolve(value); }; }) }; } });
+  request.kind = 'write';
   pool.config.concurrency = 2; pool.config.routes[0].maxConcurrent = 2;
   const first = pool.submit(request);
   const second = pool.submit({ ...request, idempotencyKey: 'second-key-123' });
@@ -84,13 +85,14 @@ test('overlapping workspace stays reserved until cancellation cleanup finishes',
   pool.cancel(first.id);
   assert.ok(cancelled); assert.equal(pool.get(second.id).state, 'queued');
   release({ error: 'CANCELLED' });
-  assert.equal((await terminal(pool, first.id)).state, 'cancelled');
-  await delay(30); assert.equal(starts, 2);
-  pool.cancel(second.id); release({ error: 'CANCELLED' });
+  assert.equal((await terminal(pool, first.id)).state, 'needs_review');
+  await delay(30); assert.equal(starts, 1);
+  assert.equal(pool.get(second.id).queueReason, 'WORKSPACE_REVIEW_REQUIRED');
+  pool.cancel(second.id);
 });
 
 test('serial and parallel admission follows the configured task limit for separate workspaces', async t => {
-  for (const [mode, limit] of [['serial', 1], ['parallel', 20]]) {
+  for (const [mode, limit] of [['serial', 1], ['parallel-20', 20], ['parallel-30', 30], ['parallel-32', 32]]) {
     const pending = [];
     let starts = 0;
     const { root, pool, request } = fixture(t, { execute: () => {
@@ -99,7 +101,8 @@ test('serial and parallel admission follows the configured task limit for separa
     } });
     pool.config.concurrency = limit;
     pool.config.routes[0].maxConcurrent = limit;
-    const workspaces = Array.from({ length: 20 }, (_, index) => path.join(root, `workspace-${index}`));
+    const totalTasks = mode === 'serial' ? 5 : limit;
+    const workspaces = Array.from({ length: totalTasks }, (_, index) => path.join(root, `workspace-${index}`));
     workspaces.forEach(workspace => mkdirSync(workspace));
     const tasks = workspaces.map((workspace, index) => pool.submit({ ...request, workspace, idempotencyKey: `workspace-task-${index}-123` }));
     await delay(40);
@@ -123,8 +126,8 @@ test('serial and parallel admission follows the configured task limit for separa
 test('concurrency and route concurrency reject values above the supported cap', () => {
   assert.throws(() => configSchema.parse({ concurrency: 33, routes: [] }));
   assert.throws(() => configSchema.parse({ routes: [{ id: 'test', adapter: 'codex', executable: process.execPath, maxConcurrent: 33, models: [] }] }));
-  assert.equal(configSchema.parse({ routes: [] }).concurrency, 20);
-  assert.equal(configSchema.parse({ routes: [{ id: 'test', adapter: 'codex', executable: process.execPath, models: [] }] }).routes[0].maxConcurrent, 20);
+  assert.equal(configSchema.parse({ routes: [] }).concurrency, 32);
+  assert.equal(configSchema.parse({ routes: [{ id: 'test', adapter: 'codex', executable: process.execPath, models: [] }] }).routes[0].maxConcurrent, 32);
 });
 
 test('write failure quarantines the workspace and never retries', async t => {
@@ -259,7 +262,7 @@ test('OpenCode JSON events, free model catalog and custom API routes work with w
   assert.equal(env.ANTHROPIC_AUTH_TOKEN, 'secret-token-value-123456');
 });
 
-test('Qwen stream-json result envelope is parsed, errors fail and writes stay disabled', async t => {
+test('Qwen stream-json result envelope is parsed, errors fail and native edits are selectable', async t => {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-qwen-'));
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const script = (name, events) => { const file = path.join(root, `${name}.js`); writeFileSync(file, `let p='';process.stdin.on('data',c=>p+=c).on('end',()=>{for(const e of ${events})console.log(JSON.stringify(e))})`); return file; };
@@ -268,7 +271,7 @@ test('Qwen stream-json result envelope is parsed, errors fail and writes stay di
   assert.deepEqual(await run(ok), { result: 'echo:say ok' });
   const failed = script('failed', `[{type:'result',subtype:'error_during_execution',is_error:true,error:{message:'x'}}]`);
   assert.equal((await run(failed)).error, 'CLI_FAILED');
-  assert.throws(() => buildArguments({ adapter: 'qwen', executable: ok }, { id: 'm' }, { kind: 'write' }), { code: 'WRITE_NOT_SUPPORTED' });
+  assert.ok(buildArguments({ adapter: 'qwen', executable: ok }, { id: 'm' }, { kind: 'write' }).includes('auto-edit'));
 });
 
 test('ZCode stream-json response, MiniMax Code, Custom CLI argsTemplate and importDiscoveredRoutes work', async t => {
@@ -298,7 +301,6 @@ test('ZCode stream-json response, MiniMax Code, Custom CLI argsTemplate and impo
   assert.ok(Array.isArray(imported.config.routes));
 });
 
-test('non-metered routes are preferred over paid_api and missing subscription plan only blocks subscription/token_plan', t => {
 test('Antigravity streams large Unicode prompts on stdin without changing explicit prompt argument or permission settings', async t => {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-agy-stdin-'));
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
@@ -321,6 +323,8 @@ test('Antigravity streams large Unicode prompts on stdin without changing explic
   assert.ok(legacy.some(arg => arg === `--print=${prompt}`));
   assert.ok(!legacy.includes('--input-format'));
 });
+
+test('non-metered routes are preferred over paid_api and missing subscription plan only blocks subscription/token_plan', t => {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-select-'));
   const config = configSchema.parse({
     workspaceRoots: [root],

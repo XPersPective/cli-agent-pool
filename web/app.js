@@ -1,5 +1,8 @@
 import { memberships, mergeScanDraft, addMembership, modelSaveConfig, preferenceSaveConfig, quotaWindows, quotaMatches, effortLabel, modelIdentity, modelFamily, modelFiltered, sortModels } from '/pool-state.js';
+import { dismissOnBackdrop } from '/dialogs.js';
+import { capabilityLabel } from '/capabilities.js';
 const $ = id => document.getElementById(id);
+document.querySelectorAll('dialog').forEach(dismissOnBackdrop);
 const labels = { queued: 'Sırada', starting: 'Başlatılıyor', running: 'Çalışıyor', succeeded: 'Tamamlandı', failed: 'Başarısız', timed_out: 'Süre doldu', cancelling: 'Durduruluyor', cancelled: 'Durduruldu', needs_review: 'Elle inceleme gerekli' };
 const billingLabels = { subscription: 'Abonelik', token_plan: 'Token planı', free_credits: 'Günlük / ücretsiz kredi', free: 'Ücretsiz', paid_api: 'Ücretli API', unknown: 'Doğrulanmadı' };
 const activeBillings = new Set(['subscription', 'token_plan', 'free_credits', 'free', 'paid_api']);
@@ -221,6 +224,7 @@ function renderSettings() {
       enabled.disabled = !activeBillings.has(value);
       enabled.dataset.locked = String(!activeBillings.has(value));
     }, billingChoices));
+    body.append(settingField('Dosya araçları', route.toolPolicy || 'native', value => { route.toolPolicy = value; }, [['native', 'Native CLI yetenekleri · istek text/read/write seçer'], ['configured', 'Yapılandırılmış model kapsamıyla sınırla']]));
     {
       const autoLabel = element('label', null, 'route-header'); const autoCheck = document.createElement('input');
       autoCheck.type = 'checkbox'; autoCheck.checked = route.autoSelect ?? route.billing !== 'paid_api';
@@ -249,6 +253,7 @@ function renderSettings() {
       trustedLabel.append(trusted, element('span', `CLI yerel ayarlarını inceledim (Giriş komutu: ${loginCommandsLabel(route.adapter)})`)); body.append(trustedLabel);
     }
     body.append(settingField('Öncelik (küçük değer önce)', route.priority, value => { route.priority = Number(value); }));
+    body.append(settingField('Eşzamanlı görev sınırı (1–32)', route.maxConcurrent ?? 32, value => { route.maxConcurrent = Math.max(1, Math.min(32, Number(value) || 1)); }));
     body.append(settingField('Seçim için asgari kalan kota (%)', route.minRemainingPercent, value => { route.minRemainingPercent = Number(value); }));
     body.append(element('p', 'Modelleri üstteki havuz görünümünden sınıflandırabilirsiniz.', 'hint'));
     const addModelRow = element('div', null, 'actions');
@@ -257,7 +262,7 @@ function renderSettings() {
       const id = newModelInput.value.trim();
       if (!id) throw new Error('Model kimliği girin.');
       if (route.models.some(m => m.id === id)) throw new Error('Bu model zaten ekli.');
-      const kinds = route.adapter === 'mmx' ? ['text'] : route.adapter === 'qwen' ? ['text', 'read'] : ['text', 'read', 'write'];
+      const kinds = ['mmx','ollama','lmstudio','omniroute'].includes(route.adapter) ? ['text'] : ['text', 'read', 'write'];
       route.models.push({ id, alias: id, group: route.billing === 'free' ? 'free' : 'unassigned', enabled: true, efforts: [], kinds });
       newModelInput.value = ''; await saveModel(route.id, id);
     });
@@ -286,7 +291,8 @@ $('new-adapter').addEventListener('change', () => {
 });
 $('refresh').addEventListener('click', () => void action(async () => { await refresh(); await refreshQuotas(); }));
 $('scan-import').addEventListener('click', () => void action(runScanImport));
-$('close-detail').addEventListener('click', () => { $('detail').close(); $('detail').hidden = true; selectedTask = null; selectedTaskStamp = ''; $('calls-tab').focus(); });
+$('close-detail').addEventListener('click', () => $('detail').close());
+$('detail').addEventListener('close', () => { $('detail').hidden = true; selectedTask = null; selectedTaskStamp = ''; $('calls-tab').focus(); });
 $('open-settings').addEventListener('click', () => switchPage('settings'));
 async function saveSettings() {
   settings = await call('save', settings); poolDirty = false; renderSettings(); renderPool(); await refresh(); notice('Kaydedildi.');
@@ -312,11 +318,11 @@ $('add-route').addEventListener('click', () => void action(async () => {
   let id = `${adapter}-local`;
   let suffix = 2;
   while (settings.config.routes.some(route => route.id === id)) id = `${adapter}-local-${suffix++}`;
-  const kinds = adapter === 'mmx' ? ['text'] : adapter === 'qwen' ? ['text', 'read'] : ['text', 'read', 'write'];
+  const kinds = ['mmx','ollama','lmstudio','omniroute'].includes(adapter) ? ['text'] : ['text', 'read', 'write'];
   const initialModels = modelId
     ? [{ id: modelId, alias: modelId, group: billing === 'free' ? 'free' : 'unassigned', enabled: true, efforts: [], kinds }]
     : (cli.discoveredModels || []).map(({ free, ...m }) => m);
-  const route = { id, adapter, executable: cli.executable, enabled: false, billing, trustedSettings: true, priority: 100, maxConcurrent: 20, models: initialModels };
+  const route = { id, adapter, executable: cli.executable, enabled: false, billing, trustedSettings: true, priority: 100, maxConcurrent: settings.config.concurrency || 32, models: initialModels };
   settings.config.routes.push(route);
   settings = await call('save', settings);
   if (!modelId && ['codex', 'opencode', 'mimo'].includes(adapter)) {
@@ -345,7 +351,7 @@ $('add-api-route').addEventListener('click', () => void action(async () => {
   if (!cli) throw new Error(`${protocol} API yuvası için bilgisayarınızda ${hostAdapter} CLI kurulu olmalıdır.`);
   const route = {
     id, adapter: hostAdapter, executable: cli.executable, enabled: true, billing, trustedSettings: true,
-    priority: billing === 'paid_api' ? 200 : 100, maxConcurrent: 20,
+    priority: billing === 'paid_api' ? 200 : 100, maxConcurrent: settings.config.concurrency || 32,
     api: { protocol, baseUrl, secretRef: id },
     models: modelNames.map(m => ({ id: m, alias: m, group: billing === 'free' ? 'free' : 'api', enabled: true, efforts: [], kinds: ['text', 'read', 'write'] })),
   };
@@ -367,7 +373,7 @@ $('add-custom-cli').addEventListener('click', () => void action(async () => {
   if (!modelNames.length) throw new Error('En az bir model kimliği girin.');
   const route = {
     id, adapter: 'custom', executable, argsTemplate, promptStdin: !argsTemplate.some(a => a.includes('{prompt}')),
-    enabled: false, billing, trustedSettings: true, priority: 100, maxConcurrent: 20,
+    enabled: false, billing, trustedSettings: true, priority: 100, maxConcurrent: settings.config.concurrency || 32,
     models: modelNames.map(m => ({ id: m, alias: m, group: 'custom', enabled: true, efforts: [], kinds: ['text', 'read', 'write'] })),
   };
   settings.config.routes.push(route);
@@ -391,7 +397,7 @@ $('calls-tab').addEventListener('click', () => switchPage('calls'));
 $('pool-search').addEventListener('input', () => { $('pool-models').scrollTop = 0; renderCatalog(); });
 $('selection-mode').addEventListener('change', () => void action(async () => { settings.config.selectionMode = $('selection-mode').value; await savePreference('selectionMode'); notice('Model seçimi kaydedildi.'); }));
 $('grouping-mode').addEventListener('change', () => void action(async () => { settings.config.groupingMode = $('grouping-mode').value; await savePreference('groupingMode'); notice('Havuz düzenleme yetkisi kaydedildi.'); }));
-$('execution-mode').addEventListener('change', () => void action(async () => { settings.config.concurrency = Number($('execution-mode').value); await savePreference('concurrency'); notice('Görev çalışma biçimi kaydedildi.'); }));
+$('execution-mode').addEventListener('change', () => void action(async () => { const limit = Number($('execution-mode').value); settings.config.concurrency = limit; for (const route of settings.config.routes) route.maxConcurrent = limit; await savePreference('concurrency'); notice('Görev çalışma biçimi kaydedildi.'); }));
 $('discard-settings').addEventListener('click', () => void action(async () => { settings = await call('settings'); poolDirty = false; baseConfig = structuredClone(settings.config); renderSettings(); renderPool(); updateSave(); }));
 $('toggle-quotas').addEventListener('click', () => {
   quotasOpen = [...document.querySelectorAll('.quota-details')].some(node => !node.open);
@@ -498,6 +504,7 @@ function modelCard(route,model,member) {
   const row=element('div',null,`model-card ${member?'membership-row':'catalog-row'}`), info=element('div',null,'model-info');
   row.setAttribute('role','group');row.setAttribute('aria-label',`${model.id} · ${route.id}`);row.dataset.routeId=route.id;row.dataset.modelId=model.id;
   info.append(element('strong',model.id),element('small',`${adapterLabels[route.adapter] || route.adapter} · ${route.id}`));info.title=`${model.id} · ${route.id}`;
+  info.append(element('small', capabilityLabel(route, model), 'capability-note'));
   if(model.enabled===false || !route.enabled) {
     const state=element('div',null,'model-connection'), enable=button('Etkinleştir',async()=>{
       if(!activeBillings.has(baseConfig.routes.find(item=>item.id===route.id)?.billing)) { switchPage('settings'); const section=[...$('settings-routes').children].find(node=>node.dataset.routeId===route.id);if(section){section.open=true;section.scrollIntoView({block:'nearest'});}notice('Önce bağlantının ödeme / plan türünü doğrulayın.');return; }
@@ -608,14 +615,34 @@ async function refreshQuotas(routeId) {
 }
 $('refresh-quotas').addEventListener('click', () => { void refreshQuotas(); });
 const activeStates = new Set(['queued', 'starting', 'running', 'cancelling']);
+const taskModeLabel = task => task.mode === 'execute' ? 'İcra · dosya / araç' : task.mode === 'response' ? 'Yanıt · analiz' : task.kind === 'write' ? 'Yazma · eski protokol' : 'Yanıt / okuma';
 function taskDetails(task) {
   const metadata = element('dl', null, 'call-metadata');
+  metadata.append(element('dt', 'Çalışma modu'), element('dd', taskModeLabel(task)));
   for (const [label, value] of [['Durum', labels[task.state] || task.state], ['Bekleme nedeni', ({WORKSPACE_REVIEW_REQUIRED:'Önceki dosya değişikliklerinin incelenmesi bekleniyor',WORKSPACE_BUSY:'Çalışma klasöründe başka bir iş var',WORKER_LIMIT:'Boş işçi bekleniyor'})[task.queueReason]], ['Engelleyen görev', task.blockedBy], ['İstemci', task.clientLabel || 'Bilinmeyen istemci'], ['Bağlantı', task.routeId], ['Model', task.modelId], ['Havuz', groupLabel(task.group)], ['Efor', effortLabel(task.effort)], ['Başlangıç', new Date(task.created).toLocaleString('tr-TR')], ['Çalışma klasörü', task.workspace], ['CLI’ın bildirdiği model', task.reportedModel]]) {
     if (value) metadata.append(element('dt', label), element('dd', value));
   }
   const errors={SUBSCRIPTION_REQUIRED:'Bu CLI için gerekli etkin abonelik/plan doğrulanamadı.',AUTH_REQUIRED:'CLI oturumu veya sağlayıcı anahtarı doğrulanamadı. Giriş durumunu kontrol edin.',PROVIDER_RESTRICTION:'Sağlayıcı bu CLI erişim yolunu kabul etmiyor. Ücretli başka bir yola otomatik geçilmedi.',QUOTA_EXHAUSTED:'Sağlayıcı kota veya bakiye sınırı bildirdi.',MODEL_UNAVAILABLE:'Seçilen model bu sağlayıcıda kullanılamıyor. Kataloğu yenileyin.',PERMISSION_REQUIRED:'CLI çalışma alanı veya izin onayı gerekiyor.',SETTINGS_NOT_TRUSTED:'Yerel CLI ayarları henüz doğrulanmadı. Bağlantı ayarlarını kontrol edin.',CLI_FAILED:'CLI çağrısı başarısız oldu; sağlayıcı veya CLI kurulumunu kontrol edin.'};
   const result = task.historyExpired?'Bu çağrının ayrıntıları saklama süresi dolduğu için temizlendi.':task.result || errors[task.error] || task.error || (task.queueReason === 'WORKSPACE_REVIEW_REQUIRED' ? 'İşçi başlamadı: önceki yazma görevinin dosya incelemesi bekleniyor.' : activeStates.has(task.state) ? 'Çağrı devam ediyor; sonuç burada güncellenecek.' : 'Bu çağrı sonuç metni bildirmedi.');
   const nodes = [metadata, element('h3', 'İstek'), element('div', task.prompt || 'İstek metni bulunmuyor.', 'call-text'), element('h3', 'Yanıt'), element('div', result, `call-text${task.error ? ' call-error' : ''}`)];
+  if (task.report) {
+    nodes.splice(-2);
+    const report = task.report;
+    nodes.push(element('h3', 'İcra raporu'), element('p', `${({completed:'Tamamlandı',partial:'Kısmen tamamlandı',blocked:'Engellendi'})[report.status] || report.status} · ${report.summary}`, 'call-text'));
+    for (const [title, rows] of [
+      ['Değişen dosyalar', report.files.map(row => `${row.path} — ${row.change}`)],
+      ['Kontroller', report.checks.map(row => `${row.command} — ${({passed:'Başarılı',failed:'Başarısız',not_run:'Çalıştırılmadı'})[row.outcome]}`)],
+      ['Araştırma kaynakları', report.research.map(row => `${row.source} — ${row.finding}`)],
+      ['Engeller / kalan işler', report.blockers],
+    ]) {
+      nodes.push(element('h4', title));
+      const list = element('ul', null, 'call-text');
+      list.append(...(rows.length ? rows : ['Bildirilmedi.']).map(row => element('li', row)));
+      nodes.push(list);
+    }
+  }
+  if (task.error === 'INVALID_REPORT') nodes.push(element('p', 'İcra raporu beklenen biçimde değil. Dosyaları ve yukarıdaki özgün çıktıyı inceleyin; görev yeniden çalıştırılmadı.', 'call-error'));
+  if (task.error === 'WORK_INCOMPLETE') nodes.push(element('p', 'Alt ajan işi eksik veya engellenmiş bildirdi. Rapordaki kalan işleri inceleyin.', 'call-error'));
   if (task.events?.length) {
     const events = element('details', null, 'call-events'); events.append(element('summary', 'İşlem adımları'));
     for (const event of task.events) events.append(element('p', `${event.created ? new Date(event.created).toLocaleTimeString('tr-TR') + ' · ' : ''}${labels[event.state] || event.state || event.type || 'Bilgi'}${event.detail ? ' · ' + event.detail : ''}`));
@@ -636,7 +663,7 @@ function renderCalls() {
     $(id).replaceChildren(...(entries.length ? entries.map(task => {
       const row = element('article', null, `call-row${activeStates.has(task.state) ? ' is-active' : ''}`), title = element('div', null, 'task-title');
       title.append(element('strong', task.modelId), element('span', labels[task.state] || task.state, 'badge subtle'));
-      const info = element('div'); info.append(title, element('small', `${task.clientLabel || 'Bilinmeyen istemci'} · ${task.routeId} · ${groupLabel(task.group)} · ${effortLabel(task.effort)}`), element('small', new Date(task.created).toLocaleString('tr-TR')));
+      const info = element('div'); info.append(title, element('small', `${taskModeLabel(task)} · ${task.clientLabel || 'Bilinmeyen istemci'} · ${task.routeId} · ${groupLabel(task.group)} · ${effortLabel(task.effort)}`), element('small', new Date(task.created).toLocaleString('tr-TR')));
       const actions = element('div', null, 'actions'), inspect = button('Ayrıntılar', async () => { await openTask(task.id); }); inspect.id = `result-${task.id}`; actions.append(inspect);
       if (['queued', 'starting', 'running'].includes(task.state)) { const cancel = button('Durdur', async () => { await call('cancel', {taskId:task.id}); await refresh(); }); cancel.id = `cancel-${task.id}`; actions.append(cancel); }
       row.append(info, actions); return row;

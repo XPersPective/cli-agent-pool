@@ -2,15 +2,19 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, lstatSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { allowedWorkspace, overlaps, PoolError, activeBillings, nonMeteredBillings, dataDirectory, configView, saveConfig } from './config.js';
+import { allowedWorkspace, PoolError, nonMeteredBillings, dataDirectory, configView, saveConfig } from './config.js';
 import { checkAuth, execute, quota, loginCommands } from './adapters.js';
-import { modelFiltered, quotaApplies } from '../web/pool-state.js';
+import { modelFiltered } from '../web/pool-state.js';
 import { codexControl } from './codex-control.js';
+import { supportsExecution, validateMode, workspaceConflict, parseExecutionReport } from './task-protocol.js';
+import { rejectionReason, noRouteMessage } from './routing.js';
+import { taskKinds, toolSupport } from '../web/capabilities.js';
 
 export const taskSchema = z.object({
   prompt: z.string().trim().min(1).max(100_000),
   workspace: z.string().min(1).max(4096),
   kind: z.enum(['text', 'read', 'write']),
+  mode: z.enum(['response', 'execute']).optional(),
   routeId: z.string().max(100).optional(),
   modelId: z.string().max(100).optional(),
   group: z.string().max(100).optional(),
@@ -50,6 +54,11 @@ export class Pool {
       const memberships = model.memberships ?? [{ group: model.group, effort: model.defaultEffort }];
       return (memberships.length ? memberships : [{ group: 'unassigned' }]).map(member => ({
       ...model,
+      kinds: taskKinds(route, model),
+      configuredKinds: model.kinds,
+      toolSupport: toolSupport(route),
+      toolPolicy: route.toolPolicy || 'native',
+      permissionAuthority: 'native-cli',
       group: member.group,
       defaultEffort: member.effort,
       fixedEffort: model.memberships ? member.effort : undefined,
@@ -61,6 +70,7 @@ export class Pool {
       autoSelect: route.autoSelect ?? (route.billing !== 'paid_api'),
       priority: route.priority,
       protocol: route.api?.protocol || null,
+      executionModes: supportsExecution(route) && taskKinds(route, model).includes('write') ? ['execute'] : [],
       baseUrl: route.api?.baseUrl || null,
     })); }));
   }
@@ -91,25 +101,23 @@ export class Pool {
     return { updated: assignments.length, revision: configView(this.directory).revision };
   }
   select(request) {
+    validateMode(request);
     if (this.config.selectionMode === 'manual' && !['high', 'medium', 'low'].includes(request.group))
       throw new PoolError('POOL_REQUIRED', 'Manuel modda Yüksek, Orta veya Hafif havuzlarından birini seçin.');
+    const rejected = new Map();
     const matches = this.models().filter(model => {
+      if ((request.routeId && model.routeId !== request.routeId) || (request.modelId && model.id !== request.modelId) || (request.group && model.group !== request.group)) return false;
       const snapshot = this.store.quota(model.routeId);
       const route = this.config.routes.find(r => r.id === model.routeId);
-      const fresh = snapshot && Date.now() - Date.parse(snapshot.observedAt) < 60_000;
-      const missingPlan = snapshot?.subscription === 'none' && (route.billing === 'subscription' || route.billing === 'token_plan');
-      const quotaBlocked = fresh && (snapshot.status === 'rate_limited' || snapshot.status === 'auth_required' || missingPlan || snapshot.windows?.some(window => quotaApplies(window,model.id) && window.remainingPercent != null && window.remainingPercent <= Math.max(route.minRemainingPercent, request.minRemainingPercent ?? 0)));
-      const automaticAllowed = Boolean(request.routeId) || Boolean(model.autoSelect);
-      return !quotaBlocked && model.enabled && activeBillings.has(model.billing) && automaticAllowed && model.kinds.includes(request.kind) &&
-      (!request.routeId || model.routeId === request.routeId) && (!request.modelId || model.id === request.modelId) &&
-      (!request.group || model.group === request.group) && (!request.effort || model.efforts.includes(request.effort)) &&
-      (!request.effort || !model.fixedEffort || request.effort === model.fixedEffort); })
+      const reason = rejectionReason(model, route, snapshot, request);
+      if (reason) rejected.set(reason, (rejected.get(reason) || 0) + 1);
+      return !reason; })
       .sort((a, b) => {
         const tierA = nonMeteredBillings.has(a.billing) ? 0 : 1;
         const tierB = nonMeteredBillings.has(b.billing) ? 0 : 1;
         return tierA - tierB || a.priority - b.priority || a.routeId.localeCompare(b.routeId) || a.id.localeCompare(b.id);
       });
-    if (!matches.length) throw new PoolError('NO_ROUTE', 'Kurallara uyan etkin model yok. Bağlantı, ödeme türü veya izin ayarlarını kontrol edin.');
+    if (!matches.length) throw new PoolError('NO_ROUTE', noRouteMessage(request, rejected));
     return { selected: matches[0], alternatives: matches.slice(1), reason: 'Önce abonelik, token planı ve ücretsiz modeller tercih edilir; ücretli API yalnızca açıkça seçildiğinde veya otomatik seçime izin verildiğinde kullanılır.' };
   }
   async getQuota(routeId, force = false) {
@@ -187,9 +195,15 @@ export class Pool {
     const request = JSON.parse(task.request);
     const events = this.store.events(id, after);
     const reportedModel = this.store.reportedModel(id);
-    const blocker = task.state === 'queued' ? this.store.held().find(held => overlaps(held.workspace,task.workspace)) : null;
-    const queueReason = blocker ? blocker.state === 'needs_review' ? 'WORKSPACE_REVIEW_REQUIRED' : 'WORKSPACE_BUSY' : task.state === 'queued' && this.active.size >= this.config.concurrency ? 'WORKER_LIMIT' : null;
-    return { id: task.id, state: task.state, routeId: request.routeId, modelId: request.modelId, reportedModel, queueReason, blockedBy:blocker?.id || null, group: request.group, effort: request.effort || null, clientLabel:request.clientLabel || null, historyExpired:Boolean(request.historyExpired), kind: request.kind, workspace: request.workspace, prompt: request.prompt || null, created: task.created, updated: task.updated, result: task.result, error: task.error, events };
+    const queued = task.state === 'queued' ? this.store.queued() : [];
+    const earlier = queued.slice(0, queued.findIndex(row => row.id === task.id));
+    const scope = { ...request, workspace: task.workspace };
+    const blocker = task.state === 'queued' ? this.store.held().find(held => workspaceConflict(held, scope)) || earlier.find(row => workspaceConflict({ ...JSON.parse(row.request), workspace: row.workspace, state: row.state }, scope)) : null;
+    const routeLimit = this.config.routes.find(r => r.id === request.routeId)?.maxConcurrent ?? this.config.concurrency;
+    const routeBusy = [...this.active.values()].filter(active => active.routeId === request.routeId).length >= routeLimit;
+    const queueReason = blocker ? blocker.state === 'needs_review' ? 'WORKSPACE_REVIEW_REQUIRED' : 'WORKSPACE_BUSY' : task.state === 'queued' && (this.active.size >= this.config.concurrency || routeBusy) ? 'WORKER_LIMIT' : null;
+    const report = request.mode === 'execute' && task.result ? parseExecutionReport(task.result) : null;
+    return { id: task.id, state: task.state, mode: request.mode || null, report, routeId: request.routeId, modelId: request.modelId, reportedModel, queueReason, blockedBy:blocker?.id || null, group: request.group, effort: request.effort || null, clientLabel:request.clientLabel || null, historyExpired:Boolean(request.historyExpired), kind: request.kind, workspace: request.workspace, prompt: request.prompt || null, created: task.created, updated: task.updated, result: task.result, error: task.error, events };
   }
   list(limit = 50, offset = 0, activeFirst = false) {
     return this.store.list(limit, offset, activeFirst);
@@ -197,7 +211,7 @@ export class Pool {
   cancel(id) {
     const task = this.store.get(id);
     if (!task) throw new PoolError('NOT_FOUND', 'Görev bulunamadı.');
-    if (task.state === 'queued') this.store.update(id, 'cancelled', null, 'CANCELLED');
+    if (task.state === 'queued') { this.store.update(id, 'cancelled', null, 'CANCELLED'); this.schedule(); }
     else if (['starting', 'running'].includes(task.state)) {
       this.store.update(id, 'cancelling');
       const handle = this.active.get(id);
@@ -212,13 +226,15 @@ export class Pool {
       this.pumping = false;
       if (this.closed) return;
       try {
+        const waiting = [];
         for (const task of this.store.queued()) {
           if (this.active.size >= this.config.concurrency) break;
-          // ponytail: serialize overlapping workspaces, including reads, until snapshot isolation is implemented.
-          if (this.store.held().some(held => overlaps(held.workspace, task.workspace))) continue;
           const request = JSON.parse(task.request);
           const route = this.config.routes.find(r => r.id === request.routeId);
           if (!route || !route.enabled) { this.store.update(task.id, 'failed', null, 'ROUTE_DISABLED'); continue; }
+          const blocked = this.store.held().some(held => workspaceConflict(held, request)) || waiting.some(held => workspaceConflict(held, request));
+          waiting.push({ ...request, state: 'queued' });
+          if (blocked) continue;
           if ([...this.active.values()].filter(active => active.routeId === route.id).length >= route.maxConcurrent) continue;
           this.store.update(task.id, 'starting');
           const handle = { routeId: route.id, cancelled: false, run: null };
@@ -246,9 +262,13 @@ export class Pool {
       if (outcome.detail) this.store.event(task.id, 'error_detail', outcome.detail);
       if (handle.cancelled) this.store.update(task.id, request.kind === 'write' ? 'needs_review' : 'cancelled', null, 'CANCELLED');
       else if (outcome.error) this.store.update(task.id, request.kind === 'write' ? 'needs_review' : outcome.error === 'TIMEOUT' ? 'timed_out' : 'failed', null, outcome.error);
-      else this.store.update(task.id, 'succeeded', outcome.result);
+      else if (request.mode === 'execute') {
+        const report = parseExecutionReport(outcome.result);
+        const error = !report ? 'INVALID_REPORT' : report.status !== 'completed' ? 'WORK_INCOMPLETE' : null;
+        this.store.update(task.id, error ? 'needs_review' : 'succeeded', outcome.result, error);
+      } else this.store.update(task.id, 'succeeded', outcome.result);
     } catch (error) {
-      try { this.store.update(task.id, handle.cancelled ? 'cancelled' : 'failed', null, error instanceof PoolError ? error.code : 'INTERNAL_ERROR'); }
+      try { this.store.update(task.id, handle.run && request.kind === 'write' ? 'needs_review' : handle.cancelled ? 'cancelled' : 'failed', null, error instanceof PoolError ? error.code : 'INTERNAL_ERROR'); }
       catch { this.closed = true; handle.run?.cancel('STORAGE_FAILED'); }
     } finally {
       this.active.delete(task.id);

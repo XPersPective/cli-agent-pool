@@ -116,3 +116,110 @@ advertised as an executable Pool model provider. No private upstream proxy or
 credential extraction is used. See the official [MCP loader](https://github.com/CodebuffAI/freebuff/blob/main/sdk/src/agents/load-mcp-config.ts)
 and [CLI argument contract](https://github.com/CodebuffAI/freebuff/blob/main/cli/src/cli-args.ts).
 
+
+## Uygulayan alt ajan protokolü (v1)
+
+Kod değiştirme, komut çalıştırma ve test görevleri için çağıran ajan **varsayılan
+olarak** `kind: "write", mode: "execute"` göndermeli. `text` yalnızca yanıt üretir;
+`read` inceleme içindir. Çalışma kökü çağıran projenin mevcut mutlak yolu olmalıdır;
+Pool kurulum klasörünü proje diye göndermeyin. `pool_list_models.executionModes`
+uygun adaptörleri gösterir; mevcut modelin write yeteneği de açık olmalıdır.
+
+```json
+{
+  "prompt": "İlgili hatayı düzelt, gerekli kontrolleri çalıştır ve kısa rapor ver.",
+  "workspace": "D:\\repositories\\my-project",
+  "kind": "write",
+  "mode": "execute",
+  "group": "high",
+  "timeoutSeconds": 600,
+  "idempotencyKey": "implement-fix-001"
+}
+```
+
+```text
+cli-agent-pool run --kind write --mode execute --group high --workspace D:\repositories\my-project --timeout 600 --wait 3600 --prompt "Hatayı düzelt ve test et"
+```
+
+Alt ajana yerel dosya/komut araçlarıyla işi yapması, proje talimatlarını okuması,
+ilgisiz değişiklikleri koruması ve en fazla 200 kelimelik rapor vermesi söylenir.
+Rapor: sonuç, değişen dosyalar ve amaçları, gerçekten çalıştırılan kontroller ve
+başarı/hata, engeller/eksikler. `succeeded` CLI turunun tamamlandığını gösterir;
+ana ajan raporu ve gerçek diff/test kanıtını incelemelidir. Model raporu bağımsız
+bir dosya doğrulaması değildir. `pool_get_task {taskId, compact: true}` prompt ve
+olayları çıkarır, raporu 6000 karakterle sınırlar; kesilirse `reportTruncated: true`
+bildirir. Tam çıktı eski biçimde erişilebilir. Execute CLI bekleyişi kısa biçimi kullanır.
+
+Native CLI izinleri aynen işler. Claude execute araçlarına Bash eklenir; ZCode'da
+Pool'un Bash araç engeli kaldırılır. Native deny/trust kuralları, Codex workspace
+sandbox'ı, route billing, sabit effort ve kota rezervleri atlanmaz. Kota sağlayıcıya
+aittir; alt ajan sahte bakiye veya daha düşük rezerv ayarlayamaz. İstek
+`minRemainingPercent` ile daha yüksek rezerv isteyebilir. İzin verilmeyen bir
+komut yerel CLI'da açıkça yetkilendirilmeli; Pool sessiz bypass yapmaz.
+
+Aynı/örtüşen projede okumalar birlikte çalışır. Yazma ve `needs_review` dışlayıcıdır;
+bekleyen yazmanın önüne yeni okuyucular geçemez. Aynı proje üzerinde **paralel
+uygulama** için ana ajan ayrı Git worktree'ler hazırlar, her göreve kendi mutlak
+worktree yolunu ve sınırlı sorumluluğunu verir. Sonuçları inceledikten sonra tek bir
+write/execute entegrasyon göreviyle birleştirir. Pool otomatik merge/commit yapmaz.
+Aynı klasörde birden çok yazma görevi sıraya alınır; bu bir başarısızlık değildir.
+
+`--timeout` çalışan CLI'ın süresidir; `--wait` çağıranın kuyruk dahil bekleme bütçesi
+(varsayılan 3600, 1–86400 saniye). Bekleme dolarsa mevcut durum, `waitExpired` ve
+`resume` çağrısı döner; görev iptal edilmez veya yeniden gönderilmez. İnceleme kilidi
+varsa engelleyen görev hemen bildirilir. `--detach` doğrudan görev kimliğini döndürür.
+Başarısız/kesilmiş yazmayı yeni anahtarla yeniden başlatmayın; değişiklikleri inceleyin.
+
+### İki mod ve zorunlu rapor biçimi
+
+`mode: "response"` yanıt/analiz modu (`kind: text` veya `read`),
+`mode: "execute"` icra modu (`kind: write`). CLI'da `--kind` verilmezse response
+text, execute write seçer. Eski mode alanı olmayan çağrılar aynı davranır.
+Havuz/model seçimi iki modda da çağıran ajandadır; sabit efor ve owner kuralları korunur.
+Execute içinde Codex'in native web araması (`--search`), Claude'un bütün yerleşik
+araçları (`--tools default`) açılır. Diğer adaptörler native write araçlarını kullanır.
+Native izinler, sağlayıcının araç desteği ve ağ sınırları geçerlidir.
+
+İcra sonucunun son yanıtı **tek JSON** olmalı (tüm alanlar zorunlu; yoksa boş dizi):
+
+```json
+{
+  "status": "completed",
+  "summary": "İstenen hata düzeltildi.",
+  "files": [{"path": "src/example.js", "change": "Hatalı koşul düzeltildi"}],
+  "checks": [{"command": "npm test", "outcome": "passed"}],
+  "research": [{"source": "https://example.org/docs", "finding": "İlgili API doğrulandı"}],
+  "blockers": []
+}
+```
+
+`status`: completed / partial / blocked. `checks.outcome`: passed / failed / not_run.
+Rapor en fazla 6000 karakter; modele 200 kelime hedefi verilir. Bütün değişen dosyalar
+ve araştırma kaynakları yazılır. Pool biçimi doğrular ve `report` alanında döndürür.
+`compact: true` geçerli rapor varsa aynı metni `result` içinde tekrar göndermez.
+Eksik/bozuk rapor `INVALID_REPORT`, partial/blocked `WORK_INCOMPLETE` ile needs_review
+olur; orijinal yanıt kaybolmaz, görev yeniden çalıştırılmaz. Raporun biçim kontrolü,
+içeriğinin gerçek dosyalarla bağımsız karşılaştırıldığı anlamına gelmez.
+
+### Dosya araçlarını istekle seçme (1.8)
+
+Native dosya araçlı Codex, Claude, Qwen, Antigravity, OpenCode/MiMo, ZCode,
+MiniMax Code ve Kimi bağlantıları varsayılan `toolPolicy: native` ile çalışır.
+Eski katalogdaki `kinds: [text]` kayıtları bu CLI'ları yapay olarak araçsız bırakmaz.
+`pool_list_models` etkin `kinds`, eski `configuredKinds`, `toolSupport`, `toolPolicy`
+ve `executionModes` alanlarını ayrı döndürür. Yetenek, CLI izin onayı veya her modelin
+bu araçları başarıyla kullanacağı garantisi değildir.
+
+- `kind: text, mode: response`: metin yanıtı; CLI adaptörü araçları desteklediği ölçüde kapatır.
+- `kind: read, mode: response`: projeyi okuyan analiz; yazma/komutlar native plan/izin politikasıyla sınırlandırılır.
+- `kind: write, mode: execute`: dosya/komut araçlarıyla uygulama ve zorunlu kısa JSON raporu.
+
+Qwen yazmada native auto-edit, okumada plan kullanır. Antigravity dosya görevlerinde
+native plan/accept-edits modunu ve proje araçlarını kullanır. Native deny/trust
+kuralları aşılmaz. Ayarlar > Dosya araçları > yapılandırılmış kapsam seçilirse
+`toolPolicy: configured`, modelin kayıtlı kinds sınırını ayrıca uygular.
+MMX, Ollama/LM Studio ve OmniRoute sohbet komutları yerel dosya aracı sağlamaz;
+bunlara dosya aracı varmış gibi etiket verilmez. Özel CLI şablonu read/write
+kapsamını kendi native bayraklarıyla uygulamalıdır; Pool shell veya evrensel dosya
+aracı eklemez. Salt okunur kapsam bazı native CLI'larda işletim sistemi sandbox'ı
+olmayan plan/tool politikasıdır; ajan çıktıları güvenilir kanıt değildir.

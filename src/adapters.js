@@ -1,4 +1,5 @@
 import { modelFiltered } from '../web/pool-state.js';
+import { taskPrompt } from './task-protocol.js';
 import { existsSync, readFileSync, realpathSync, statSync, accessSync, constants, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -155,7 +156,7 @@ export function localModelsFor(adapter) {
       group: free ? 'free' : group,
       enabled: true,
       efforts,
-      kinds: adapter === 'mmx' ? ['text'] : adapter === 'qwen' ? kinds.filter(k => k !== 'write') : kinds,
+      kinds: ['mmx', 'ollama', 'lmstudio', 'omniroute'].includes(adapter) ? ['text'] : kinds,
       free,
     });
   };
@@ -266,7 +267,7 @@ export function importDiscoveredRoutes(config) {
         billing: cli.defaultBilling || 'token_plan',
         trustedSettings: cli.defaultBilling === 'free',
         priority: 100,
-        maxConcurrent: 1,
+        maxConcurrent: cloned.concurrency || 32,
         minRemainingPercent: 0,
         models: [],
       };
@@ -381,24 +382,23 @@ export function buildArguments(route, model, task) {
     const built = route.argsTemplate.map(token => token.replace(/\{(model|effort|workspace|prompt|kind)\}/g, (_, k) => String(values[k] ?? '')));
     return [...argv, ...built];
   }
-  if (route.adapter === 'codex') return [...argv, '-a', 'never', 'exec', '--ignore-user-config', '--ephemeral', '--skip-git-repo-check', '--json', '--sandbox', task.kind === 'write' ? 'workspace-write' : 'read-only', '-C', task.workspace, ...(process.platform === 'win32' ? ['-c', 'windows.sandbox="elevated"'] : []), '-c', 'model_provider="openai"', '-m', model.id, ...(effort ? ['-c', `model_reasoning_effort=${JSON.stringify(effort)}`] : []), '-'];
-  if (route.adapter === 'claude') return [...argv, '-p', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--permission-mode', task.kind === 'write' ? 'acceptEdits' : 'dontAsk', '--permission-prompts', 'none', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--disable-slash-commands', ...claudeSettingSources(route), '--tools', task.kind === 'text' ? '' : task.kind === 'read' ? 'Read,Glob,Grep' : 'Read,Glob,Grep,Edit,Write', '--model', model.id, ...(effort ? ['--effort', effort] : [])];
+  if (route.adapter === 'codex') return [...argv, '-a', 'never', ...(task.mode === 'execute' ? ['--search'] : []), 'exec', '--ignore-user-config', '--ephemeral', '--skip-git-repo-check', '--json', '--sandbox', task.kind === 'write' ? 'workspace-write' : 'read-only', '-C', task.workspace, ...(process.platform === 'win32' ? ['-c', 'windows.sandbox="elevated"'] : []), '-c', 'model_provider="openai"', '-m', model.id, ...(effort ? ['-c', `model_reasoning_effort=${JSON.stringify(effort)}`] : []), '-'];
+  if (route.adapter === 'claude') return [...argv, '-p', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--permission-mode', task.kind === 'write' ? 'acceptEdits' : 'dontAsk', '--permission-prompts', 'none', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--disable-slash-commands', ...claudeSettingSources(route), '--tools', task.kind === 'text' ? '' : task.kind === 'read' ? 'Read,Glob,Grep' : task.mode === 'execute' ? 'default' : 'Read,Glob,Grep,Edit,Write', '--model', model.id, ...(effort ? ['--effort', effort] : [])];
   if (route.adapter === 'opencode' || route.adapter === 'mimo') return [...argv, 'run', '--format', 'json', '--pure', '-m', opencodeModelId(route, model.id), '--agent', task.kind === 'write' ? 'build' : 'plan', ...(effort ? ['--variant', effort] : [])];
   // ZCode -p has no model flag: it runs the default model selected in ZCode itself.
-  if (route.adapter === 'zcode') return [...argv, '--cwd', task.workspace, '--mode', task.kind === 'write' ? 'edit' : 'plan', '--disallowed-tools', task.kind === 'write' ? 'Bash' : 'Bash,Edit,Write', '--json', '--no-color', '-p', task.prompt];
+  if (route.adapter === 'zcode') return [...argv, '--cwd', task.workspace, '--mode', task.kind === 'write' ? 'edit' : 'plan', ...(task.mode === 'execute' ? [] : ['--disallowed-tools', task.kind === 'write' ? 'Bash' : 'Bash,Edit,Write']), '--json', '--no-color', '-p', task.prompt];
   if (route.adapter === 'mcode') return [...argv, 'exec', '--input', '-', '--cwd', task.workspace, '--model', model.id, '--prompt-mode', 'coding', '--permission', task.kind === 'write' ? 'full' : 'smart', '--mode', 'lightweight', '--output-format', 'stream-json', ...(effort ? ['--effort', effort] : [])];
   if (route.adapter === 'kimi') return [...argv, '-m', model.id, '--output-format', 'stream-json', ...(task.kind === 'write' ? ['--auto'] : []), '-p', task.prompt];
   if (route.adapter === 'agy') {
     const selectedEffort = effort || model.defaultEffort || Object.keys(model.variants || {})[0];
     if (model.variants && !model.variants[selectedEffort]) throw new PoolError('INVALID_EFFORT', 'Bu model için desteklenen bir efor seçin.');
     const promptArg = route.promptStdin === false ? [`--print=${task.prompt}`] : ['--input-format', 'stream-json'];
-    return [...argv, '--output-format', 'stream-json', ...promptArg, '--mode', task.kind === 'write' ? 'accept-edits' : 'plan', '--disable-slash-commands', '--model', model.variants?.[selectedEffort] || model.id, ...(selectedEffort ? ['--effort', selectedEffort] : [])];
+    return [...argv, '--output-format', 'stream-json', ...promptArg, '--mode', task.kind === 'write' ? 'accept-edits' : 'plan', ...(task.kind === 'text' ? ['--disable-slash-commands'] : []), '--model', model.variants?.[selectedEffort] || model.id, ...(selectedEffort ? ['--effort', selectedEffort] : [])];
   }
   if (route.adapter === 'omniroute') return [...argv, 'chat', '--stdin', '--no-history', '-m', model.id, ...(effort ? ['--reasoning-effort', effort] : [])];
   if (route.adapter === 'mmx') return [...argv, 'text', 'chat', '--model', model.id, '--messages-file', '-', '--output', 'json'];
   if (route.adapter === 'qwen') {
-    if (task.kind === 'write') throw new PoolError('WRITE_NOT_SUPPORTED', 'Bu adaptörde yazma görevi henüz doğrulanmadı.');
-    return [...argv, '--model', model.id, '--output-format', 'stream-json', '--approval-mode', 'plan'];
+    return [...argv, '--model', model.id, '--output-format', 'stream-json', '--approval-mode', task.kind === 'write' ? 'auto-edit' : 'plan', ...(task.kind === 'text' ? ['--max-tool-calls', '0'] : [])];
   }
   if (route.adapter === 'ollama') return [...argv, 'run', model.id];
   if (route.adapter === 'aider') return [...argv, '--model', model.id, '--yes-always', '--no-auto-commits', '--message', task.prompt];
@@ -454,6 +454,7 @@ const strictJsonlAdapters = new Set(['codex', 'claude', 'qwen', 'opencode', 'mim
 const promptArgAdapters = new Set(['zcode', 'kimi', 'aider']);
 
 export function execute(route, model, task, python, progress, directory = dataDirectory()) {
+  task = { ...task, prompt: taskPrompt(task) };
   let answer = '';
   let rawLines = [];
   let productError = false;
@@ -655,7 +656,7 @@ function mergeCatalogModelsInto(route, catalog, filters) {
       if (item.variants) existing.variants = item.variants;
       if (!item.efforts.includes(existing.defaultEffort)) delete existing.defaultEffort;
     } else if (route.models.length < 100) {
-      route.models.push({ id: item.id, alias: (item.name || item.id).slice(0, 100), group: 'unassigned', memberships: [], enabled: true, efforts: item.efforts, ...(item.variants?{variants:item.variants}:{}), kinds: route.adapter === 'mmx' ? ['text'] : route.adapter === 'qwen' ? ['text', 'read'] : ['text', 'read', 'write'] });
+      route.models.push({ id: item.id, alias: (item.name || item.id).slice(0, 100), group: 'unassigned', memberships: [], enabled: true, efforts: item.efforts, ...(item.variants?{variants:item.variants}:{}), kinds: ['mmx', 'ollama', 'lmstudio', 'omniroute'].includes(route.adapter) ? ['text'] : ['text', 'read', 'write'] });
       added++;
     }
   }

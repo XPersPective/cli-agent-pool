@@ -131,3 +131,60 @@ errors, queueReason and blockedBy; native permission denials require review.
 
 Use RPC/status to inspect runtime state; do not assume a hard-coded LocalAppData
 config path. Desktop and CLI share the installed runtime locator across MSIX hosts.
+The pool supports up to 32 parallel tasks across distinct non-overlapping workspace
+directories (`concurrency` and per-route `maxConcurrent` up to 32); overlapping
+reads share a workspace; overlapping writers remain serialized to protect files.
+
+## Execution subagents and parallel coordination
+
+For an implementation request, default to `kind: "write", mode: "execute"`.
+Pass the calling project's absolute workspace, a bounded implementation task,
+owner strength group, timeout and a durable idempotency key. Use `read` for reviews
+and `text` for reasoning only. Pool injects subagent protocol v1: perform the edits
+and checks using native tools; preserve unrelated work; return at most 200 words
+covering changed paths/purpose, actual checks/outcomes and blockers. Native trust,
+sandbox and permission checks remain enforced. Never promise unrestricted access.
+`pool_list_models.executionModes` advertises execute support per model. Effective write capability follows the native/configured policy. Do not pin disabled routes to force execution.
+
+CLI: `cli-agent-pool run --kind write --mode execute --workspace <project> --group high --timeout 600 --wait 3600 --prompt "Implement the bounded task and test it"`.
+MCP/RPC: submit with `mode: "execute"`, then poll `pool_get_task` with
+`{taskId, compact: true}`. Compact replies omit repeated prompt/events and bound
+the report to 6000 characters, explicitly flagging truncation. Review actual files
+and checks; a successful turn/model report alone does not prove implementation.
+
+Up to 32 readers can share a workspace. Writes exclude readers/other writers;
+a waiting writer blocks later readers to avoid starvation. Review quarantine
+remains exclusive. For parallel edits in one project, prepare distinct Git
+worktrees and assign non-overlapping responsibilities. Review each diff and use
+one serialized integration write. Never run concurrent writers against the same
+working tree or assume Pool merges them automatically.
+
+`--timeout` limits the native worker; `--wait` independently bounds queue + caller
+waiting. Expiry returns the existing task and `resume` metadata without cancelling
+or replaying it. Queued is not failed. A review blocker returns immediately with
+`blockedBy`; inspect it before clearing quarantine. Provider quotas cannot be
+increased by a worker; caller reserves can only be raised. Keep owner billing and
+permissions unchanged. The protocol does not authorize recursive Pool delegation,
+commits, pushes, publishing or deployment on its own.
+
+Public modes are `response` (text/read) and `execute` (write); CLI infers the kind
+when omitted. Keep using execute by default for implementation requests. Its final
+response MUST be one JSON object: `status` (completed|partial|blocked), `summary`,
+`files: [{path,change}]`, `checks: [{command,outcome}]` (passed|failed|not_run),
+`research: [{source,finding}]`, `blockers: [string]`. All fields required, empty arrays
+when absent, all changed paths and research sources included; maximum 6000 characters,
+target 200 words. Pool validates the report format, exposes `report`, and compact
+retrieval avoids sending a duplicate `result`. Invalid reports retain raw output as
+INVALID_REPORT/needs_review; partial/blocked are WORK_INCOMPLETE/needs_review. Inspect
+artifacts before resolving; never rerun just to repair a report. Codex execute enables
+native live search; Claude execute enables all built-in tools using --tools default.
+Native permissions, network policy and provider capabilities still apply.
+
+Native coding CLIs expose effective text/read/write independently of stale imported
+model kinds when toolPolicy is native (default). Use request kind/mode to choose
+scope; native permission checks remain authoritative. Pool 1.8 supports Qwen native
+auto-edit and Antigravity workspace tools. toolPolicy configured is an explicit owner
+limit using stored model kinds. Catalog exposes configuredKinds, toolSupport and
+permissionAuthority separately; do not equate capability with permission or a live
+model guarantee. Chat-only CLI commands (MMX, Ollama/LM Studio, OmniRoute chat) have
+no local editing tools. Custom CLI templates must enforce their declared scopes.

@@ -97,6 +97,8 @@ export function browserUI(pool, management) {
   let launchToken = randomBytes(32).toString('hex');
   const cookieSecret = createHmac('sha256', Buffer.from(management.token, 'hex')).update('cli-agent-pool-browser-cookie-v1').digest();
   const assets = new Map([
+    ['/capabilities.js', ['text/javascript; charset=utf-8', readFileSync(new URL('../web/capabilities.js', import.meta.url))]],
+    ['/dialogs.js', ['text/javascript; charset=utf-8', readFileSync(new URL('../web/dialogs.js', import.meta.url))]],
     ['/', ['text/html; charset=utf-8', readFileSync(new URL('../web/index.html', import.meta.url))]],
     ['/pool-state.js', ['text/javascript; charset=utf-8', readFileSync(new URL('../web/pool-state.js', import.meta.url))]],
     ['/app.js', ['text/javascript; charset=utf-8', readFileSync(new URL('../web/app.js', import.meta.url))]],

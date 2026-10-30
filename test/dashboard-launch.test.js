@@ -33,3 +33,15 @@ test('dashboard launch uses the native singleton and reports process failures', 
   fail = true;
   await assert.rejects(openDashboardWindow('http://127.0.0.1:43127/'), /launch failed/);
 });
+
+test('pool CLI entrypoint executes when invoked through a directory symlink or junction', t => {
+  const tempRoot = fs.mkdtempSync(path.join(process.env.TEMP || '/tmp', 'pool-symlink-cli-'));
+  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+  const linkedRepo = path.join(tempRoot, 'linked-cli-agent-pool');
+  fs.symlinkSync(path.resolve('.'), linkedRepo, process.platform === 'win32' ? 'junction' : 'dir');
+  const linkedBin = path.join(linkedRepo, 'bin', 'pool.js');
+  const result = childProcess.spawnSync(process.execPath, [linkedBin, 'mcp-config'], { encoding: 'utf8', windowsHide: true });
+  assert.equal(result.status, 0, result.stderr);
+  const parsed = JSON.parse(result.stdout);
+  assert.ok(parsed?.mcpServers?.['cli-agent-pool']);
+});

@@ -61,7 +61,7 @@ block `subscription` and `token_plan` routes but allow `free_credits` routes (su
   - OpenCode JSONL event parsing, automatic free model catalog discovery (`opencode models --verbose --pure`), and OpenAI-compatible custom API execution via `OPENCODE_CONFIG_CONTENT`.
   - Claude Code subscription verification (`claude.ai`), token-plan / third-party Coding Plan support (`billing: 'token_plan'`), and Anthropic-compatible custom API execution via isolated environment variables.
   - MiniMax Code (`mcode`) and MiniMax CLI (`mmx`) daily credits (`billing: 'free_credits'`) vs active token plan (`billing: 'token_plan' | 'subscription'`) differentiation and quota inspection.
-  - Qwen Code `~/.qwen/settings.json` multi-provider model discovery and `stream-json` result envelope parsing with writes disabled.
+  - Qwen Code `~/.qwen/settings.json` multi-provider model discovery and `stream-json` result envelope parsing with request-scoped native plan/auto-edit tools.
   - Kimi Code (`kimi`), Xiaomi MiMoCode (`mimo`), Google Antigravity (`agy`), OmniRoute (`omniroute`), LM Studio (`lmstudio`), Ollama (`ollama`), and Custom CLI (`argsTemplate`) support.
   - Gemini CLI removed.
   - Standalone dashboard verified with one-click system scan/import (`scan-import`), CLI route setup, Custom API (Anthropic/OpenAI slot) setup, Custom CLI template setup, plan/credit badges, and CLI login guidance.
@@ -188,3 +188,25 @@ structured permission failures override a conversational SUCCESS. No prose-only
 completion heuristic or automatic write replay is used. Non-paid autoSelect:false
 is honored as well as paid_api policy. Queued task details expose workspace review
 locks through queueReason and blockedBy. A text probe does not certify write tools.
+
+Execution subagent protocol v1 is opt-in per write task (`mode: execute`), separate
+from billing and strength grouping. It injects implementation/check/report
+instructions through every native prompt transport (stdin, JSON stdin or argv).
+Claude exposes Bash and ZCode stops imposing the Pool Bash deny list in this mode;
+native permission policies still apply. Other verified tool-capable adapters keep
+their write sandbox/mode. Catalog executionModes uses effective native kinds; configured policy retains explicit model limits.
+Compact retrieval omits prompt/events and explicitly marks bounded report truncation.
+Reports remain untrusted and require the caller to inspect artifacts.
+
+Workspace reservations use shared read/text locks and exclusive write/review locks.
+FIFO conflicting queued tasks prevent a later reader from starving a writer.
+Parallel writes use caller-prepared distinct worktrees; integration is a separate
+serialized task with no implicit merge or replay. Independent CLI wait budgets
+return resumable queued/running state instead of inventing a failed task. Worker
+promise failures after write execution begins retain needs_review quarantine.
+
+1.8 separates adapter capabilities from historical model inventory: native coding
+CLIs default to text/read/write, and toolPolicy configured preserves explicit owner
+kinds restrictions. Qwen uses auto-edit/plan; Antigravity workspace tasks retain
+native plan/accept-edits without disabling skills. Permission bypass flags are never
+added. Chat CLI adapters remain text-only; arbitrary templates own their tool scopes.

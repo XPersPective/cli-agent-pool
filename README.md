@@ -326,3 +326,22 @@ Model ekleme, havuza ekleme/çıkarma ve havuz eforu değişiklikleri hemen kayd
 Diğer ayarlardaki bekleyen değişiklikler bu işlemle kaydedilmez. Kaydedilmemiş
 ayar taslağı aynı tarayıcıda sayfa yeniden açıldığında geri yüklenir; kaydetme veya
 vazgeçme işlemi taslağı temizler.
+
+### Uygulayan alt ajanlar ve paralel görevler
+
+Kodlama işlerinde `--kind write --mode execute` (MCP: `kind: "write", mode: "execute"`)
+kullanın. Alt ajan çağıran projenin `--workspace` yolunda araçlarla değişikliği yapar,
+kontrolleri çalıştırır ve kısa dosya/test/engel raporu döndürür. Native CLI izinleri,
+kota ve ödeme kuralları korunur. `pool_get_task` için `compact: true` token tüketimini
+azaltır. Okumalar aynı projede paralel; yazmalar sırayladır. Paralel yazma için ayrı
+Git worktree, ardından tek entegrasyon görevi kullanılır. `--wait` kuyruk bekleme
+bütçesini, `--timeout` çalışan CLI süresini belirler. Ayrıntılar:
+[Ajan protokolü](docs/agent-api.md#uygulayan-alt-ajan-protokolü-v1).
+
+### Dosya kapsamı (1.8)
+
+Native kodlama CLI'larında eski metin-only model kaydı dosya araçlarını kapatmaz.
+İstek `kind: text/read/write` seçer; `write + mode: execute` işi uygular ve kısa
+rapor döndürür. Native CLI izinleri ve kotaları korunur. Ayarlardaki Dosya araçları
+seçimiyle bağlantının kayıtlı model kapsamı ayrıca sınırlandırılabilir. Sohbet CLI'ı
+(MMX vb.) dosya aracı sağlamıyorsa yazma yeteneği varmış gibi gösterilmez.
