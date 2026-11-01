@@ -4,6 +4,7 @@ import childProcess from 'node:child_process';
 import fs from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { syncBuiltinESMExports } from 'node:module';
+import os from 'node:os';
 import path from 'node:path';
 import { dataDirectory } from '../src/config.js';
 import { openDashboardWindow } from '../src/daemon.js';
@@ -18,7 +19,8 @@ test('dashboard launch uses the native singleton and reports process failures', 
     queueMicrotask(() => fail ? child.emit('error', new Error('launch failed')) : child.emit(process.platform === 'win32' ? 'exit' : 'spawn', 0));
     return child;
   });
-  t.mock.method(fs, 'existsSync', () => true);
+  const runtimeLocator = path.join(os.homedir(), '.cli-agent-pool', 'runtime-path');
+  t.mock.method(fs, 'existsSync', target => path.resolve(target) !== path.resolve(runtimeLocator));
   syncBuiltinESMExports();
   t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
   const result = await openDashboardWindow('http://127.0.0.1:43127/');
