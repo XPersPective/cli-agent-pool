@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -127,7 +127,12 @@ export async function withMcpClient(directory, callback) {
 export async function callPoolTool(client, name, args = {}) {
   const res = await client.callTool({ name, arguments: args });
   const text = res.content?.[0]?.text;
-  const parsed = text ? JSON.parse(text) : res.structuredContent?.data;
+  let parsed;
+  try { parsed = text ? JSON.parse(text) : res.structuredContent?.data; }
+  catch {
+    // MCP validation/transport errors can be plain text, not our JSON envelope.
+    throw new PoolError('TOOL_FAILED', 'MCP yanıtı beklenen JSON biçiminde değil. Araç adını ve argümanlarını kontrol edin.');
+  }
   if (res.isError) {
     throw new PoolError(parsed?.error?.code || 'TOOL_FAILED', parsed?.error?.message || 'Havuz işlemi başarısız.');
   }
@@ -136,8 +141,8 @@ export async function callPoolTool(client, name, args = {}) {
 
 export async function runTaskFromCli(directory, options) {
   const waitSeconds = Number(options.waitSeconds ?? 3600);
-  if (!Number.isInteger(waitSeconds) || waitSeconds < 1 || waitSeconds > 86400)
-    throw new PoolError('INVALID_REQUEST', '--wait 1-86400 saniye olmalı.');
+  if (!Number.isInteger(waitSeconds) || waitSeconds < 1 || waitSeconds > Math.floor(2147483647 / 1000))
+    throw new PoolError('INVALID_REQUEST', '--wait pozitif saniye olmalı ve native timer aralığında kalmalı.');
   const workspace = allowedWorkspace(options.workspace || process.cwd());
   const config = loadConfig(directory);
   await ensureDaemon(directory, config);
@@ -156,17 +161,17 @@ export async function runTaskFromCli(directory, options) {
       idempotencyKey: options.idempotencyKey || `cli-${randomUUID()}`,
     });
     if (options.detach) return submitted;
-    return waitForTask(id => callPoolTool(client, 'pool_get_task', { taskId: id, compact: options.mode === 'execute' }), submitted.id, { waitSeconds, sleep: delay });
+    return waitForTask(id => callPoolTool(client, 'pool_get_task', { taskId: id, compact: true }), submitted.id, { waitSeconds, sleep: delay });
   });
 }
 
-export async function installDesktopAndSkills(directory) {
+export async function installDesktopAndSkills(directory, installedRoot = null) {
   const config = ensureInitialized(directory, true);
   const daemonInfo = await ensureDaemon(directory, config);
   const appData = process.env.APPDATA || path.join(homedir(), 'AppData', 'Roaming');
   const globalPoolBin = path.join(appData, 'npm', 'node_modules', 'cli-agent-pool', 'bin', 'pool.js');
-  const activePoolBin = existsSync(globalPoolBin) ? globalPoolBin : poolBinPath;
-  const activeRoot = path.resolve(path.dirname(activePoolBin), '..');
+  const activeRoot = installedRoot ? path.resolve(installedRoot) : existsSync(globalPoolBin) ? path.resolve(path.dirname(globalPoolBin), '..') : repoRootPath;
+  const activePoolBin = path.join(activeRoot, 'bin', 'pool.js');
 
   const results = {
     dataDirectory: directory,
@@ -233,6 +238,7 @@ Write-Output (ConvertTo-Json @{ desktop = (Join-Path $desktop 'CLI Agent Pool.ln
     const targetDir = path.join(agyConfigSkills, 'cli-agent-pool');
     mkdirSync(targetDir, { recursive: true });
     writeFileSync(path.join(targetDir, 'SKILL.md'), readFileSync(path.join(skillFolder, 'SKILL.md')));
+    if (existsSync(path.join(skillFolder, 'references'))) cpSync(path.join(skillFolder, 'references'), path.join(targetDir, 'references'), { recursive: true });
   }
   const smCli = path.join(homedir(), '.skills-manager', 'bin', process.platform === 'win32' ? 'skills-manager-cli.exe' : 'skills-manager-cli');
   if (existsSync(skillFolder) && existsSync(smCli)) {

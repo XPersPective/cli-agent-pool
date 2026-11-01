@@ -20,7 +20,7 @@ test('adding to an explicit target pool preserves other memberships and validate
   assert.deepEqual(model.memberships, [{ group: 'high', effort: 'high' }, { group: 'medium', effort: 'medium' }]);
   assert.equal(model.group, 'high');
   const before = structuredClone(model);
-  assert.throws(() => addMembership(model, 'other', 'high'));
+  assert.throws(() => addMembership(model, 'invalid category!', 'high'));
   assert.throws(() => addMembership(model, 'low', 'unsupported'));
   assert.deepEqual(model, before);
   addMembership(model, 'medium', '');
@@ -54,16 +54,16 @@ test('quota filtering uses numeric model-scoped balances, including exhausted qu
  assert.equal(quotaMatches(null,'luna','all'),true);
 });
 
-test('manual pools enforce membership and per-pool effort at selection and execution', async t => {
+test('category defaults apply only within a category; catalog selection and supported effort remain caller choices', async t => {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-members-'));
   const config = configSchema.parse({ selectionMode: 'manual', workspaceRoots: [root], routes: [{ id: 'codex', adapter: 'codex', executable: process.execPath, billing: 'subscription', enabled: true, models: [{ id: 'gpt-version', alias: 'GPT', group: 'unassigned', efforts: ['low', 'medium', 'high'], defaultEffort: 'high', kinds: ['text'], memberships: [{ group: 'high', effort: 'high' }, { group: 'medium', effort: 'medium' }, { group: 'low' }] }, { id: 'outside', alias: 'Outside', group: 'unassigned', efforts: [], kinds: ['text'], memberships: [] }] }] });
   const store = new Store(':memory:'); let used;
   const pool = new Pool(config, store, { directory: root, checkAuth: async () => {}, execute: (route, model, request, python, progress) => { used = request; progress('model:resolved-gpt-version'); return { cancel() {}, done: Promise.resolve({ result: 'ok' }) }; } });
   t.after(async () => { await pool.close(); store.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
-  assert.throws(() => pool.select({ kind: 'text', routeId: 'codex', modelId: 'outside' }), { code: 'POOL_REQUIRED' });
+  assert.equal(pool.select({kind:'text',routeId:'codex',modelId:'outside'}).selected.id,'outside');
   assert.throws(() => pool.select({ kind: 'text', group: 'high', modelId: 'outside' }), { code: 'NO_ROUTE' });
-  assert.throws(() => pool.select({ kind: 'text', group: 'high', effort: 'low' }), { code: 'NO_ROUTE' });
-  assert.equal(pool.select({ kind: 'text', group: 'medium' }).selected.fixedEffort, 'medium');
+  assert.equal(pool.select({kind:'text',group:'high',effort:'low'}).selected.id,'gpt-version');
+  assert.equal(pool.select({ kind: 'text', group: 'medium' }).selected.defaultEffort, 'medium');
   store.saveQuota('codex', { status: 'available', observedAt: new Date().toISOString(), windows: [{ remainingPercent: 15 }] });
   assert.throws(() => pool.select({ kind: 'text', group: 'medium', minRemainingPercent: 25 }), { code: 'NO_ROUTE' });
   assert.equal(pool.select({ kind: 'text', group: 'medium', minRemainingPercent: 10 }).selected.id, 'gpt-version');
@@ -76,13 +76,95 @@ test('manual pools enforce membership and per-pool effort at selection and execu
   assert.equal(used.effort, 'medium'); assert.equal(used.group, 'medium');
   assert.equal(pool.get(task.id).reportedModel, 'resolved-gpt-version');
   assert.equal(pool.get(task.id).effort, 'medium');
-  assert.equal(pool.pools().pools[1].members[0].fixedEffort, 'medium');
+  assert.equal(pool.pools({group:'medium'}).models[0].effort, 'medium');
   pool.config.selectionMode = 'auto';
   assert.equal(pool.select({ kind: 'text', modelId: 'outside' }).selected.id, 'outside');
   const invalid = structuredClone(config); invalid.routes[0].models[0].memberships.push({ group: 'high' });
   assert.throws(() => configSchema.parse(invalid));
   invalid.routes[0].models[0].memberships = [{ group: 'high', effort: 'unsupported' }];
   assert.throws(() => configSchema.parse(invalid));
+});
+
+test('Qwen quota rejection is shown without blocking other provider accounts, then cleared by success', async t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pool-qwen-quota-'));
+  const config = configSchema.parse({ selectionMode: 'auto', workspaceRoots: [root], routes: [{
+    id: 'qwen', adapter: 'qwen', executable: process.execPath, billing: 'token_plan', enabled: true,
+    models: [{ id: 'qwen3.8-max', alias: 'Qwen Cloud', group: 'medium', kinds: ['text'] }],
+  }] });
+  const store = new Store(':memory:'); let nextError = 'QUOTA_EXHAUSTED';
+  const pool = new Pool(config, store, {
+    directory: root, checkAuth: async () => {},
+    execute: () => ({ cancel() {}, done: Promise.resolve(nextError ? { error: nextError } : { result: 'OK' }) }),
+  });
+  t.after(async () => { await pool.close(); store.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
+  const first = pool.submit({ kind: 'text', group: 'medium', routeId: 'qwen', modelId: 'qwen3.8-max', prompt: 'test', workspace: root, idempotencyKey: 'qwen-quota-fail-01' });
+  for (let i = 0; i < 40 && pool.get(first.id).state !== 'failed'; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(pool.get(first.id).error, 'QUOTA_EXHAUSTED');
+  const rejected = store.quota('qwen');
+  assert.equal(rejected.status, 'unknown'); assert.equal(rejected.auth, 'credentials_present');
+  assert.equal(rejected.source, 'cli-run-rejection'); assert.deepEqual(rejected.windows, []);
+  assert.equal(pool.select({ kind: 'text', group: 'medium', routeId: 'qwen' }).selected.id, 'qwen3.8-max');
+  nextError = null;
+  const second = pool.submit({ kind: 'text', group: 'medium', routeId: 'qwen', modelId: 'qwen3.8-max', prompt: 'test', workspace: root, idempotencyKey: 'qwen-quota-ok-01' });
+  for (let i = 0; i < 40 && pool.get(second.id).state !== 'succeeded'; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(pool.get(second.id).state, 'succeeded');
+  assert.equal(store.quota('qwen').source, 'cli-run-success');
+  assert.equal(store.quota('qwen').status, 'unknown');
+});
+
+test('MiniMax Code account credits are not blocked by an absent Token Plan', async t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pool-mcode-credits-'));
+  const makePool = billing => {
+    const config = configSchema.parse({ selectionMode: 'auto', workspaceRoots: [root], routes: [{
+      id: 'mcode', adapter: 'mcode', executable: process.execPath, billing, enabled: true, trustedSettings: true,
+      models: [{ id: 'minimax/MiniMax-M3.1-Flash', alias: 'M3.1 Flash', group: 'low', kinds: ['text', 'write'] }],
+    }] });
+    const store = new Store(':memory:');
+    store.saveQuota('mcode', { status: 'unknown', subscription: 'none', windows: [], observedAt: new Date().toISOString() });
+    const pool = new Pool(config, store, { directory: root, checkAuth: async () => {} });
+    return { pool, store };
+  };
+  const credits = makePool('free_credits');
+  t.after(async () => { await credits.pool.close(); credits.store.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
+  assert.equal(credits.pool.select({ kind: 'text', group: 'low', routeId: 'mcode' }).selected.billing, 'free_credits');
+  const tokenPlan = makePool('token_plan');
+  t.after(async () => { await tokenPlan.pool.close(); tokenPlan.store.close(); });
+  assert.throws(() => tokenPlan.pool.select({ kind: 'text', group: 'low', routeId: 'mcode' }), { code: 'NO_ROUTE' });
+});
+
+test('OpenCode live free-model labels override a paid API route only for those models', async t => {
+  const route = { id: 'opencode', adapter: 'opencode', billing: 'paid_api', autoSelect: false, models: [
+    { id: 'opencode/old-free', alias: 'old', group: 'low', billing: 'free', enabled: true, efforts: [], kinds: ['text'] },
+    { id: 'opencode/paid', alias: 'paid', group: 'low', enabled: true, efforts: [], kinds: ['text'] },
+  ] };
+  mergeCatalogModels(route, { models: [
+    { id: 'opencode/old-free', name: 'Formerly free', free: false, efforts: [] },
+    { id: 'opencode/new-free', name: 'Free model', free: true, efforts: [] },
+  ] });
+  assert.equal(route.models.find(model => model.id === 'opencode/old-free').billing, undefined);
+  assert.equal(route.models.find(model => model.id === 'opencode/new-free').billing, 'free');
+  const root = mkdtempSync(path.join(tmpdir(), 'pool-opencode-billing-'));
+  const config = configSchema.parse({ selectionMode: 'auto', workspaceRoots: [root], routes: [{ ...route, executable: process.execPath, enabled: true }] });
+  const store = new Store(':memory:');
+  const pool = new Pool(config, store, { directory: root });
+  t.after(async () => { await pool.close(); store.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
+  const available = pool.models();
+  assert.equal(available.find(model => model.id === 'opencode/new-free').billing, 'free');
+  assert.equal(available.find(model => model.id === 'opencode/new-free').autoSelect, false);
+  assert.equal(available.find(model => model.id === 'opencode/paid').billing, 'paid_api');
+  assert.equal(available.find(model => model.id === 'opencode/paid').autoSelect, false);
+  assert.equal(pool.select({kind:'text'}).selected.id,'opencode/new-free');
+  assert.equal(pool.select({ kind: 'text', routeId: 'opencode' }).selected.id, 'opencode/new-free');
+  delete config.routes[0].autoSelect;
+  assert.equal(pool.select({ kind: 'text' }).selected.id, 'opencode/new-free');
+
+  const manualConfig = configSchema.parse({ selectionMode: 'manual', workspaceRoots: [root], routes: [{ ...route, executable: process.execPath, enabled: true }] });
+  const manualStore = new Store(':memory:');
+  const manualPool = new Pool(manualConfig, manualStore, { directory: root });
+  t.after(async () => { await manualPool.close(); manualStore.close(); });
+  assert.equal(manualPool.select({ kind: 'text', routeId: 'opencode', modelId:'opencode/new-free' }).selected.id, 'opencode/new-free');
+  assert.throws(()=>manualPool.select({kind:'text',group:'free',routeId:'opencode'}),{code:'NO_ROUTE'});
+  assert.throws(() => manualPool.select({ kind: 'text', group: 'free', routeId: 'opencode', modelId: 'opencode/paid' }), { code: 'NO_ROUTE' });
 });
 
 test('Claude control catalog imports resolved versions without a user prompt and preserves pool rules', async t => {
@@ -104,15 +186,15 @@ test('Claude control catalog imports resolved versions without a user prompt and
 });
 
 test('scan merges new versioned models without saving or discarding unrelated draft edits', () => {
-  const before = { selectionMode: 'auto', groupingMode: 'manual', workspaceRoots: ['original'], routes: [{ id: 'claude', enabled: false, models: [{ id: 'opus', alias: 'Opus', group: 'claude', efforts: ['high'], memberships: [] }] }] };
-  const draft = structuredClone(before); draft.selectionMode = 'manual'; draft.routes[0].enabled = true;
+  const before = { categories:[{id:'high',name:'High'}], workspaceRoots: ['original'], routes: [{ id: 'claude', enabled: false, models: [{ id: 'opus', alias: 'Opus', group: 'claude', efforts: ['high'], memberships: [] }] }] };
+  const draft = structuredClone(before); draft.categories[0].name = 'Research'; draft.routes[0].enabled = true;
   draft.routes[0].models[0].memberships = [{ group: 'high', effort: 'high' }];
   draft.routes[0].models.push({ id: 'custom-v2', alias: 'Custom', group: 'low' });
   const scanned = structuredClone(before); scanned.routes[0].models[0].id = 'claude-opus-9-1'; scanned.routes[0].models[0].alias = 'claude-opus-9-1';
   scanned.routes[0].models.push({ id: 'claude-sonnet-9-1', group: 'unassigned', memberships: [] });
   scanned.routes.push({ id: 'qwen', models: [] });
   const result = mergeScanDraft(scanned, before, draft);
-  assert.equal(result.selectionMode, 'manual'); assert.equal(result.routes[0].enabled, true);
+  assert.equal(result.categories[0].name,'Research'); assert.equal(result.routes[0].enabled, true);
   assert.deepEqual(result.routes[0].models[0].memberships, [{ group: 'high', effort: 'high' }]);
   assert.equal(result.routes[0].models[0].id, 'claude-opus-9-1');
   assert.equal(result.routes[0].models[0].alias, 'claude-opus-9-1');
@@ -159,7 +241,7 @@ test('agent auto-start preserves owner-disabled routes and never grants trust im
   const config = configSchema.parse({ workspaceRoots: [root], selectionMode: 'manual', routes: [{ id: 'owner-disabled', adapter: 'custom', executable: process.execPath, argsTemplate: ['--version'], billing: 'free', enabled: false, trustedSettings: false, models: [] }] });
   writeFileSync(path.join(root, 'config.json'), JSON.stringify(config));
   const loaded = ensureInitialized(root);
-  assert.equal(loaded.selectionMode, 'manual');
+  assert.equal(loaded.selectionMode, undefined);
   assert.equal(loaded.routes.find(route => route.id === 'owner-disabled').enabled, false);
   assert.equal(loaded.routes.find(route => route.id === 'owner-disabled').trustedSettings, false);
 });
@@ -250,6 +332,23 @@ test('Antigravity vendor quota groups never block or display unrelated model fam
  assert.deepEqual(quotaWindows({windows},'claude-opus-5-5-high').map(w=>w.remaining),[0,50]);
  assert.deepEqual(quotaWindows({windows},'gpt-oss-120b-medium').map(w=>w.remaining),[0,50]);
  assert.equal(antigravityGroupWindows({groups:[{name:'Shared',buckets:[{window:'5h',remainingFraction:1.2}]}]})[0].remainingPercent,100);
+});
+
+test('model-scoped Antigravity exhaustion blocks only the depleted model family',async t=>{
+ const root=mkdtempSync(path.join(tmpdir(),'pool-agy-scoped-'));
+ const config=configSchema.parse({selectionMode:'manual',workspaceRoots:[root],routes:[{id:'agy-local',adapter:'agy',executable:process.execPath,enabled:true,billing:'subscription',models:[
+  {id:'gemini-3.8-flash',alias:'Gemini Flash',group:'low',memberships:[{group:'low'}],efforts:[],kinds:['text']},
+  {id:'claude-sonnet-5-5',alias:'Claude Sonnet',group:'medium',memberships:[{group:'medium'}],efforts:[],kinds:['text']},
+ ]}]});
+ const store=new Store(':memory:');
+ store.saveQuota('agy-local',{status:'rate_limited',scope:'model',observedAt:new Date().toISOString(),windows:[
+  {name:'Gemini',remainingPercent:89,models:['gemini-flash']},
+  {name:'Claude and GPT',remainingPercent:0,models:['claude','gpt']},
+ ]});
+ const pool=new Pool(config,store);
+ t.after(async()=>{await pool.close();store.close();await rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});});
+ assert.equal(pool.select({kind:'text',group:'low'}).selected.id,'gemini-3.8-flash');
+ assert.throws(()=>pool.select({kind:'text',group:'medium'}),{code:'NO_ROUTE'});
 });
 
 test('project skill picker confines reads to authorized project and central skill files',async t=>{

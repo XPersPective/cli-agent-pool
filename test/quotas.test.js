@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { zaiWindows, zaiKeys, kimiWindows, minimaxWindows, antigravityModelWindows, antigravityGroupWindows, openrouterNote, claudeWindows } from '../src/quotas.js';
+import { zaiWindows, zaiKeys, zaiQuota, kimiWindows, minimaxWindows, antigravityModelWindows, antigravityGroupWindows, openrouterNote, claudeWindows } from '../src/quotas.js';
 import { classifyFailure, buildArguments, execute, zcodeEnvironment, localModelsFor } from '../src/adapters.js';
 import { quotaWindows } from '../web/pool-state.js';
 
@@ -28,6 +28,18 @@ test('the key ZCode CLI really uses wins over the legacy desktop entry', async t
   writeFileSync(path.join(home, '.zcode', 'v2', 'provider_config.json'), JSON.stringify({ config: { providerConfigRules: { providerRules: [{ providerId: 'zai-api', config: { access: { apiKey: 'cli-key' } } }] } } }));
   writeFileSync(path.join(home, '.zcode', 'v2', 'config.json'), JSON.stringify({ provider: { 'builtin:zai-coding-plan': { enabled: true, options: { baseURL: 'https://api.z.ai/api/anthropic', apiKey: 'legacy-key' } } } }));
   assert.deepEqual(zaiKeys(home), ['cli-key', 'legacy-key']);
+});
+
+test('ZCode monitor outage does not claim the user is logged out or has no plan', async t => {
+  const home = mkdtempSync(path.join(tmpdir(), 'pool-zai-offline-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  mkdirSync(path.join(home, '.zcode', 'v2'), { recursive: true });
+  writeFileSync(path.join(home, '.zcode', 'v2', 'provider_config.json'), JSON.stringify({ config: { providerConfigRules: { providerRules: [{ providerId: 'zai-api', config: { access: { apiKey: 'fixture' } } }] } } }));
+  for (const status of [0, 429, 500, 401]) {
+    const result = await zaiQuota(home, async () => ({ status, data: null }));
+    assert.equal(result.status, 'unknown');
+    assert.equal(result.auth, 'credentials_present');
+  }
 });
 
 test('Kimi, MiniMax and Claude usage payloads are validated', () => {

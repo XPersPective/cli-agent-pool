@@ -1,5 +1,12 @@
+import { isCategoryId } from './categories.js';
 export function memberships(model) {
-  return model.memberships ?? (['high', 'medium', 'low'].includes(model.group) ? [{ group: model.group, ...(model.defaultEffort ? { effort: model.defaultEffort } : {}) }] : []);
+  return model.memberships ?? (['high', 'medium', 'low', 'free'].includes(model.group) ? [{ group: model.group, ...(model.defaultEffort ? { effort: model.defaultEffort } : {}) }] : []);
+}
+
+// Disabling a connection hides its catalog and memberships without deleting them.
+// A model served by another enabled connection remains independently visible.
+export function visibleRoutes(config) {
+  return config.routes.filter(route => route.enabled);
 }
 
 export function mergeScanDraft(scanned, before, draft) {
@@ -9,7 +16,7 @@ export function mergeScanDraft(scanned, before, draft) {
     const original = before.routes.find(item => item.id === route.id);
     if (!target) { if (!original) merged.routes.push(structuredClone(route)); continue; }
     if (!original) continue;
-    for (const key of ['enabled', 'billing', 'autoSelect', 'trustedSettings', 'toolPolicy', 'priority', 'maxConcurrent', 'minRemainingPercent', 'api']) {
+    for (const key of ['enabled', 'billing', 'autoSelect', 'trustedSettings', 'toolPolicy', 'priority', 'minRemainingPercent', 'api']) {
       if (JSON.stringify(route[key]) !== JSON.stringify(original[key])) {
         if (route[key] === undefined) delete target[key]; else target[key] = structuredClone(route[key]);
       }
@@ -33,11 +40,11 @@ export function mergeScanDraft(scanned, before, draft) {
       }
     }
   }
-  for (const key of ['selectionMode', 'groupingMode', 'workspaceRoots', 'modelFilters', 'concurrency']) if (JSON.stringify(draft[key]) !== JSON.stringify(before[key])) merged[key] = structuredClone(draft[key]);
+  for (const key of ['categories', 'workspaceRoots', 'modelFilters']) if (JSON.stringify(draft[key]) !== JSON.stringify(before[key])) merged[key] = structuredClone(draft[key]);
   return merged;
 }
 export function addMembership(model, group, effort = '') {
-  if (!['high', 'medium', 'low'].includes(group) || effort && !model.efforts.includes(effort)) throw new Error('Havuz veya efor seçimi geçersiz.');
+  if (!isCategoryId(group) || effort && !model.efforts.includes(effort)) throw new Error('Havuz veya efor seçimi geçersiz.');
   if (memberships(model).some(member => member.group === group && (member.effort || '') === effort)) return false;
   model.memberships = memberships(model);
   let member = model.memberships.find(item => item.group === group);
@@ -63,11 +70,8 @@ export function modelSaveConfig(base, draft, routeId, modelId, enableRoute = fal
 }
 
 export function preferenceSaveConfig(base, draft, key) {
-  if (!['selectionMode', 'groupingMode', 'modelFilters', 'concurrency'].includes(key)) throw new Error('Geçersiz havuz ayarı.');
+  if (!['categories', 'modelFilters'].includes(key)) throw new Error('Geçersiz havuz ayarı.');
   const next = { ...structuredClone(base), [key]: structuredClone(draft[key]) };
-  if (key === 'concurrency' && Array.isArray(next.routes)) {
-    for (const route of next.routes) if (typeof route.maxConcurrent === 'number') route.maxConcurrent = draft.concurrency;
-  }
   return next;
 }
 

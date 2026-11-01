@@ -47,6 +47,9 @@ export async function main(args = process.argv.slice(2)) {
       '  open                    Auto-start background service if needed and open desktop app window',
       '  ensure                  Ensure background pool service is running',
       '  status                  Show active connections, models and policy (auto-starts service)',
+      '  pools                   Categories; --group <id> reads one category model page',
+      '  help-code               Recovery guidance (--code AUTH_REQUIRED)',
+      '  catalog                 Catalog sources or model page (--billing free --query name --view models)',
       '  rpc                     Call one agent MCP tool using a JSON request on stdin (auto-starts service)',
       '  mcp-config              Print credential-free stdio configuration for editors and Freebuff',
       '  select                  Select best available model (--kind read|write|text --group <g>)',
@@ -87,9 +90,8 @@ export async function main(args = process.argv.slice(2)) {
   }
   if (command === 'status') {
     const out = await withMcpClient(directory, async client => ({
-      connections: await callPoolTool(client, 'pool_list_connections'),
-      models: await callPoolTool(client, 'pool_list_models'),
-      policy: await callPoolTool(client, 'pool_get_policy'),
+      service: await callPoolTool(client, 'pool_help'),
+      catalog: await callPoolTool(client, 'pool_catalog'),
       pools: await callPoolTool(client, 'pool_list_pools'),
     }));
     print(out);
@@ -98,6 +100,22 @@ export async function main(args = process.argv.slice(2)) {
   if (command === 'rpc') {
     const request = await rpcRequest(process.stdin);
     print(await withMcpClient(directory, client => callPoolTool(client, request.tool, request.arguments)));
+    return;
+  }
+  if (command === 'catalog' || command === 'pools' || command === 'help-code') {
+    const { flags } = parseFlags(rest);
+    print(await withMcpClient(directory, client => callPoolTool(client, command === 'pools' ? 'pool_list_pools' : command === 'help-code' ? 'pool_help' : 'pool_catalog', {
+      ...(flags.group && command === 'pools' ? { group: flags.group } : {}),
+      ...(flags.code ? { code: flags.code } : {}),
+      ...(flags.view ? { view: flags.view } : {}),
+      ...(flags.billing ? { billing: flags.billing } : {}),
+      ...(flags.adapter ? { adapter: flags.adapter } : {}),
+      ...(flags.kind ? { kind: flags.kind } : {}),
+      ...(flags.route ? { routeId: flags.route } : {}),
+      ...(flags.query ? { query: flags.query } : {}),
+      ...(flags.limit ? { limit: Number(flags.limit) } : {}),
+      ...(flags.offset ? { offset: Number(flags.offset) } : {}),
+    })));
     return;
   }
   if (command === 'select') {

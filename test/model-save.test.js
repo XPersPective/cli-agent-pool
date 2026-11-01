@@ -7,9 +7,9 @@ import { configSchema, configView, saveConfig, loadConfig } from '../src/config.
 import { modelSaveConfig, mergeScanDraft, addMembership, preferenceSaveConfig } from '../web/pool-state.js';
 
 test('model autosave persists membership and effort without committing unrelated settings', () => {
-  const base = { selectionMode: 'manual', routes: [{ id: 'codex', enabled: false, billing: 'subscription', priority: 100, models: [{ id: 'luna', alias: 'Luna', group: 'unassigned', enabled: true, efforts: ['low', 'high'] }] }] };
+  const base = { categories: [{id:'low',name:'Low'}], routes: [{ id: 'codex', enabled: false, billing: 'subscription', priority: 100, models: [{ id: 'luna', alias: 'Luna', group: 'unassigned', enabled: true, efforts: ['low', 'high'] }] }] };
   const draft = structuredClone(base), route = draft.routes[0];
-  draft.selectionMode = 'auto'; route.billing = 'paid_api'; route.priority = 9;
+  draft.categories[0].name = 'Low renamed'; route.billing = 'paid_api'; route.priority = 9;
   route.models[0].alias = 'Uncommitted alias';
   addMembership(route.models[0], 'low', 'low'); route.enabled = true;
   assert.equal(modelSaveConfig(base, draft, 'codex', 'luna').routes[0].enabled, false);
@@ -18,7 +18,7 @@ test('model autosave persists membership and effort without committing unrelated
   assert.equal(saved.routes[0].enabled, true);
   assert.equal(saved.routes[0].billing, 'subscription');
   assert.equal(saved.routes[0].priority, 100);
-  assert.equal(saved.selectionMode, 'manual');
+  assert.equal(saved.categories[0].name, 'Low');
   assert.equal(saved.routes[0].models[0].alias, 'Luna');
   assert.deepEqual(mergeScanDraft(saved, base, draft), draft);
   assert.equal(base.routes[0].models[0].memberships, undefined);
@@ -42,31 +42,14 @@ test('new catalog models are saved independently and unsaved connections are rej
 });
 
 
-test('pool policy autosave is durable without committing unrelated drafts', () => {
-  const base = { selectionMode: 'auto', groupingMode: 'manual', concurrency: 1, modelFilters: [], routes: [{ id: 'codex', billing: 'subscription', maxConcurrent: 1, models: [{ id: 'luna', memberships: [{ group: 'low', effort: 'low' }] }] }] };
-  const draft = structuredClone(base);
-  draft.selectionMode = 'manual'; draft.groupingMode = 'agent';
-  draft.concurrency = 30;
-  draft.routes[0].billing = 'paid_api';
-  const saved = preferenceSaveConfig(base, draft, 'selectionMode');
-  assert.equal(saved.selectionMode, 'manual');
-  assert.equal(saved.groupingMode, 'manual');
-  assert.deepEqual(saved.routes, base.routes);
-  assert.deepEqual(mergeScanDraft(saved, base, draft), draft);
-  const permissions = preferenceSaveConfig(saved, draft, 'groupingMode');
-  assert.equal(permissions.selectionMode, 'manual');
-  assert.equal(permissions.groupingMode, 'agent');
-  assert.equal(permissions.concurrency, 1);
-  const execution = preferenceSaveConfig(permissions, draft, 'concurrency');
-  assert.equal(execution.concurrency, 30);
-  assert.equal(execution.routes[0].maxConcurrent, 30);
-  assert.equal(execution.routes[0].billing, 'subscription');
-  assert.equal(execution.selectionMode, 'manual');
-  assert.deepEqual(permissions.routes, base.routes);
-  assert.throws(() => preferenceSaveConfig(base, draft, 'routes'));
-  assert.equal(base.selectionMode, 'auto');
+test('category autosave persists without committing billing or concurrency drafts', () => {
+  const base={categories:[{id:'low',name:'Low'}],concurrency:1,routes:[{id:'codex',billing:'subscription',maxConcurrent:1,models:[]}]};
+  const draft=structuredClone(base);draft.categories.push({id:'research',name:'Research'});draft.concurrency=30;draft.routes[0].billing='paid_api';
+  const saved=preferenceSaveConfig(base,draft,'categories');assert.equal(saved.categories.length,2);assert.equal(saved.concurrency,1);assert.deepEqual(saved.routes,base.routes);
+  assert.equal(mergeScanDraft(saved,base,draft).routes[0].billing,'paid_api');
+  assert.throws(()=>preferenceSaveConfig(saved,draft,'concurrency'));
+  assert.throws(()=>preferenceSaveConfig(base,draft,'selectionMode'));assert.throws(()=>preferenceSaveConfig(base,draft,'groupingMode'));
 });
-
 
 test('pool selection and membership reload from disk in a fresh session', t => {
   const directory = mkdtempSync(path.join(tmpdir(), 'pool-policy-'));
@@ -77,10 +60,10 @@ test('pool selection and membership reload from disk in a fresh session', t => {
   addMembership(draft.routes[0].models[0], 'low', 'low');
   saveConfig(directory, modelSaveConfig(base, draft, 'codex', 'luna', true), configView(directory).revision);
   const saved = configView(directory);
-  draft.selectionMode = 'manual';
-  saveConfig(directory, preferenceSaveConfig(saved.config, draft, 'selectionMode'), saved.revision);
+  draft.categories.find(c=>c.id==='low').name='Light';
+  saveConfig(directory, preferenceSaveConfig(saved.config, draft, 'categories'), saved.revision);
   const restarted = loadConfig(directory);
-  assert.equal(restarted.selectionMode, 'manual');
+  assert.equal(restarted.categories.find(c=>c.id==='low').name,'Light');assert.equal(restarted.selectionMode,undefined);
   assert.equal(restarted.routes[0].enabled, true);
   assert.deepEqual(restarted.routes[0].models[0].memberships, [{ group: 'low', effort: 'low' }]);
 });

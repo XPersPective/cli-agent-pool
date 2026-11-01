@@ -1,4 +1,5 @@
-import { memberships, mergeScanDraft, addMembership, modelSaveConfig, preferenceSaveConfig, quotaWindows, quotaMatches, effortLabel, modelIdentity, modelFamily, modelFiltered, sortModels } from '/pool-state.js';
+import { categoriesOf, isCategoryId, removeCategory } from '/categories.js';
+import { memberships, visibleRoutes, mergeScanDraft, addMembership, modelSaveConfig, preferenceSaveConfig, quotaWindows, quotaMatches, effortLabel, modelIdentity, modelFamily, modelFiltered, sortModels } from '/pool-state.js';
 import { dismissOnBackdrop } from '/dialogs.js';
 import { capabilityLabel } from '/capabilities.js';
 const $ = id => document.getElementById(id);
@@ -24,13 +25,13 @@ let viewPreferences = {};
 try { viewPreferences = JSON.parse(localStorage.getItem('pool-view') || '{}'); if (!viewPreferences || typeof viewPreferences !== 'object' || Array.isArray(viewPreferences)) viewPreferences = {}; } catch { /* Browser defaults remain usable. */ }
 selectedRoute = typeof viewPreferences.selectedRoute === 'string' ? viewPreferences.selectedRoute : '';
 selectedFamily = typeof viewPreferences.selectedFamily === 'string' ? viewPreferences.selectedFamily : '';
-if (['high','medium','low'].includes(viewPreferences.selectedGroup)) selectedGroup = viewPreferences.selectedGroup;
+if (isCategoryId(viewPreferences.selectedGroup)) selectedGroup = viewPreferences.selectedGroup;
 if (typeof viewPreferences.quotasOpen === 'boolean') quotasOpen = viewPreferences.quotasOpen;
 for (const [key,value] of Object.entries(viewPreferences.quotaStates || {})) if (typeof value === 'boolean') quotaStates.set(key,value);
 function rememberView() {
   try { localStorage.setItem('pool-view', JSON.stringify({ ...viewPreferences, selectedRoute, selectedFamily, selectedGroup, quotasOpen, quotaStates: Object.fromEntries(quotaStates) })); } catch { /* Current-page choices still work. */ }
 }
-for (const id of ['catalog-view','catalog-sort','member-view','quota-filter']) {
+for (const id of ['catalog-view','catalog-sort','member-view','quota-filter','billing-filter']) {
   if ([...$(id).options].some(option => option.value === viewPreferences[id])) $(id).value = viewPreferences[id];
   $(id).addEventListener('change', () => { viewPreferences[id] = $(id).value; rememberView(); $('pool-models').scrollTop = 0; renderPool(); });
 }
@@ -46,11 +47,12 @@ for (const name of ['pool','catalog']) {
 let quotasRefreshing = false;
 let quotaErrors = {};
 let pendingPoolModel = null;
+let categoryEditorStamp = '';
 const adapterLabels = { codex: 'Codex', claude: 'Claude', opencode: 'OpenCode', zcode: 'ZCode', qwen: 'Qwen', mcode: 'MiniMax Code', mmx: 'MiniMax CLI', kimi: 'Kimi', mimo: 'MiMo', agy: 'Antigravity', omniroute: 'OmniRoute', lmstudio: 'LM Studio', ollama: 'Ollama', hermes: 'Hermes', aider: 'Aider', kilocode: 'Kilo', custom: 'Özel araç' };
-const strengthGroups = ['high', 'medium', 'low'];
+const poolGroups = () => categoriesOf(settings?.config || {}).map(category => category.id);
 
-const groupLabels = { high: 'Yüksek', medium: 'Orta', low: 'Hafif', unassigned: 'Sınıflandırılmamış' };
-const groupLabel = group => Object.hasOwn(groupLabels, group) ? groupLabels[group] : groupLabels.unassigned;
+const groupLabels = { high: 'Yüksek', medium: 'Orta', low: 'Hafif', free: 'Ücretsiz', unassigned: 'Sınıflandırılmamış' };
+const groupLabel = group => settings?.config.categories?.find(category => category.id === group)?.name || groupLabels[group] || group;
 try { $('theme').value = localStorage.getItem('pool-theme-v2') || 'dark'; } catch { /* Storage may be disabled. */ }
 function applyTheme() {
   const theme = ['light', 'dark', 'system'].includes($('theme').value) ? $('theme').value : 'dark';
@@ -161,11 +163,11 @@ async function refresh(announce = false) {
     }
     $('connection-state').textContent = 'Bağlı'; $('connection-state').dataset.connected = 'true'; $('connection-state').title = 'Bağlı';
     $('installed-count').textContent = snapshot.installed.filter(cli => cli.status === 'installed').length;
-    $('model-count').textContent = new Set(snapshot.models.filter(model => model.enabled && (snapshot.selectionMode === 'auto' || strengthGroups.includes(model.group))).map(model => `${model.routeId}/${model.id}`)).size;
+    $('model-count').textContent = new Set(snapshot.models.filter(model => model.enabled).map(model => `${model.routeId}/${model.id}`)).size;
     $('running-count').textContent = snapshot.tasks.filter(task => ['starting', 'running', 'cancelling'].includes(task.state)).length;
     $('review-count').textContent = snapshot.tasks.filter(task => task.state === 'needs_review').length;
     const providerRows = [];
-    for (const conn of snapshot.connections) {
+    for (const conn of snapshot.connections.filter(conn => conn.enabled)) {
       const row = element('div', null, 'provider');
       const info = element('div');
       const titleLine = element('div', null, 'task-title');
@@ -202,7 +204,6 @@ function settingField(label, value, update, choices, markDirty = true) {
   input.addEventListener('change', () => { update(input.value); if (markDirty) dirty(); }); wrapper.append(input); return wrapper;
 }
 function renderSettings() {
-  $('execution-mode').value = String(settings.config.concurrency ?? 1);
   const expanded = new Set([...$('settings-routes').querySelectorAll('details[open]')].map(node => node.dataset.routeId));
   const previousAdapter = $('new-adapter').value;
   const adapters = snapshot.installed.filter(cli => cli.status === 'installed');
@@ -225,11 +226,11 @@ function renderSettings() {
       enabled.dataset.locked = String(!activeBillings.has(value));
     }, billingChoices));
     body.append(settingField('Dosya araçları', route.toolPolicy || 'native', value => { route.toolPolicy = value; }, [['native', 'Native CLI yetenekleri · istek text/read/write seçer'], ['configured', 'Yapılandırılmış model kapsamıyla sınırla']]));
-    {
+    if (route.billing === 'paid_api') {
       const autoLabel = element('label', null, 'route-header'); const autoCheck = document.createElement('input');
       autoCheck.type = 'checkbox'; autoCheck.checked = route.autoSelect ?? route.billing !== 'paid_api';
       autoCheck.addEventListener('change', () => { route.autoSelect = autoCheck.checked; });
-      autoLabel.append(autoCheck, element('span', route.billing === 'paid_api' ? 'Ücretli API’nin otomatik model seçimine girmesine izin ver' : 'Bu bağlantıyı otomatik model seçiminde kullan')); body.append(autoLabel);
+      autoLabel.append(autoCheck, element('span', 'Bu ücretli API için kategori isteklerinde kullanıma izin ver')); body.append(autoLabel);
     }
     if (route.api) {
       body.append(settingField('API adresi', route.api.baseUrl, value => { route.api.baseUrl = value; }));
@@ -253,7 +254,6 @@ function renderSettings() {
       trustedLabel.append(trusted, element('span', `CLI yerel ayarlarını inceledim (Giriş komutu: ${loginCommandsLabel(route.adapter)})`)); body.append(trustedLabel);
     }
     body.append(settingField('Öncelik (küçük değer önce)', route.priority, value => { route.priority = Number(value); }));
-    body.append(settingField('Eşzamanlı görev sınırı (1–32)', route.maxConcurrent ?? 32, value => { route.maxConcurrent = Math.max(1, Math.min(32, Number(value) || 1)); }));
     body.append(settingField('Seçim için asgari kalan kota (%)', route.minRemainingPercent, value => { route.minRemainingPercent = Number(value); }));
     body.append(element('p', 'Modelleri üstteki havuz görünümünden sınıflandırabilirsiniz.', 'hint'));
     const addModelRow = element('div', null, 'actions');
@@ -321,14 +321,14 @@ $('add-route').addEventListener('click', () => void action(async () => {
   const kinds = ['mmx','ollama','lmstudio','omniroute'].includes(adapter) ? ['text'] : ['text', 'read', 'write'];
   const initialModels = modelId
     ? [{ id: modelId, alias: modelId, group: billing === 'free' ? 'free' : 'unassigned', enabled: true, efforts: [], kinds }]
-    : (cli.discoveredModels || []).map(({ free, ...m }) => m);
-  const route = { id, adapter, executable: cli.executable, enabled: false, billing, trustedSettings: true, priority: 100, maxConcurrent: settings.config.concurrency || 32, models: initialModels };
+    : (cli.discoveredModels || []).map(({ free, ...m }) => ({ ...m, ...(free === true ? { billing: 'free' } : {}) }));
+  const route = { id, adapter, executable: cli.executable, enabled: false, billing, trustedSettings: true, priority: 100,  models: initialModels };
   settings.config.routes.push(route);
   settings = await call('save', settings);
   if (!modelId && ['codex', 'opencode', 'mimo'].includes(adapter)) {
     try {
       const catalog = await call('catalog', { routeId: id });
-      settings.config.routes.find(connection => connection.id === id).models = catalog.models.map(model => ({ id: model.id, alias: model.name, group: model.free ? 'free' : 'unassigned', enabled: true, efforts: model.efforts, kinds }));
+      settings.config.routes.find(connection => connection.id === id).models = catalog.models.map(model => ({ id: model.id, alias: model.name, group: model.free ? 'free' : 'unassigned', enabled: true, efforts: model.efforts, ...(model.free ? { billing: 'free' } : {}), kinds }));
       settings = await call('save', settings);
     } catch {}
   }
@@ -351,7 +351,7 @@ $('add-api-route').addEventListener('click', () => void action(async () => {
   if (!cli) throw new Error(`${protocol} API yuvası için bilgisayarınızda ${hostAdapter} CLI kurulu olmalıdır.`);
   const route = {
     id, adapter: hostAdapter, executable: cli.executable, enabled: true, billing, trustedSettings: true,
-    priority: billing === 'paid_api' ? 200 : 100, maxConcurrent: settings.config.concurrency || 32,
+    priority: billing === 'paid_api' ? 200 : 100,
     api: { protocol, baseUrl, secretRef: id },
     models: modelNames.map(m => ({ id: m, alias: m, group: billing === 'free' ? 'free' : 'api', enabled: true, efforts: [], kinds: ['text', 'read', 'write'] })),
   };
@@ -373,7 +373,7 @@ $('add-custom-cli').addEventListener('click', () => void action(async () => {
   if (!modelNames.length) throw new Error('En az bir model kimliği girin.');
   const route = {
     id, adapter: 'custom', executable, argsTemplate, promptStdin: !argsTemplate.some(a => a.includes('{prompt}')),
-    enabled: false, billing, trustedSettings: true, priority: 100, maxConcurrent: settings.config.concurrency || 32,
+    enabled: false, billing, trustedSettings: true, priority: 100,
     models: modelNames.map(m => ({ id: m, alias: m, group: 'custom', enabled: true, efforts: [], kinds: ['text', 'read', 'write'] })),
   };
   settings.config.routes.push(route);
@@ -395,9 +395,6 @@ document.querySelector('.skip').addEventListener('click', () => { switchPage('po
 $('pool-tab').addEventListener('click', () => switchPage('pool'));
 $('calls-tab').addEventListener('click', () => switchPage('calls'));
 $('pool-search').addEventListener('input', () => { $('pool-models').scrollTop = 0; renderCatalog(); });
-$('selection-mode').addEventListener('change', () => void action(async () => { settings.config.selectionMode = $('selection-mode').value; await savePreference('selectionMode'); notice('Model seçimi kaydedildi.'); }));
-$('grouping-mode').addEventListener('change', () => void action(async () => { settings.config.groupingMode = $('grouping-mode').value; await savePreference('groupingMode'); notice('Havuz düzenleme yetkisi kaydedildi.'); }));
-$('execution-mode').addEventListener('change', () => void action(async () => { const limit = Number($('execution-mode').value); settings.config.concurrency = limit; for (const route of settings.config.routes) route.maxConcurrent = limit; await savePreference('concurrency'); notice('Görev çalışma biçimi kaydedildi.'); }));
 $('discard-settings').addEventListener('click', () => void action(async () => { settings = await call('settings'); poolDirty = false; baseConfig = structuredClone(settings.config); renderSettings(); renderPool(); updateSave(); }));
 $('toggle-quotas').addEventListener('click', () => {
   quotasOpen = [...document.querySelectorAll('.quota-details')].some(node => !node.open);
@@ -423,7 +420,7 @@ function quotaBody(q, modelId = '', error) {
     line.append(heading, bar, element('small', `%${window.used.toFixed(0)} kullanıldı${window.resetsAt ? ` · Yenilenme: ${new Date(typeof window.resetsAt === 'number' && window.resetsAt < 1e12 ? window.resetsAt * 1000 : window.resetsAt).toLocaleString('tr-TR')}` : ''}`)); cell.append(line);
   }
   if (q?.note) cell.append(element('small', q.note, 'quota-note'));
-  if (!windows.length) cell.append(element('p', error || (quotasRefreshing ? 'Kota sorgulanıyor…' : q?.status === 'auth_required' ? 'Giriş gerekli' : q ? 'Sağlayıcı yüzde kotası bildirmiyor' : 'Kota henüz sorgulanmadı'), 'hint'));
+  if (!windows.length) cell.append(element('p', error || (quotasRefreshing ? 'Kota sorgulanıyor…' : q?.status === 'auth_required' ? 'Giriş gerekli' : q?.lastRejectedAt ? 'Son Qwen CLI çağrısı kota nedeniyle reddedildi; bu geçmiş hata kalan kotayı ölçmez' : q?.status === 'rate_limited' ? 'Son CLI çağrısı kota nedeniyle reddedildi; yüzde/bakiye bilgisi mevcut değil' : q ? 'Sağlayıcı yüzde kotası bildirmiyor' : 'Kota henüz sorgulanmadı'), 'hint'));
   if (windows.length) cell.append(element('small', `${q.scope === 'model' ? 'Model kotası' : 'Hesap kotası'}${q.observedAt ? ` · Ölçüm: ${new Date(q.observedAt).toLocaleTimeString('tr-TR')}` : ''}${Date.now() - Date.parse(q.observedAt) >= 60000 ? ' · eski ölçüm' : ''}${error ? ' · son sorgu başarısız' : ''}`, 'quota-stamp'));
   return cell;
 }
@@ -438,11 +435,11 @@ function quotaCell(route, model) {
 }
 function renderPool() {
   if (!settings) return;
-  $('selection-mode').value = settings.config.selectionMode;
-  $('grouping-mode').value = settings.config.groupingMode;
+  if (!poolGroups().includes(selectedGroup)) selectedGroup = poolGroups()[0] || '';
+  renderCategoryEditor();
   updateSave();
-  $('group-summary').replaceChildren(...strengthGroups.map(group => {
-    const count = settings.config.routes.reduce((total, route) => total + route.models.filter(model => !modelFiltered(settings.config.modelFilters, route.id, model.id) && quotaMatches(snapshot?.quotas?.[route.id], model.id, $('quota-filter').value) && memberships(model).some(member => member.group === group)).length, 0);
+  $('group-summary').replaceChildren(...poolGroups().map(group => {
+    const count = visibleRoutes(settings.config).reduce((total, route) => total + route.models.filter(model => !modelFiltered(settings.config.modelFilters, route.id, model.id) && quotaMatches(snapshot?.quotas?.[route.id], model.id, $('quota-filter').value) && memberships(model).some(member => member.group === group)).length, 0);
     const card = element('button', null, `group-card group-${group}`); card.type = 'button'; card.setAttribute('aria-pressed', String(selectedGroup === group));
     card.append(element('strong', groupLabel(group)), element('span', `${count} model`));
     card.addEventListener('click', () => { selectedGroup = group; rememberView(); renderPool(); }); return card;
@@ -451,7 +448,7 @@ function renderPool() {
   $('filter-count').textContent = settings.config.modelFilters?.length || 0;
   const memberScroll = $('pool-members').scrollLeft, memberTop = $('pool-members').scrollTop;
   const rows = [];
-  const entries = sortModels(settings.config.routes.flatMap(route => route.models.filter(model => !modelFiltered(settings.config.modelFilters, route.id, model.id) && quotaMatches(snapshot?.quotas?.[route.id], model.id, $('quota-filter').value)).map(model => ({route, model}))), 'az', $('member-view').value === 'family');
+  const entries = sortModels(visibleRoutes(settings.config).flatMap(route => route.models.filter(model => !modelFiltered(settings.config.modelFilters, route.id, model.id) && quotaMatches(snapshot?.quotas?.[route.id], model.id, $('quota-filter').value)).map(model => ({route, model}))), 'az', $('member-view').value === 'family');
   if ($('member-view').value === 'route') entries.sort((a,b) => a.route.id.localeCompare(b.route.id));
   for (const {route,model} of entries) {
     const member = memberships(model).find(item => item.group === selectedGroup);
@@ -471,8 +468,13 @@ function familyLabel(value) { return ({sol:'Sol',terra:'Terra',astra:'Astra',lun
 function renderCatalog() {
   if (!settings) return;
   const scroll = $('pool-models').scrollTop;
-  const routes = settings.config.routes;
-  const all = routes.flatMap(route => route.models.filter(model => !modelFiltered(settings.config.modelFilters, route.id, model.id) && quotaMatches(snapshot?.quotas?.[route.id], model.id, $('quota-filter').value)).map(model => ({route,model})));
+  const routes = visibleRoutes(settings.config);
+  const billingFilter = $('billing-filter').value;
+  const all = routes.flatMap(route => route.models.filter(model => {
+    if (modelFiltered(settings.config.modelFilters, route.id, model.id) || !quotaMatches(snapshot?.quotas?.[route.id], model.id, $('quota-filter').value)) return false;
+    const billing = model.billing || route.billing;
+    return billingFilter === 'all' || (billingFilter === 'free' ? billing === 'free' : billing === 'paid_api');
+  }).map(model => ({route,model})));
   const byFamily = $('catalog-view').value === 'family';
   if (!routes.some(route => route.id === selectedRoute)) selectedRoute = routes.find(route => route.adapter === 'codex')?.id || routes[0]?.id || '';
   const families = [...new Set(all.map(({model}) => modelFamily(model.id)))].sort();
@@ -516,7 +518,7 @@ function modelCard(route,model,member) {
   if(!/\d/.test(model.id)) info.append(element('small','Sağlayıcı sürüm bildirmedi','version-unknown'));
   const footer=element('div',null,'model-footer');
   if(member) {
-    const effort=settingField('Efor',member.effort||'',value=>void action(async()=>{model.memberships=memberships(model);const item=model.memberships.find(item=>item.group===selectedGroup);if(value)item.effort=value;else delete item.effort;await saveModel(route.id,model.id);}),['',...model.efforts],false);
+    const effort=settingField('Varsayılan efor',member.effort||'',value=>void action(async()=>{model.memberships=memberships(model);const item=model.memberships.find(item=>item.group===selectedGroup);if(value)item.effort=value;else delete item.effort;await saveModel(route.id,model.id);}),['',...model.efforts],false);
     effort.querySelector('select').setAttribute('aria-label',`${model.id} · ${route.id} efor`);
     const remove=button('Çıkar',async()=>{model.memberships=memberships(model).filter(item=>item.group!==selectedGroup);await saveModel(route.id,model.id);});remove.setAttribute('aria-label',`${model.id} · ${route.id} modelini ${groupLabel(selectedGroup)} havuzundan çıkar`);footer.append(effort,remove);
   } else {
@@ -528,8 +530,7 @@ function modelCard(route,model,member) {
   const test = button('Test et', async () => {
     const savedRoute = baseConfig.routes.find(item => item.id === route.id), savedModel = savedRoute?.models.find(item => item.id === model.id);
     if (!savedModel) throw new Error('Modeli test etmeden önce kaydedin.');
-    const member = memberships(savedModel).find(item => item.group === selectedGroup) || memberships(savedModel)[0];
-    if (baseConfig.selectionMode === 'manual' && !member) throw new Error('Test etmek için modeli önce bir havuza ekleyin. Havuzlarım kuralı testlerde de geçerlidir.');
+    const member = row.classList.contains('membership-row') ? memberships(savedModel).find(item => item.group === selectedGroup) : null;
     const task = await call('probe_model', {routeId:route.id, modelId:model.id, ...(member ? {group:member.group} : {})});
     await refresh(); await openTask(task.id);
   });
@@ -556,6 +557,34 @@ function openFilters(route, model) {
 $('open-filters').addEventListener('click',()=>openFilters());
 $('close-filters').addEventListener('click',()=>$('model-filter-dialog').close());
 $('model-filter-dialog').addEventListener('close',()=>$('open-filters').focus());
+function renderCategoryEditor() {
+  const stamp = JSON.stringify(settings.config.categories);
+  if (stamp === categoryEditorStamp) return;
+  categoryEditorStamp = stamp;
+  $('category-list').replaceChildren(...categoriesOf(settings.config).map(category => {
+    const row = element('div', null, 'actions');
+    const name = document.createElement('input'); name.value = category.name; name.maxLength = 100;
+    name.setAttribute('aria-label', category.id + ' kategori adı');
+    row.append(name, button('Adı kaydet', async () => {
+      if (!name.value.trim()) throw new Error('Kategori adı gerekli.');
+      category.name = name.value.trim(); await savePreference('categories');
+    }), button('Kategoriyi kaldır', async () => {
+      const before = structuredClone(baseConfig), draft = structuredClone(settings.config);
+      removeCategory(draft, category.id); const config = structuredClone(before); removeCategory(config, category.id);
+      const saved = await call('save', { ...settings, config });
+      settings = { ...saved, config: mergeScanDraft(saved.config, before, draft) };
+      baseConfig = structuredClone(saved.config); poolDirty = JSON.stringify(settings.config) !== JSON.stringify(saved.config);
+      renderPool(); await refresh(); notice('Kategori kaldırıldı; modeller katalogda korunur.');
+    }));
+    return row;
+  }));
+}
+$('manage-categories').addEventListener('click', () => { $('category-editor').open = !$('category-editor').open; });
+$('add-category').addEventListener('click', () => void action(async () => {
+  const name = $('category-name').value.trim(); if (!name) throw new Error('Kategori adı gerekli.');
+  settings.config.categories.push({ id: 'category-' + crypto.randomUUID(), name });
+  await savePreference('categories'); $('category-name').value = ''; notice('Kategori eklendi.');
+}));
 async function savePreference(key) {
   dirty();
   const before = structuredClone(baseConfig), draft = structuredClone(settings.config);
@@ -573,10 +602,18 @@ function routeSettings(route) {
 function loginNotice(route, compact=false) {
   const q = snapshot?.quotas?.[route.id], box = element('div', null, `login-notice${compact ? ' model-connection' : ''}`);
   const native = !route.api && !['custom','lmstudio','ollama','omniroute'].includes(route.adapter);
-  const unverified = !q || ['auth_required','unknown','error'].includes(q.status) || q.auth === 'unknown';
+  const qwenVerified = route.adapter === 'qwen' && q?.auth === 'verified';
+  const unverified = !q || ['auth_required','error'].includes(q.status) || q.auth === 'unknown' || (q.status === 'unknown' && q.auth !== 'verified');
+  if (qwenVerified) {
+    box.append(element('span', q.note || 'Qwen API anahtarı doğrulandı · kota yüzdesi sağlayıcıdan alınamıyor'));
+    box.append(button('Hesabı değiştir', async () => { const result = await call('login', {routeId:route.id}); notice(result.message); }));
+    const check = button(compact ? '↻' : 'Kontrol et', async () => { await refreshQuotas(route.id); await refresh(); renderPool(); });
+    check.setAttribute('aria-label', `${route.id} bağlantısını ve kota durumunu kontrol et`); check.title = 'Bağlantıyı ve kota durumunu kontrol et'; box.append(check); return box;
+  }
   if (!unverified && !(route.adapter !== 'codex' && !route.api && !route.trustedSettings)) return box;
-  box.append(element('span', q?.status === 'auth_required' ? 'Giriş gerekli' : 'Oturum doğrulanmadı'));
-  if (native) box.append(button('Giriş yap', async () => { const result = await call('login', {routeId:route.id}); notice(result.message); }));
+  const configured = q?.auth === 'credentials_present';
+  box.append(element('span', q?.status === 'auth_required' ? 'Giriş gerekli' : configured ? 'Kimlik bilgisi kayıtlı · gerçek bağlantı doğrulanmadı' : 'Oturum doğrulanmadı'));
+  if (native) box.append(button(configured ? 'Hesabı değiştir' : 'Giriş yap', async () => { const result = await call('login', {routeId:route.id}); notice(result.message); }));
   if (route.api || (route.adapter !== 'codex' && !route.trustedSettings)) box.append(button('Ayarlar', async () => routeSettings(route)));
   const check = button(compact ? '↻' : 'Kontrol et', async () => { await refreshQuotas(route.id); await refresh(); renderPool(); });
   check.setAttribute('aria-label', `${route.id} giriş durumunu kontrol et`); check.title = 'Giriş durumunu kontrol et'; box.append(check); return box;
@@ -585,7 +622,7 @@ function openPoolPicker(route, model) {
   pendingPoolModel = { routeId: route.id, modelId: model.id };
   $('add-pool-model').textContent = model.id;
   $('add-pool-effort').replaceChildren(...(memberships(model).length ? [new Option('Mevcut eforu koru', 'preserve')] : []), new Option('CLI varsayılanı', ''), ...model.efforts.map(effort => new Option(effortLabel(effort), effort)));
-  $('add-pool-targets').replaceChildren(...strengthGroups.map(group => {
+  $('add-pool-targets').replaceChildren(...poolGroups().map(group => {
     const existing = memberships(model).find(member => member.group === group);
     return button(`${groupLabel(group)}${existing ? ' · ekli' : ''}`, async () => {
       const targetRoute = settings.config.routes.find(item => item.id === pendingPoolModel?.routeId);
@@ -682,6 +719,9 @@ function updateCardActivity() {
     link.dataset.taskId = task?.id || '';
   });
 }
+$('clear-history').addEventListener('click', async () => {
+  try { const result = await call('clear_history'); $('detail').close(); $('detail').hidden = true; selectedTask = null; selectedTaskStamp = ''; await refresh(); notice(`${result.removed} tamamlanan çağrı temizlendi.`); } catch (error) { notice(error.message, true); }
+});
 window.addEventListener('beforeunload', event => { if (poolDirty) { event.preventDefault(); event.returnValue = ''; } });
 void refresh(true).then(() => { if (snapshot) void refreshQuotas(); });
 setInterval(() => { if (!document.hidden && !busy) void refresh(); }, 5000);

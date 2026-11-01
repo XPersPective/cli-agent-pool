@@ -71,6 +71,7 @@ function annotateView(view, directory) {
 }
 
 export function managementOperation(pool, management, body) {
+  if (body.operation === 'clear_history') return pool.store.clearHistory();
   if (body.operation === 'resolve') return pool.resolveInspected({ taskId: body.taskId, reviewed: body.reviewed, note: body.note });
   if (body.operation === 'save') {
     if (body.config?.port !== pool.config.port || body.config?.python !== pool.config.python) throw new PoolError('RESTART_REQUIRED', 'Port veya Python yolunu değiştirmek için servisi durdurup yerel ayarları değiştirin.');
@@ -98,6 +99,7 @@ export function browserUI(pool, management) {
   let launchToken = randomBytes(32).toString('hex');
   const cookieSecret = createHmac('sha256', Buffer.from(management.token, 'hex')).update('cli-agent-pool-browser-cookie-v1').digest();
   const assets = new Map([
+    ['/categories.js', ['text/javascript; charset=utf-8', readFileSync(new URL('../web/categories.js', import.meta.url))]],
     ['/capabilities.js', ['text/javascript; charset=utf-8', readFileSync(new URL('../web/capabilities.js', import.meta.url))]],
     ['/dialogs.js', ['text/javascript; charset=utf-8', readFileSync(new URL('../web/dialogs.js', import.meta.url))]],
     ['/', ['text/html; charset=utf-8', readFileSync(new URL('../web/index.html', import.meta.url))]],
@@ -160,9 +162,10 @@ export function browserUI(pool, management) {
           tasks: pool.list(160,0,true),
           installed: discover(),
           workspaceRoots: pool.config.workspaceRoots,
-          selectionMode: pool.config.selectionMode,
+          categories: pool.config.categories,
         };
       }
+      if (operation === 'clear_history') return managementOperation(pool, management, { operation });
       if (operation === 'settings') return managementOperation(pool, management, { operation: 'get' });
       if (operation === 'pick_folder') {
         const initial = payload.path ?? '';

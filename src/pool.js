@@ -5,10 +5,16 @@ import { z } from 'zod';
 import { allowedWorkspace, PoolError, nonMeteredBillings, dataDirectory, configView, saveConfig } from './config.js';
 import { checkAuth, execute, quota, loginCommands } from './adapters.js';
 import { modelFiltered } from '../web/pool-state.js';
+import { categoryPage } from './catalog.js';
 import { codexControl } from './codex-control.js';
 import { supportsExecution, validateMode, workspaceConflict, parseExecutionReport } from './task-protocol.js';
 import { rejectionReason, noRouteMessage } from './routing.js';
 import { taskKinds, toolSupport } from '../web/capabilities.js';
+
+// A model test must survive a cold start. Antigravity needs ~98s for a one-word
+// reply on this machine, so the old 45s budget killed healthy CLIs and reported a
+// false timeout instead of the real answer.
+export const PROBE_TIMEOUT_SECONDS = 180;
 
 export const taskSchema = z.object({
   prompt: z.string().trim().min(1).max(100_000),
@@ -21,13 +27,8 @@ export const taskSchema = z.object({
   effort: z.string().max(100).optional(),
   clientLabel: z.string().trim().min(1).max(100).refine(value=>!/[\u0000-\u001f]/.test(value)).optional(),
   minRemainingPercent: z.number().min(0).max(100).optional(),
-  timeoutSeconds: z.number().int().min(5).max(3600).default(300),
+  timeoutSeconds: z.number().int().min(1).max(Math.floor(2147483647 / 1000)).default(300),
   idempotencyKey: z.string().min(8).max(128).regex(/^[a-zA-Z0-9_.:-]+$/),
-}).strict();
-
-export const groupAssignmentSchema = z.object({
-  revision: z.string().regex(/^[a-f0-9]{64}$/),
-  assignments: z.array(z.object({ routeId: z.string().min(1).max(100), modelId: z.string().min(1).max(100), group: z.enum(['high', 'medium', 'low']), effort: z.string().min(1).max(100).optional(), remove: z.boolean().optional() }).strict()).min(1).max(5000),
 }).strict();
 
 export function suggestGroup(name) {
@@ -51,8 +52,10 @@ export class Pool {
   }
   models() {
     return this.config.routes.flatMap(route => route.models.filter(model => !modelFiltered(this.config.modelFilters, route.id, model.id)).flatMap(model => {
-      const memberships = model.memberships ?? [{ group: model.group, effort: model.defaultEffort }];
-      return (memberships.length ? memberships : [{ group: 'unassigned' }]).map(member => ({
+      const billing = model.billing || route.billing;
+      const memberships = model.memberships ? [...model.memberships] : [{ group: model.group, effort: model.defaultEffort }];
+      const activeMemberships = memberships.filter(member => this.config.categories.some(category => category.id === member.group));
+      return (activeMemberships.length ? activeMemberships : [{ group: 'unassigned' }]).map(member => ({
       ...model,
       kinds: taskKinds(route, model),
       configuredKinds: model.kinds,
@@ -61,51 +64,37 @@ export class Pool {
       permissionAuthority: 'native-cli',
       group: member.group,
       defaultEffort: member.effort,
-      fixedEffort: model.memberships ? member.effort : undefined,
+
       suggestedGroup: suggestGroup(`${model.id} ${model.alias}`),
       routeId: route.id,
       adapter: route.adapter,
       enabled: route.enabled && model.enabled,
-      billing: route.billing,
-      autoSelect: route.autoSelect ?? (route.billing !== 'paid_api'),
+      billing,
+      autoSelect: route.autoSelect ?? (billing !== 'paid_api'),
       priority: route.priority,
       protocol: route.api?.protocol || null,
       executionModes: supportsExecution(route) && taskKinds(route, model).includes('write') ? ['execute'] : [],
       baseUrl: route.api?.baseUrl || null,
     })); }));
   }
-  pools() {
-    const models = this.models();
-    return { selectionMode: this.config.selectionMode, groupingMode: this.config.groupingMode, pools: ['high', 'medium', 'low'].map(group => ({ group, members: models.filter(model => model.group === group).map(model => {
-      const quota = this.store.quota(model.routeId);
-      return { ...model, quota: quota ? { status: quota.status, windows: quota.windows, observedAt: quota.observedAt, scope: quota.scope } : null };
-    }) })) };
-  }
-  assignGroups(input) {
-    const { revision, assignments } = groupAssignmentSchema.parse(input);
-    const view = configView(this.directory);
-    if (view.config.groupingMode !== 'agent') throw new PoolError('GROUPING_DENIED', 'Model gruplarını yalnızca kullanıcı yönetebilir. Ajan yetkisi kapalı.');
-    for (const { routeId, modelId, group, effort, remove } of assignments) {
-      const model = view.config.routes.find(route => route.id === routeId)?.models.find(model => model.id === modelId);
-      if (!model) throw new PoolError('NOT_FOUND', 'Gruplanacak model bulunamadı.');
-      model.memberships ??= ['high', 'medium', 'low'].includes(model.group) ? [{ group: model.group, ...(model.defaultEffort ? { effort: model.defaultEffort } : {}) }] : [];
-      model.group = group;
-      if (remove) model.memberships = model.memberships.filter(member => member.group !== group);
-      else {
-        let member = model.memberships.find(member => member.group === group);
-        if (!member) { member = { group }; model.memberships.push(member); }
-        if (effort) member.effort = effort;
-      }
+  catalogModels() {
+    const unique = new Map();
+    for (const model of this.models()) {
+      const key = JSON.stringify([model.routeId, model.id]);
+      if (unique.has(key)) continue;
+      const source = this.config.routes.find(route => route.id === model.routeId).models.find(item => item.id === model.id);
+      unique.set(key, { ...model, group: undefined, defaultEffort: source.defaultEffort,
+        categories: (source.memberships || []).map(member => member.group) });
     }
-    this.config = saveConfig(this.directory, view.config, revision);
-    return { updated: assignments.length, revision: configView(this.directory).revision };
+    return [...unique.values()];
   }
+  pools(input = {}) { return categoryPage(this, input); }
   select(request) {
     validateMode(request);
-    if (this.config.selectionMode === 'manual' && !['high', 'medium', 'low'].includes(request.group))
-      throw new PoolError('POOL_REQUIRED', 'Manuel modda Yüksek, Orta veya Hafif havuzlarından birini seçin.');
+    if (request.group && !this.config.categories.some(category => category.id === request.group))
+      throw new PoolError('CATEGORY_NOT_FOUND', 'Kategori bulunamadı. pool_list_pools ile kategorileri sorgulayın.');
     const rejected = new Map();
-    const matches = this.models().filter(model => {
+    const matches = (request.group ? this.models() : this.catalogModels()).filter(model => {
       if ((request.routeId && model.routeId !== request.routeId) || (request.modelId && model.id !== request.modelId) || (request.group && model.group !== request.group)) return false;
       const snapshot = this.store.quota(model.routeId);
       const route = this.config.routes.find(r => r.id === model.routeId);
@@ -140,6 +129,11 @@ export class Pool {
           snapshot ||= cached?.windows?.length ? cached : { connection: route.id, status: 'unknown', windows: [], observedAt: new Date().toISOString(), loginCommand: loginCommands.codex };
         }
       } else snapshot = await quota(route, cwd, this.config.python, this.directory);
+      if (route.adapter === 'qwen' && snapshot.auth === 'verified' && cached?.source === 'cli-run-rejection' &&
+          Date.now() - Date.parse(cached.observedAt) < 5 * 60_000) {
+        snapshot = { ...snapshot, status: 'unknown', lastRejectedAt: cached.observedAt, lastRejectedModel: cached.modelId,
+          note: `${snapshot.note || ''} Son CLI çağrısı${cached.modelId ? ` (${cached.modelId})` : ''} kota nedeniyle reddedildi; bu geçmiş sonuç kalan kotayı ölçmez.`.trim() };
+      }
       this.store.saveQuota(routeId, snapshot);
       return snapshot;
     })();
@@ -149,7 +143,7 @@ export class Pool {
   async selectLive(request) {
     const routes = new Set(this.models().filter(model => model.enabled && model.kinds.includes(request.kind) &&
       (!request.group || model.group === request.group) && (!request.routeId || model.routeId === request.routeId) &&
-      (!request.modelId || model.id === request.modelId) && (request.routeId || model.autoSelect)).map(model => model.routeId));
+      (!request.modelId || model.id === request.modelId) && (request.routeId || model.billing !== 'paid_api' || model.autoSelect)).map(model => model.routeId));
     // Unsupported/offline quota probes stay unknown; never invent a balance.
     await Promise.allSettled([...routes].map(id => this.getQuota(id)));
     return this.select(request);
@@ -159,7 +153,7 @@ export class Pool {
     const root=path.join(this.directory,'probes');mkdirSync(root,{recursive:true});
     if(lstatSync(root).isSymbolicLink())throw new PoolError('UNSAFE_DATA_DIRECTORY','Test klasörü bağlantı olamaz.');
     const workspace=mkdtempSync(path.join(root,'model-'));
-    return this.submitLive({...input,prompt:'Reply with exactly OK. Do not use tools or modify files.',workspace,kind:'text',timeoutSeconds:45,clientLabel:'Model testi',idempotencyKey:`probe-${randomUUID()}`},true);
+    return this.submitLive({...input,prompt:'Reply with exactly OK. Do not use tools or modify files.',workspace,kind:'text',timeoutSeconds:PROBE_TIMEOUT_SECONDS,clientLabel:'Model testi',idempotencyKey:`probe-${randomUUID()}`},true);
   }
   async submitLive(input, probe = false) {
     const request = taskSchema.parse(input);
@@ -177,12 +171,11 @@ export class Pool {
       if (existing.fingerprint !== fingerprint) throw new PoolError('IDEMPOTENCY_CONFLICT', 'Aynı istek anahtarı farklı içerikle kullanıldı. Yeni bir anahtar seçin.');
       return this.get(existing.id);
     }
-    if (this.store.queued().length >= 100) throw new PoolError('QUEUE_FULL', 'Görev kuyruğu dolu. Çalışan işlerin tamamlanmasını bekleyin.');
     const model = this.select(request).selected;
     request.routeId = model.routeId;
     request.modelId = model.id;
-    if (model.group !== 'unassigned') request.group = model.group;
-    request.effort = model.fixedEffort || request.effort || model.defaultEffort;
+    if (request.group) request.group = model.group;
+    request.effort = request.effort || model.defaultEffort;
     if(probe)request.probe=true;
     const id = randomUUID();
     this.store.insert({ id, key: request.idempotencyKey, fingerprint, workspace: request.workspace, request });
@@ -199,9 +192,7 @@ export class Pool {
     const earlier = queued.slice(0, queued.findIndex(row => row.id === task.id));
     const scope = { ...request, workspace: task.workspace };
     const blocker = task.state === 'queued' ? this.store.held().find(held => workspaceConflict(held, scope)) || earlier.find(row => workspaceConflict({ ...JSON.parse(row.request), workspace: row.workspace, state: row.state }, scope)) : null;
-    const routeLimit = this.config.routes.find(r => r.id === request.routeId)?.maxConcurrent ?? this.config.concurrency;
-    const routeBusy = [...this.active.values()].filter(active => active.routeId === request.routeId).length >= routeLimit;
-    const queueReason = blocker ? blocker.state === 'needs_review' ? 'WORKSPACE_REVIEW_REQUIRED' : 'WORKSPACE_BUSY' : task.state === 'queued' && (this.active.size >= this.config.concurrency || routeBusy) ? 'WORKER_LIMIT' : null;
+    const queueReason = blocker ? blocker.state === 'needs_review' ? 'WORKSPACE_REVIEW_REQUIRED' : 'WORKSPACE_BUSY' : null;
     const report = request.mode === 'execute' && task.result ? parseExecutionReport(task.result) : null;
     return { id: task.id, state: task.state, mode: request.mode || null, report, routeId: request.routeId, modelId: request.modelId, reportedModel, queueReason, blockedBy:blocker?.id || null, group: request.group, effort: request.effort || null, clientLabel:request.clientLabel || null, historyExpired:Boolean(request.historyExpired), kind: request.kind, workspace: request.workspace, prompt: request.prompt || null, created: task.created, updated: task.updated, result: task.result, error: task.error, errorDetail: this.store.errorDetail(id), events };
   }
@@ -238,14 +229,12 @@ export class Pool {
       try {
         const waiting = [];
         for (const task of this.store.queued()) {
-          if (this.active.size >= this.config.concurrency) break;
           const request = JSON.parse(task.request);
           const route = this.config.routes.find(r => r.id === request.routeId);
           if (!route || !route.enabled) { this.store.update(task.id, 'failed', null, 'ROUTE_DISABLED'); continue; }
           const blocked = this.store.held().some(held => workspaceConflict(held, request)) || waiting.some(held => workspaceConflict(held, request));
           waiting.push({ ...request, state: 'queued' });
           if (blocked) continue;
-          if ([...this.active.values()].filter(active => active.routeId === route.id).length >= route.maxConcurrent) continue;
           this.store.update(task.id, 'starting');
           const handle = { routeId: route.id, cancelled: false, run: null };
           this.active.set(task.id, handle);
@@ -261,7 +250,7 @@ export class Pool {
     try {
       request.workspace = allowedWorkspace(request.workspace, request.probe?[path.join(this.directory,'probes')]:undefined);
       const model = this.select(request).selected;
-      await this.checkAuth(route, request.workspace, this.config.python, this.directory);
+      await this.checkAuth(route, request.workspace, this.config.python, this.directory, model);
       if (handle.cancelled || this.closed) { this.store.update(task.id, 'cancelled', null, 'CANCELLED'); return; }
       this.store.update(task.id, 'running');
       let events = 0;
@@ -270,6 +259,23 @@ export class Pool {
       }, this.directory);
       const outcome = await handle.run.done;
       if (outcome.detail) this.store.event(task.id, 'error_detail', outcome.detail);
+      if (outcome.error === 'QUOTA_EXHAUSTED') {
+        const previous = this.store.quota(route.id);
+        this.store.saveQuota(route.id, {
+          connection: route.id, adapter: route.adapter, billing: route.billing,
+          status: 'unknown', auth: previous?.auth || 'credentials_present', windows: [],
+          source: 'cli-run-rejection', observedAt: new Date().toISOString(), modelId: model.id,
+          note: 'Son gerçek CLI çağrısı sağlayıcı tarafından kota/kredi nedeniyle reddedildi; kalan kota yüzdesi bilinmiyor.',
+        });
+      }
+      if (!outcome.error && route.adapter === 'qwen' && this.store.quota(route.id)?.source === 'cli-run-rejection') {
+        const previous = this.store.quota(route.id);
+        this.store.saveQuota(route.id, {
+          connection: route.id, adapter: route.adapter, billing: route.billing,
+          status: 'unknown', auth: previous.auth, windows: [], source: 'cli-run-success',
+          observedAt: new Date().toISOString(), note: 'Son gerçek CLI çağrısı başarılı; Qwen kalan kota yüzdesi bildirmiyor.',
+        });
+      }
       if (handle.cancelled) this.store.update(task.id, request.kind === 'write' ? 'needs_review' : 'cancelled', null, 'CANCELLED');
       else if (outcome.error) this.store.update(task.id, request.kind === 'write' ? 'needs_review' : outcome.error === 'TIMEOUT' ? 'timed_out' : 'failed', outcome.result || null, outcome.error);
       else if (request.mode === 'execute') {

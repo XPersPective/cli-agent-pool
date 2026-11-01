@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { z } from 'zod';
+import { isCategoryId, migrateCategories } from '../web/categories.js';
 
 export class PoolError extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -11,7 +12,7 @@ export class PoolError extends Error {
 
 const label = z.string().min(1).max(100).refine(value => !/[\u0000-\u001f\u007f]/.test(value), 'Kontrol karakterleri kullanılamaz.');
 export const adapterValues = [
-  'codex', 'claude', 'opencode', 'zcode', 'qwen', 'mcode', 'mmx',
+  'codex', 'claude', 'opencode', 'zcode', 'qoder', 'qwen', 'mcode', 'mmx',
   'kimi', 'mimo', 'agy', 'omniroute', 'lmstudio', 'ollama',
   'aider', 'kilocode', 'hermes', 'custom',
 ];
@@ -33,9 +34,11 @@ export const configSchema = z.object({
   python: z.string().min(1).default(process.platform === 'win32' ? 'python' : 'python3'),
   // Legacy configuration only; local projects require no Pool allowlist.
   workspaceRoots: z.array(z.string().min(1)).max(50).default([]),
-  concurrency: z.number().int().min(1).max(32).default(32),
-  groupingMode: z.enum(['manual', 'agent']).default('manual'),
-  selectionMode: z.enum(['manual', 'auto']).default('auto'),
+  concurrency: z.unknown().optional(),
+  // Accepted only to migrate old installations; omitted from parsed/saved output.
+  groupingMode: z.unknown().optional(),
+  selectionMode: z.unknown().optional(),
+  categories: z.array(z.object({ id: label.refine(isCategoryId), name: label }).strict()).max(64).optional(),
   modelFilters: z.array(z.object({ match: z.enum(['model', 'family']), value: label, routeId: label.optional() }).strict()).max(500).default([]),
   routes: z.array(z.object({
     id: label.regex(/^[a-zA-Z0-9_-]+$/),
@@ -47,22 +50,27 @@ export const configSchema = z.object({
     trustedSettings: z.boolean().default(false),
     toolPolicy: z.enum(['native', 'configured']).default('native'),
     priority: z.number().int().min(0).max(1000).default(100),
-    maxConcurrent: z.number().int().min(1).max(32).default(32),
+    maxConcurrent: z.unknown().optional(),
     minRemainingPercent: z.number().min(0).max(100).default(0),
     api: apiBlockSchema.optional(),
     argsTemplate: z.array(z.string().min(1).max(512).refine(v => !/[\u0000]/.test(v), 'NUL karakteri kullanılamaz.')).min(1).max(32).optional(),
     promptStdin: z.boolean().optional(),
     models: z.array(z.object({
       id: label, alias: label, group: label,
+      billing: z.enum(['free', 'paid_api']).optional(),
       enabled: z.boolean().default(true),
       efforts: z.array(label).max(10).default([]),
       variants: z.record(label, label).optional(),
       defaultEffort: label.optional(),
-      memberships: z.array(z.object({ group: z.enum(['high', 'medium', 'low']), effort: label.optional() }).strict()).max(3).optional(),
+      memberships: z.array(z.object({ group: label.refine(isCategoryId), effort: label.optional() }).strict()).max(64).optional(),
       kinds: z.array(z.enum(['text', 'read', 'write'])).min(1),
     }).strict()).max(100),
   }).strict()).max(50),
 }).strict().superRefine((config, ctx) => {
+  if (config.categories && new Set(config.categories.map(c => c.id)).size !== config.categories.length)
+    ctx.addIssue({ code: 'custom', message: 'Kategori kimlikleri benzersiz olmalı.' });
+  if (config.categories && config.routes.some(route => route.models.some(model => model.memberships?.some(member => !config.categories.some(c => c.id === member.group)))))
+    ctx.addIssue({ code: 'custom', message: 'Üyelikteki kategori tanımlı olmalı.' });
   if (new Set(config.routes.map(r => r.id)).size !== config.routes.length)
     ctx.addIssue({ code: 'custom', message: 'Bağlantı kimlikleri benzersiz olmalı.' });
   for (const route of config.routes) {
@@ -70,6 +78,8 @@ export const configSchema = z.object({
       ctx.addIssue({ code: 'custom', message: 'Bağlantıdaki model kimlikleri benzersiz olmalı.' });
     if (route.adapter === 'mmx' && route.models.some(m => m.kinds.some(k => k !== 'text')))
       ctx.addIssue({ code: 'custom', message: 'mmx yalnızca metin görevi destekler.' });
+    if (route.adapter === 'mmx' && route.billing === 'free_credits')
+      ctx.addIssue({ code: 'custom', message: 'mmx MiniMax Token Plan kullanır; günlük MiniMax Credits için mcode rotası seçilmelidir.' });
     if (route.adapter === 'custom' && (!route.argsTemplate || route.argsTemplate.length === 0))
       ctx.addIssue({ code: 'custom', message: 'Özel CLI (custom) bağlantısı için argsTemplate tanımlanmalıdır.' });
     if (route.models.some(m => m.defaultEffort && !m.efforts.includes(m.defaultEffort)))
@@ -89,7 +99,7 @@ export const configSchema = z.object({
         ctx.addIssue({ code: 'custom', message: 'OpenAI uyumlu API yuvası opencode adaptörünü kullanmalıdır.' });
     }
   }
-});
+}).transform(migrateCategories);
 
 export function dataDirectory() {
   if (process.env.CLI_AGENT_POOL_HOME) return process.env.CLI_AGENT_POOL_HOME;
@@ -119,9 +129,20 @@ export function initialize(directory) {
   }
 }
 
+// Older Pool versions stored the MiniMax CLI route as `free_credits`. The mmx CLI
+// bills through a MiniMax Token Plan, so a saved route from before that rule must be
+// migrated instead of making the whole local configuration unreadable.
+export function migrateConfig(input) {
+  const config = structuredClone(input);
+  for (const route of config?.routes ?? []) {
+    if (route?.adapter === 'mmx' && route.billing === 'free_credits') route.billing = 'token_plan';
+  }
+  return config;
+}
+
 export function loadConfig(directory) {
   try {
-    const config = configSchema.parse(JSON.parse(readFileSync(path.join(directory, 'config.json'), 'utf8')));
+    const config = configSchema.parse(migrateConfig(JSON.parse(readFileSync(path.join(directory, 'config.json'), 'utf8'))));
     return config;
   } catch (error) {
     // Field paths only: values may contain private local paths and are never echoed.
@@ -132,7 +153,7 @@ export function loadConfig(directory) {
 
 export function configView(directory) {
   const text = readFileSync(path.join(directory, 'config.json'), 'utf8');
-  return { config: configSchema.parse(JSON.parse(text)), revision: createHash('sha256').update(text).digest('hex') };
+  return { config: configSchema.parse(migrateConfig(JSON.parse(text))), revision: createHash('sha256').update(text).digest('hex') };
 }
 
 export function saveConfig(directory, input, revision) {
@@ -174,5 +195,6 @@ export function overlaps(a, b) {
 
 export function redact(text) {
   return String(text).replace(/\b(?:sk-(?:cp-|api-|ant-)?[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED]')
-    .replace(/(Bearer\s+)[A-Za-z0-9._~+\/-]{16,}/gi, '$1[REDACTED]');
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+\/-]{16,}/gi, '$1[REDACTED]')
+    .replace(/((?:set-cookie|cookie)["']?\s*:\s*)(?:'(?:\\.|[^'\\\r\n])*'|"(?:\\.|[^"\\\r\n])*"|[^\r\n]+)/gi, '$1[REDACTED]');
 }

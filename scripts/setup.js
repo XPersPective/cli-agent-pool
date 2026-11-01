@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, realpathSync, rmSync, rmdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, rmdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,7 +26,15 @@ export async function setup({ run = spec => runProcess(spec).done, install = ins
     tarball = path.join(releaseDirectory, filename);
     const installed = await invoke(['install', '-g', tarball, '--ignore-scripts', '--no-audit', '--no-fund']);
     if (installed.code !== 0 || installed.stopReason) throw new PoolError('PACKAGE_INSTALL_FAILED', 'Global npm kurulumu tamamlanmadı; kısayol/skill kurulumu başlatılmadı.');
-    return await install(directory);
+    const globalRoot = await invoke(['root', '-g']);
+    if (globalRoot.code !== 0 || globalRoot.stopReason) throw new PoolError('PACKAGE_INSTALL_FAILED', 'Global npm kurulum yolu doğrulanamadı; kısayol/skill kurulumu başlatılmadı.');
+    const installedRoot = path.resolve(globalRoot.output.trim(), 'cli-agent-pool');
+    let installedManifest;
+    try { installedManifest = JSON.parse(readFileSync(path.join(installedRoot, 'package.json'), 'utf8')); } catch { /* Treat unreadable package metadata as an incomplete install. */ }
+    if (!path.isAbsolute(globalRoot.output.trim()) || installedManifest?.name !== 'cli-agent-pool' || !existsSync(path.join(installedRoot, 'bin', 'pool.js')) || !existsSync(path.join(installedRoot, 'skills', 'cli-agent-pool', 'SKILL.md'))) {
+      throw new PoolError('PACKAGE_INSTALL_FAILED', 'Kurulan global CLI Agent Pool paketi doğrulanamadı; kısayol/skill kurulumu başlatılmadı.');
+    }
+    return await install(directory, installedRoot);
   } finally {
     if (tarball && existsSync(tarball)) rmSync(tarball);
     // Remove only this unique empty temporary directory; never recursively delete a workspace.

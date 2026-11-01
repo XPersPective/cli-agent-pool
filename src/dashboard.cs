@@ -104,10 +104,12 @@ internal static class Dashboard {
                 try { owned=mutex.WaitOne(45000); } catch (AbandonedMutexException) { owned=true; }
                 if (!owned) throw new Exception("Panel acilisi halen devam ediyor. Biraz sonra yeniden deneyin.");
                 try {
+                    // A user may have stopped the service while leaving this browser window open.
+                    // Every normal shortcut invocation must repair service state before focusing it.
+                    string url = args[1] == "--url" ? args[2] : EnsureUrl(directory, args[1], args[2]);
                     var windows = Windows(profile);
                     if (windows.Count > 0) { Activate(windows); return 0; }
                     RetireWindowlessProfile(profile);
-                    string url = args[1] == "--url" ? args[2] : EnsureUrl(directory, args[1], args[2]);
                     var uri = new Uri(url);
                     if (uri.Scheme != "http" || uri.Host != "127.0.0.1") throw new Exception("Invalid local dashboard URL");
                     string browser = null;

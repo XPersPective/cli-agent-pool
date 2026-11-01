@@ -1,4 +1,4 @@
-const coding = new Set(['codex', 'claude', 'opencode', 'mimo', 'zcode', 'qwen', 'mcode', 'kimi', 'agy']);
+const coding = new Set(['codex', 'claude', 'opencode', 'mimo', 'zcode', 'qoder', 'qwen', 'mcode', 'kimi', 'agy']);
 const chat = new Set(['mmx', 'ollama', 'lmstudio', 'omniroute']);
 
 export function toolSupport(route) {
@@ -10,7 +10,8 @@ export function toolSupport(route) {
 
 export function taskKinds(route, model) {
   const source = toolSupport(route);
-  const native = source === 'native-cli' ? ['text', 'read', 'write'] : source === 'chat-cli' ? ['text'] : [...model.kinds];
+  // MiniMax standard enables tools, but smart permissions do not enforce read-only.
+  const native = source === 'native-cli' ? route.adapter === 'mcode' ? ['text', 'write'] : ['text', 'read', 'write'] : source === 'chat-cli' ? ['text'] : [...model.kinds];
   return route.toolPolicy === 'configured' ? native.filter(kind => model.kinds.includes(kind)) : native;
 }
 

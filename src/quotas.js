@@ -91,17 +91,17 @@ export function zaiKeys(home = homedir()) {
 
 const zaiMonitor = (key, origin = 'https://api.z.ai') => request(`${origin}/api/monitor/usage/quota/limit`, { headers: { Authorization: key } });
 
-export async function zaiQuota(home = homedir()) {
+export async function zaiQuota(home = homedir(), monitor = zaiMonitor) {
   const keys = zaiKeys(home);
   if (!keys.length) return authRequired('zai-monitor', 'ZCode içinde Z.AI Coding Plan anahtarı yok; zcode login zai çalıştırın.');
   for (const [index, key] of keys.entries()) {
-    const { status, data } = await zaiMonitor(key);
+    const { status, data } = await monitor(key);
     if (status === 200 && data?.success) {
       const note = `Plan: ${data.data?.level || 'bilinmiyor'}${index ? ' · Uyarı: ZCode CLI anahtarında plan yok, masaüstü anahtarı ölçüldü' : ''}`;
       return withStatus(zaiWindows(data), { auth: `zai (${data.data?.level || 'plan'})`, source: 'zai-monitor', note, ...(index ? { status: 'auth_required' } : {}) });
     }
   }
-  return { status: 'auth_required', auth: 'no_plan', windows: [], source: 'zai-monitor', note: 'Z.AI anahtarı bir Coding Plan paketine bağlı değil.' };
+  return unknown('zai-monitor', 'Z.AI planı doğrulanamadı; servis erişimi, hesap veya plan durumunu ZCode içinde kontrol edin.', { auth: 'credentials_present' });
 }
 
 // ---- Google Antigravity ----------------------------------------------------

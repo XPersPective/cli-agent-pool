@@ -21,11 +21,11 @@ async function fixture(t, executeTask) {
  return {root,pool,store,submit};
 }
 
-test('32 readers share a project; a queued writer prevents reader starvation and excludes other writes',async t=>{
+test('64 readers share a project; a queued writer prevents reader starvation and excludes other writes',async t=>{
  const pending=[];
  const {pool,submit}=await fixture(t,()=>({cancel(){},done:new Promise(resolve=>pending.push(resolve))}));
- const readers=Array.from({length:32},(_,i)=>submit(`reader-${i}`));
- await delay(30);assert.equal(pending.length,32);
+ const readers=Array.from({length:64},(_,i)=>submit(`reader-${i}`));
+ await delay(30);assert.equal(pending.length,64);
  const writer=submit('writer','write');
  const late=submit('late-reader');
  assert.equal(pool.get(late.id).blockedBy,writer.id);
@@ -65,7 +65,7 @@ test('execution exposes commands without bypass flags and compact response omits
  assert(claude.includes('default'));assert(!claude.includes('--dangerously-skip-permissions'));
  const codex=buildArguments({adapter:'codex',executable:process.execPath},{id:'model'},task);
  assert(codex.includes('workspace-write'));assert(!codex.includes('danger-full-access'));
- const zcode=buildArguments({adapter:'zcode',executable:process.execPath},{id:'model'},task);
+ const zcode=buildArguments({adapter:'zcode',executable:process.execPath},{id:'zcode-default'},task);
  assert(!zcode.includes('--disallowed-tools'));assert(taskPrompt(task).includes('actual pass/fail'));
  const compact=compactTask({id:'task',prompt:'private',events:[{}],result:'x'.repeat(7000),error:null});
  assert(!('prompt' in compact));assert(!('events' in compact));assert(compact.reportTruncated);assert(compact.result.length<6200);

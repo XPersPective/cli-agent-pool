@@ -13,7 +13,7 @@ import { buildArguments, execute } from '../src/adapters.js';
 test('native CLI capability is independent of stale text-only model inventory; explicit limits still apply',async t=>{
  const model={id:'m',alias:'Model',group:'low',kinds:['text']};
  for(const adapter of ['codex','claude','qwen','agy','mcode','kimi','opencode','mimo','zcode']){
-  const route={adapter};assert.deepEqual(taskKinds(route,model),['text','read','write']);
+  const route={adapter};assert.deepEqual(taskKinds(route,model),adapter==='mcode'?['text','write']:['text','read','write']);
   assert.deepEqual(taskKinds({...route,toolPolicy:'configured'},model),['text']);
   assert.match(capabilityLabel(route,model),/okuma \/ yazma/);
  }

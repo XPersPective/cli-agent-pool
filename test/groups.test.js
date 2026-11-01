@@ -4,29 +4,26 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-import { configSchema, configView } from '../src/config.js';
+import { configSchema, configView, saveConfig } from '../src/config.js';
 import { Pool, suggestGroup } from '../src/pool.js';
 import { Store } from '../src/store.js';
 import { browserUI, pickWindowsFolder } from '../src/web.js';
 
-test('agent grouping is owner-enabled, revision-bound, atomic and limited to model groups', async t => {
-  const directory = mkdtempSync(path.join(tmpdir(), 'pool-groups-'));
-  const config = configSchema.parse({ workspaceRoots: [directory], routes: [{ id: 'codex', adapter: 'codex', executable: process.execPath, billing: 'subscription', models: [{ id: 'astra', alias: 'Astra', group: 'manual', kinds: ['text'] }] }] });
-  writeFileSync(path.join(directory, 'config.json'), JSON.stringify(config));
-  const store = new Store(':memory:'); const pool = new Pool(config, store, { directory });
-  t.after(async () => { await pool.close(); store.close(); await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
-  const assignment = { routeId: 'codex', modelId: 'astra', group: 'high' };
-  assert.throws(() => pool.assignGroups({ revision: configView(directory).revision, assignments: [assignment] }), { code: 'GROUPING_DENIED' });
-  config.groupingMode = 'agent'; writeFileSync(path.join(directory, 'config.json'), JSON.stringify(config));
-  const revision = configView(directory).revision;
-  assert.throws(() => pool.assignGroups({ revision, assignments: [assignment, { ...assignment, modelId: 'missing' }] }), { code: 'NOT_FOUND' });
-  assert.equal(configView(directory).config.routes[0].models[0].group, 'manual');
-  assert.throws(() => pool.assignGroups({ revision, assignments: [{ ...assignment, billing: 'paid_api' }] }));
-  const saved = pool.assignGroups({ revision, assignments: [assignment] });
-  assert.equal(saved.updated, 1); assert.equal(pool.models()[0].group, 'high');
-  assert.equal(pool.config.routes[0].billing, 'subscription');
-  assert.throws(() => pool.assignGroups({ revision, assignments: [{ ...assignment, group: 'low' }] }), { code: 'CONFIG_CONFLICT' });
-  assert.equal(configView(directory).config.routes[0].models[0].group, 'high');
+test('owner categories are revision-bound and removing membership does not remove catalog access', async t => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'pool-categories-'));
+  const config = configSchema.parse({ selectionMode:'manual', groupingMode:'agent', routes: [{id:'codex',adapter:'codex',executable:process.execPath,billing:'subscription',enabled:true,models:[{id:'astra',alias:'Astra',group:'high',kinds:['text']}]}] });
+  writeFileSync(path.join(directory,'config.json'),JSON.stringify(config));
+  const store=new Store(':memory:'),pool=new Pool(config,store,{directory});
+  t.after(async()=>{await pool.close();store.close();await rm(directory,{recursive:true,force:true,maxRetries:10,retryDelay:100});});
+  assert(!('selectionMode' in config));assert(!('groupingMode' in config));
+  const view=configView(directory);view.config.categories.push({id:'research',name:'Araştırma'});
+  view.config.routes[0].models[0].memberships.push({group:'research'});
+  pool.config=saveConfig(directory,view.config,view.revision);
+  assert.equal(pool.pools({group:'research'}).models[0].modelId,'astra');
+  assert.throws(()=>saveConfig(directory,view.config,view.revision),{code:'CONFIG_CONFLICT'});
+  pool.config.routes[0].models[0].memberships=[];
+  assert.equal(pool.pools({group:'research'}).total,0);
+  assert.equal(pool.select({kind:'text',modelId:'astra'}).selected.id,'astra');
 });
 
 test('live group selection skips exhausted routes, respects pins and never retries execution', async t => {

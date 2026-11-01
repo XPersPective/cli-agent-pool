@@ -19,7 +19,7 @@ export function parseExecutionReport(result) {
   } catch { return null; }
 }
 
-const executionAdapters = new Set(['codex', 'claude', 'opencode', 'mimo', 'zcode', 'qwen', 'mcode', 'kimi', 'agy']);
+const executionAdapters = new Set(['codex', 'claude', 'opencode', 'mimo', 'zcode', 'qoder', 'qwen', 'mcode', 'kimi', 'agy']);
 
 export function supportsExecution(route) {
   return Boolean(route.argsTemplate?.length) || executionAdapters.has(route.adapter);

@@ -1,6 +1,6 @@
 import { PoolError } from './config.js';
 
-const tools = new Set(['pool_list_connections', 'pool_list_models', 'pool_list_pools', 'pool_get_policy', 'pool_select', 'pool_assign_groups', 'pool_submit', 'pool_get_task', 'pool_list_tasks', 'pool_cancel_task', 'pool_get_quotas']);
+const tools = new Set(['pool_help', 'pool_catalog', 'pool_list_connections', 'pool_list_models', 'pool_list_pools', 'pool_get_policy', 'pool_select', 'pool_submit', 'pool_get_task', 'pool_list_tasks', 'pool_cancel_task', 'pool_get_quotas']);
 
 export async function rpcRequest(stream) {
   stream.setEncoding('utf8');

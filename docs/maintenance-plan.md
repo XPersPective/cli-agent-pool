@@ -1,5 +1,393 @@
 # Devralma ve düzeltme planı — 19 Ekim 2026
 
+## Çağrı geçmişini sınırla — 1 Kasım 2026
+
+Kullanıcı tamamlanan eski çağrıların birikmemesini ve elle temizlenebilmesini
+istedi. Terminal kayıtlar yedi gün/son 500 sınırında tamamen silinecek; UI'dan
+tamamlananları temizleme sunulacak. Aktif ve needs_review kayıtları korunur.
+İdempotency kaydı da geçmişle sona erer; temizleme işi yeniden çalıştırmaz.
+
+- [x] Tam kayıt/olay temizliği; completion + saatlik 7 gün/500 terminal kayıt; UI elle temizleme. 123/123 test, check/secrets ve audit (0 açık) geçti.
+- [x] Temizlik: 8 yerel geçici dosya ve 3 eski/çelişen belge kaldırıldı; belge bağlantıları düzeltildi. Boş .local ve integrations klasörlerini silme komutu otomatik politikaca engellendi; içerik kalmadı.
+- [x] 2.1.1 global Windows/CLI kurulumu, 42 skill dağıtımı ve servis restart tamamlandı. Kurulu dosya hashleri eşleşti; 137 terminal kayıt, 0 aktif iş; kısa MCP haritası 641 byte. Eski üç belgenin kurulu paketten de çıktığı doğrulandı.
+
+## Paralelliği çağırana bırak — 1 Kasım 2026
+
+Kullanıcı 32 worker tavanını sorguladı; eşzamanlı gönderim sayısını çağıran
+belirlemeli. Eski global/per-route paralellik anahtarları migrate edilip UI ve
+scheduler kapıları kaldırılacak. Aynı dosyalarda reader/writer kilitleri,
+karantina, native izin, gerçek sağlayıcı kotası ve idempotency korunur.
+100 queued iş tavanı da bağımsız paralel gönderimlere gizli tavan olmamalı.
+
+- [x] Scheduler/config/UI global ve per-route worker tavanları kaldırıldı. 128 bağımsız iş aynı anda başladı; 64 reader ve FIFO writer kilidi doğrulandı. 100 queued iş ve bir saat görev tavanı kaldırıldı. Süre varsayılanı 300 saniye; çağıran değiştirebilir (Node timer üst sınırı 2147483 saniye). Payload ve sayfalama sınırları worker sayısını sınırlamaz.
+- [x] 121/121 node:test; check/secrets geçti; npm audit 0 açık. 2.1.0 global Windows kurulumu ve 42 skill dağıtımı tamamlandı. Servis yeniden başlatıldı; kurulu kaynak hash eşleşmesi, legacy sınırların runtime kaydından silinmesi ve dört kategori MCP readback ile doğrulandı.
+
+## Kategori/katalog hizmet sözleşmesi — 1 Kasım 2026
+
+Kullanıcı: seçim/gruplama yetki modlarını UI ve protokolden kaldır. Çağıran
+talimatı kategori veya katalog seçimini belirler. UI'da özel kategoriler oluştur,
+yeniden adlandır, kaldır ve modellere üyelik/varsayılan efor ata. Kapalı/gizli
+bağlantılar dışarı sunulmaz; kategoriden çıkarma katalog erişimini engellemez.
+Mimari: eski mode alanları yalnız giriş migrasyonunda kabul edilip kayıttan
+çıkarılır. Kategoriler veri olarak saklanır. Katalog category üyeliğinden bağımsız,
+tekil ve sayfalı; kategori endpointi önce özet, seçilince kısa model sayfası verir.
+Efor category için varsayılandır, native desteklenen caller tercihi geçerlidir.
+Kısa help haritası ve error-code başına isteğe bağlı teşhis; normal yanıtlarda
+prompt/event/katalog dökümleri yok. Native izin, billing, görünürlük ve kilitler
+korunur. Servis hâlen tek kullanıcılı yerel servis; çoklu eşzamanlı istemci destekler.
+
+- [x] Config migrasyonu/özel kategoriler, katalogdan bağımsız seçim ve efor.
+- [x] İki kısa keşif girişi, sayfalama, kota özeti ve ayrı hata/help haritası.
+- [x] UI mode kaldırma, kategori CRUD ve dinamik üyelik/efor kontrolleri.
+- [x] Skill/CLI/doküman sadeleştirme, anlamlı regresyon ve gerçek UI kontrolü.
+- [x] Test/check/secrets/audit, kurulum/dağıtım ve kurulu MCP kabulü.
+
+2.0.0 kanıt: 121/121 test; syntax, secrets (76 dosya) ve audit (0 açık) geçti.
+Gerçek Playwright tarayıcısında izole owner UI üzerinden Araştırma kategorisi
+oluşturma, native model üyeliği ve low varsayılan efor, yeniden adlandırma,
+kategori silme ve reload sonrası katalog modelinin korunması doğrulandı.
+Console error/warning 0; eski seçim/yetki kontrolleri DOM'da yok. Eski provider
+metadata group etiketlerinin istemeden owner kategorisi olmaması ayrıca testli;
+ilk canlı migrasyondaki yalnız bu oturumda üretilmiş vendor kategorileri geri
+alındı, önceki high/medium/low/free ve gerçek üyelikleri korundu.
+Kurulu MCP: kısa harita 641 byte, katalog kaynak özeti 489 byte, tek model 274
+byte (ölçüm anı). Qoder modelini kategori belirtmeden çağırma succeeded/OK;
+varsayılan task cevabında prompt/events yok. Aktif/kuyrukta iş 0 iken daemon
+2.0.0'a geçirildi. UI/katalog/category native izin, billing, saklama ve workspace
+kilitleri korundu. Açık Edge app penceresinin Computer Use kontrolü, URL güvenle
+doğrulanamadığı için durduruldu; kullanıcı penceresine input gönderilmedi.
+İzole tarayıcı kabulü tamam; açık eski masaüstü sayfası elle yenilenmeli.
+Son paket/servis kontrolü: final kaynak ve kurulu 2.0.0 kod hash'leri eşit;
+Skills Manager 42/42 hedefte giriş ve operations referansı eşleşiyor. Dört gerçek
+owner kategorisi korundu. Kurulu kategori özeti 206 byte; katalog kaynak özeti
+489 byte; tek ücretsiz model sayfası 274 byte. Kategori model sayfası limit2
+ile 2/8 ve nextOffset2 döndürdü. Kaynak etiketlerini owner kategorisine çevirmeyen
+migrasyon final pakette; geçici UI test servisi ve tarayıcısı kapatıldı.
+
+## 1 Kasım 2026 — kısa ajan akışı ve tüm Windows kurulumu
+
+Kullanıcı kapsamı: bilinen havuz/model için repo taraması veya tam katalog okumadan
+iş gönderme; gerekli native araçlar; ZCode Individual/Starter, Qoder/Freebuff ücretsiz
+erişimleri ve MiniMax hesap kredileri; paket/CLI/Windows/skill dağıtımını tamamla.
+Servis güncellemesi aktif diğer işlerden dolayı bekletilmeyecek (açık kullanıcı izni).
+Mimari: mevcut submit zaten seçer; gereksiz select/list döngüleri yönergelerden
+çıkarılacak. Filtreli, sayfalı kısa keşif ayrı araç olacak; model/provider kurulumu
+ile her görevde keşif birbirinden ayrılacak. Native izinler/billing sınırı korunur.
+
+- [x] Kısa filtreli katalog aracı/CLI ve doğrudan submit akışı; anlamlı node:test.
+- [x] Kısa skill girişi, gerektiğinde ayrıntı referansları; aynı yönergeyi dağıt.
+- [x] ZCode resmî unified CLI/Web Starter desteğini kaynak/doküman ve native çağrıyla
+  araştır; API modellerini Starter olarak sunma, credential kopyalama yok.
+- [x] Qoder/Freebuff headless ve ücretsiz plan sözleşmesini, MiniMax free_credits
+  gerçek çağrısını doğrula; desteklenenleri ekle, engelleri ölçülebilir kaydet.
+- [x] npm test/check/secrets/audit, Windows paket kurulumu/kısayollar, skill dağıtımı,
+  daemon yeniden başlatma ve kurulu sürümden gerçek MCP/worker kabul kontrolü.
+
+Araştırma ve gerçek kabul kanıtı: Qoder resmî Windows CLI 1.1.81 kuruldu,
+native browser login tamamlandı. Native --list-models ve status doğrulandı;
+Qwen3.8-Flash text OK sonucu billable:false, total_cost_usd:0, total_credits:0
+bildirdi. Pool adaptöründen gerçek Write/Read ile proof.txt tam OK\n üretildi;
+ayrı native Bash node --check testi scoped native allow grants ile exit 0 verdi.
+Permission skip/bypass bayrağı yok; read/text araç kapsamı ayrıdır. Kalan Qoder
+hesap kredisi CLI status'ta sunulmadığından bilinmiyor. Freebuff 0.2.35 güncel
+--help yalnız interaktif seçenekler sunar; headless/model/output sözleşmesi yok,
+bu nedenle ücretsiz UI modelleri sahte Pool worker olarak eklenmedi.
+
+MiniMax native free_credits rotasında ayrı M3.1-Flash ve M2.7 text çağrıları
+insufficient balance (1008) döndürdü. Hesap engeli korundu; ücretli API fallback yok.
+
+ZCode resmi dokümanının unified CLI/Web dağıtımı incelendi:
+https://github.com/zai-org/ZCode/blob/main/README.en.md . v3.17.1 yayımlanmış
+asset'leri desktop platform paketleri ve checksum; kurulu ham CLI Web launcher
+değil. Resmi standalone source yalnız individual-coding-plan hesabını provision
+ediyor. Açık native default Starter seçimiyle -p testi bile zai-api/GLM-5.3'e
+düşüp HTTP429 verdiği için başarı sayılmadı. Ardından secret-free account-only
+config ile iki plan ayrı ayrı denendi: Starter ve Individual her ikisi de
+Select a model before sending a message döndürdü; kişisel API provider kalmadı.
+Native CLI browser login 120s içinde tamamlanmadı. Credential taşınmadı; native
+default Individual GLM-5.3-Flash olarak seçildi. Starter CANLI ÇALIŞMA halen açık.
+Native hesap loader desteği olmadan config ismi değiştirerek çalışmış gibi
+sunulamaz. https://github.com/zai-org/feedback/issues/1014 .
+
+1.9.0 tamamlanan dağıtım/kabul: 119/119 test, syntax, secrets (73 dosya),
+npm audit 0 açık, skill validator ve git diff --check geçti. npm run setup
+paketi global kurdu, C# launcher/Windows kısayollarını doğruladı ve Skills Manager
+üzerinden 42 mevcut ajan hedefine dağıttı. Kısa giriş 3888 byte; ayrıntı referansı
+yalnız gerektiğinde yüklenir. Codex/library/native Antigravity giriş ve referansları
+kaynakla eşleşir. Eski daemon kontrolünde aktif/kuyrukta iş 0 idi; tanınan tek
+Pool daemon'u yeniden başlatıldı, authenticated metadata 1.9.0 ve 12 MCP aracı
+döndürdü. Kaynak/kurulu adapter, catalog, zcode-plan ve agy-project hash'leri aynı.
+Kurulu CLI'den free havuzuna tek run isteği Qoder/Qwen3.8-Flash seçti, native
+dosya yazma/okuma ve node --check ile succeeded/valid completed raporu verdi;
+gerçek dosya içeriği ana süreçten doğrulandı. Antigravity low havuzundan aynı
+gerçek write/check kabulünü geçti; yalnız bu probe'un doğrulanan geçici dosyası
+kaldırıldı. Önceki işler/karantinalar ve diğer modellerin ayarları korundu.
+Ölçülen sıcak MCP pool_catalog sorgusu 7ms/484byte; eski tam model çıktısı
+82976byte idi. Bu ölçüm native model çalışma süresi veya gelecekteki gecikme
+garantisi değildir. Gerçek görevler kaynak taraması/ayrı select gerektirmez.
+Qoder native modelleri içe aktarıldı; yalnız sıfır-billable kanıtlı Qwen3.8-Flash
+free ve low havuzlarına alındı. Diğer Qoder modelleri sahibin gruplaması için
+atanmamış kaldı. Starter native çalışma ve MiniMax bakiye engelleri AÇIK;
+Freebuff interaktif modellerini worker olarak kullanma desteği YOK.
+
+## 1 Kasım 2026 — Antigravity proje izinleri ve ZCode Starter
+
+Kullanıcı mevcut dizinde Antigravity dosya/komut/Pool erişiminin önceden
+yetkilendirilmesini ve ZCode Starter yolunun düzeltilmesini istedi.
+Mimari inceleme: Pool task scope ile native proje izinleri ayrı katmanlar;
+`accept-edits` komut izni vermez. Bu projenin native kaydı mevcut fakat
+settings/permissionGrants boş. Global diğer proje politikaları korunacak.
+ZCode bağımsız CLI hesap registry/model provisioning sözleşmesi upstream
+kaynak ve kurulu bundle üzerinden araştırılacak; credential kopyalanmayacak.
+
+- [x] Mevcut Antigravity projesinin kalıcı native izinlerini yedekli güncelle;
+  dosya okuma/yazma ve native komutla canlı doğrula.
+- [x] Pool'un çalışma diziniyle native Antigravity proje eşlemesini doğrula;
+  gerekiyorsa en yakın kayıtlı proje seçimini ekle ve node:test ile denetle.
+- [x] ZCode Starter için desteklenen provisioning/model seçim yolunu araştır,
+  mümkünse gerçek plan çağrısıyla doğrula; kalan engeli somut kaydet.
+- [x] npm test/check/secrets/audit; canlı kanıt ve sınırlamaları güncelle.
+
+Kanıt: 114/114 node:test, syntax ve secrets (67 dosya) geçti; npm audit 0 açık.
+Antigravity mevcut proje grant'lerine yalnızca bu kullanıcının onayıyla proje
+dosya okuma/yazma, command(*), Pool MCP ve read_url(*) eklendi; proje ayarları
+komut/artifact review için güncellendi. Önceki yerel proje dosyası yanında
+yedek tutulur, Git'e eklenmez. Global CLI izinleri ve diğer projeler değişmedi.
+Native `agy mcp add` ile eksik cli-agent-pool stdio kaydı eklendi. Canlı native
+MCP pool_get_policy çağrısı selectionMode:manual döndürdü. Yeni adaptör gerçek
+dosya oluşturdu; içerik ana süreçten tam doğrulandı, node --check geçti ve yalnız
+bu probe dosyası kaldırıldı. Native deny kuralları ve task scope korunur.
+
+ZCode Starter CANLI BLOKER: kurulu 0.17.1 app-server session/create isteği,
+istemci runtime-preferences yanıtı sağlandıktan sonra bile
+`Provider Registry 中不存在 Model: account:zai-start-plan/GLM-5.3-Flash`
+ile -32603 döndürdü; inference başlatılmadı. Güncel resmi kaynak commit'i
+`a60ba6a7e5a06742270ca605f5d2cc2766afa7e1` üzerinden incelendi.
+`standalone-account-provider-runtime.ts` yalnız mode:individual-coding-plan
+sağlayıcılarını yükler; Starter provisioning eklenmeden bu yoldan Starter
+hesabı kullanılamaz. Upstream #1014 aynı registry sınırlamasını açık tutuyor.
+`-p` yerel seçimi new-provider/qwen3.8-max olarak okuyordu ve canlı çağrı 429
+verdi; bu yanıt Starter başarısı sayılmadı. Hesap/model seçimi değiştirilmedi,
+credential kopyalanmadı, ücretli fallback yok. Starter canlı çalışma maddesi açık.
+
+Adaptörün kurulu 1.8.5 kopyası, önceki içeriğin kaynakla birebir eşleşmesi
+doğrulandıktan sonra yalnız yeni resolver ve adapter değişikliğiyle güncellendi.
+Başka projenin aktif Antigravity işi varken daemon kesilmedi; kod değişikliği
+bir sonraki servis başlangıcında yüklenir.
+
+## ZCode Start Plan doğrulaması — 1 Kasım 2026
+
+- [ ] ZCode Start Plan GLM-5.3-Flash'i Pool'dan canlı çalıştır. Bu madde açık;
+  model/hesap seçimi doğrulanmadan başarı kabul edilmez.
+
+Yerel sürümler: güncel ZCode masaüstü 3.17.1; masaüstü kurulumunun içindeki
+Pool CLI `C:\Program Files\ZCode\resources\glm\zcode.cjs` 0.17.1. `-p`
+yardımında `--model`/`--provider` seçeneği yok. Kullanıcı ayarında
+`account:zai-start-plan` için `GLM-5.3-Flash` kişisel modeli mevcut; gizli
+credential değerleri okunmadı veya kopyalanmadı. Pool'un `session/create`
+isteği bu modeli `Provider Registry` içinde bulamadığı için reddedildi; model
+çağrısı başlamadı. Aynı standalone registry sınırlaması, ZCode CLI'nın
+`provider/updateAccountConfig` ile sağlanan hesap durumunu tek başına
+provision edemediğini bildiren açık upstream raporuyla da örtüşüyor:
+https://github.com/zai-org/feedback/issues/1014 .
+
+Sonuç: model kataloğunda Start Plan'ı `zcode-default` gibi sunup CLI'nin başka
+model çalıştırmasına izin vermek kota tüketimini yanlış yönlendireceğinden
+yapılmadı. Bu kurulumda Start Plan için desteklenen host/hesap aktarımı
+bulunmadan canlı çağrı başarıyla doğrulanmış sayılamaz. Upstream CLI dağıtım
+yönergesi kaynak derlemesi ve tam workspace bağımlılıklarını gerektirir; yalnızca
+masaüstü uygulamasını güncellemek Pool'un bundled CLI'sine ayrı bir modele
+yönlendirme özelliği kazandırmamıştır:
+https://github.com/zai-org/ZCode/blob/main/apps/zcode-cli/docs/usage/01-quickstart.md .
+
+## 1 Kasım 2026 — kullanıcının öncelikli uçtan uca hesap/CLI doğrulaması
+
+Kullanıcı kapsamı (Goal, değiştirilmeden): mevcut havuzdaki Antigravity, Codex,
+Claude, Qwen International Cloud Official/token planı + Qwen terminalindeki kişisel
+API ayarı, MiniMax Code planı ve `mmx` günlük kredisi, ZCode GLM Coding Lite ve
+varsa geçici Start/Coding kampanya planı, OpenCode ücretsiz modelleri, Freebuff /
+WorkBuddy MCP entegrasyonu. Hesap değişikliği login/readback olarak fark edilmeli;
+oturum yoksa kullanıcıya giriş yolu gösterilmeli. Mevcut model havuzu/katalog ve
+filtre davranışı korunmalı. Başarı yalnızca ilgili CLI giriş yolu, kota/plan
+readback'i ve uygun küçük gerçek çağrıyla kanıtlanır. API billing'e fallback yok.
+
+- [ ] Qwen: terminal 0.21.x ve Pool 0.26.x girişlerini aynı native auth store,
+  International provider/model ve seçili `envKey` üzerinden karşılaştır; preflight
+  sonucunu CLI login doğrulaması ve kota sorgusundan ayır. Kota dolu/unknown/401/
+  network failure durumlarını doğru etiketle; gerçek görev seçimi/yürütmesi ve
+  model-kota eşlemesini test et. Kullanıcı terminal/API credential değerlerini
+  okuma, kopyalama veya loglama.
+- [ ] MiniMax: `mmx` ile `mcode` kimlik ve komutlarını ayır; `mmx` auth status,
+  günlük free-credit bakiyesi ve `MiniMax-M2.7` gerçek CLI çağrısını yeniden
+  incele. Editörün başarılı hesabı ile CLI'nin farklı billing/auth kapsamını
+  açıklayan satıcı kanıtı veya güvenli bir teşhis topla; yalnızca açıkça
+  `free_credits` rotasıyla dene, API billing/fallback kullanma.
+- [ ] ZCode/Z.AI: güncelleme tamamlanınca gerçek kayıtlı executable sürümünü,
+  `provider_config` içinde bireysel GLM Coding Lite ile kampanya/Start planının
+  provider seçim ve token anahtarlarını (değerleri göstermeden), app-server/model
+  seçimi ve monitor endpoint kapsamını oku. CLI'nin desteklediği model seçim
+  sınırında iki planı ayrı rotalar/model olarak göstermek mümkünse uygula ve test
+  et; değilse seçili ZCode profilinin anlık planını doğru göster, hesabın diğer
+  planına varmış gibi davranma ve değiştirme/login isteğini sun.
+- [ ] Antigravity, Codex, Claude: her kayıtlı havuz route'u için login/readback,
+  model ID/effort ve kota status'unu yenile; uygun ve erişilebilir rotalarda kısa
+  gerçek text çağrısı yap. Sadece quota cache/CLI varlığını başarı sayma.
+- [ ] OpenCode: resmi `models --verbose` kataloğunu okuyup ücretsiz model
+  tespitini ve toplu filtre→havuz ekleme UX/API sınırını incele; her modelin kendi
+  billing'ini doğrula, OpenRouter/OpenCode API ücretli rotalarını ücretsiz gibi
+  göstermeden test et.
+- [ ] Freebuff/WorkBuddy: resmi desteklenen MCP akışıyla mevcut CLI Agent Pool
+  bağlantısını uygulama içinden readback et; araç listesi ve zararsız status/
+  quota çağrısını doğrula. `Freevox` adı farklı bir istemciyse ürün/kaynak
+  belirsizliğini dokümante et; CLI worker olarak varsayma.
+- [ ] Değişen her mantık için node:test; `npm test`, `npm run check`,
+  `npm run secrets`, `npm audit`; kurulu global paket/daemon'u aktif iş yokken
+  güncelle, son RPC/quota readback'i al, kalan hesap/sağlayıcı engellerini buraya
+  kanıtla kaydet. Kullanıcıya ait değişiklikleri koru; commit/push yok.
+
+Kısıtlar: kullanıcı 1 Kasım'da `native-low/native-low`, `serial`, `execute`
+yürütmeyi seçti. Bu repo Project Brain task workflow'ünü açıkça emekliye ayırmıştır;
+Project Brain skill'i bu repo kuralına göre yalnızca bağlam/continuity için
+kullanılır, Pool deposunda Brain dizini veya yeni ikinci plan sistemi oluşturulmaz.
+Kaynak sürümü 1.8.3'ten sonraki kaydedilmiş durumdan kontrol edilecek.
+
+## Hesap değişimi ve güncel CLI takibi — 1 Kasım 2026
+
+- [ ] Qwen terminal launcher ile Pool giriş yolunu karşılaştır; güncel CLI ve
+  International Qwen Cloud Official auth davranışını doğrula, credential saklama.
+- [ ] ZCode monitor ağ/servis hatasını giriş yok olarak göstermeyi düzelt ve test et.
+- [ ] Hesap değişimi, kota önbelleği, login/readback ve MiniMax güncel sürümünü
+  doğrula; Freebuff ve WorkBuddy için kurulum/entegrasyon engellerini belgeleyerek
+  uygun resmi çözümü araştır. Kurulu servisleri ve mevcut değişiklikleri koru.
+- [ ] Gerçek sağlayıcı çağrısı veya somut hesap/kota engeli, test/check/secrets/audit
+  ve kurulu servis/skill doğrulamasıyla sonuçları kaydet.
+
+1 Kasım devamı: Qwen giriş durumunu düzeltmek için güncel CLI’ın kullanıcı ayarındaki
+seçili sağlayıcı/model ile anahtar varlığı artık bellekte kontrol edilir; anahtar
+değeri okunup dönülmez. Eksik anahtar `AUTH_REQUIRED`, var anahtar `credentials_present`
+olarak gösterilir; gerçek giriş/kota başarısı iddia edilmez. UI metni bu belirsizliği
+ayırır ve hesap değiştirme / yeniden kontrol yolunu açık tutar. Test, International
+QwenCloud modelinin anahtarını doğru endpoint ile eşleştirir ve anahtarın çıktıya
+sızmadığını doğrular. Qwen’in güncel resmi yönergesinde OAuth `qwen auth status` akışı
+kaldırılmıştır; `qwen` → `/auth` → QwenCloud → Token Plan → International seçimi anahtarı
+Qwen’in kendi settings dosyasına kaydeder, Pool’a token callback’i dönmez.
+
+Yerel gerçek durum (çıktılara credential dahil edilmeden): terminal Qwen 0.21.3,
+Pool kaydı 0.26.5; ikisi de aynı kullanıcı ayarında International token-plan anahtarı
+buluyor. Pool’dan seçili Qwen3.8 Max gerçek kısa çağrısı `QUOTA_EXHAUSTED` verdi:
+Token Plan aylık kotası 3 Kasım 2026 16:00 UTC’ye kadar dolu. Bu giriş modülü hatası
+değil; yeni hesap veya kota yenilenmesi olmadan başarılı inference doğrulanamaz.
+ZCode 0.17.1 kotası bu kontrolde 429/rate-limited; kullanıcı güncellemesi henüz
+kurulumda görünmüyor. Antigravity 1.4.12 kota servisi kullanılabilir dört pencere
+döndürdü; önceki bakım kaydındaki kısa çağrı kanıtları geçerlidir. Codex 0.153.4
+yerel auth kontrolünü geçti. `mmx` 1.0.27 auth durumu OAuth, fakat plan yok ve günlük
+kredi bakiyesi bilinmiyor; günlük kredi inference henüz kanıtlanmadı. Ayrı `mcode`
+0.6.8 token-plan rotası güncel hesap durumu diye varsayılmadı. Gerçek hesap/model
+matrisi kapanmadan tüm bağlantılar sorunsuz ilan edilemez.
+
+Tek kısa native MMX `MiniMax-M2.7` text çağrısı açık `free_credits` rotasında
+`QUOTA_EXHAUSTED` döndü; ücretli API yolu denenmedi ve otomatik tekrar yapılmadı.
+Qwen’in iki admission çağrısı da aynı aylık kotayı bildirdi; ikinci görevin sonucu
+okunup kapatıldı. Freebuff’ın `~/.agents/mcp.json` dosyasında `cli-agent-pool` stdio
+sunucusu zaten kayıtlı. WorkBuddy AI 5.9.4 kurulu ve açıldı; UI kontrolü sırasında
+eşzamanlı kullanıcı girdisi algılandığından bağlantı ayarına müdahale edilmedi.
+Bu nedenle WorkBuddy connector ekleme/readback’i ve Freebuff uygulama içi araç
+readback’i bekliyor; yalnızca dosya kaydı veya resmi doküman bu kanıtı sağlamaz.
+
+1.8.3: Qwen preflight seçilen modelin provider/envKey kaynağını kontrol eder; Qwen
+resolver’ındaki id+baseUrl fallback sırasını izler ve settings.env, process env,
+QWEN_HOME, eski `security.auth.apiKey` ve Qwen’in user/project `.env` aramasında
+yalnızca anahtar varlığına bakar. Değerler dönülmez veya kaydedilmez; boşluk-only
+değerler yok sayılır. Pool `checkAuth` için model ID iletilir. UI, anahtar bulundu
+durumunu gerçek API başarısından ayrı gösterir.
+
+Bağımsız incelemenin istek-model eşleştirme, stale base URL fallback’i, `.env`
+kapsamı ve boşluk değerleri bulguları düzeltildi; son incelemede açık bulgu yok.
+103 node:test PASS; `npm run check`, `npm run secrets`, `npm audit` başarılı (0 açık).
+Global npm paketi 1.8.3 oldu; kayıtlı Pool servisi aktif iş yokken yeniden başlatıldı.
+Canlı quota readback `qwen-local` için `auth: credentials_present`, `status: unknown`
+döndü; bu yalnızca anahtarın bulunduğunu doğrular. Yeni provider çağrısı yapılmadı;
+önceki kısa çağrılar aylık kotaya takılmıştı. ZCode sürümü hâlâ 0.17.1; güncelleme bu
+kontrolde kurulu değildi ve quota 429/rate-limited.
+
+Freebuff standard MCP stdio istemcisi ve WorkBuddy Settings → MCP/Connectors istemcisi
+olarak dokümante edildi; bunlar model/CLI sağlayıcısı veya Pool login adaptörü değildir.
+Bu oturumda WorkBuddy ya da Freebuff uygulama ayarlarına yazma ve istemci UI’sinde
+bağlantı readback’i yapılmadı. Kaynak/UI dokümantasyonu testi, gerçek kurulum kanıtı
+yerine geçmez.
+
+Yeni bulgu: terminal PATH'teki Qwen standalone 0.21.3 iken kayıtlı Pool yolu
+global npm CLI'dir (komut `--version` 0.26.5). Farklı giriş noktaları tek başına
+farklı kimlik deposu kanıtlamaz. Mevcut çalışan route, permission ve provider
+sözleşmesi doğrulanmadan otomatik değiştirilmedi. Z.AI monitor başarısızlığı artık
+kimlik varlığını gösterir, plan/giriş doğrulanamadı der; 0/429/500/401 sentetik
+testleri geçti. Gerçek hesap değiştirme ve UI readback doğrulaması henüz açık.
+
+## 1 Kasım 2026 — öncelikli sağlayıcı uyumluluğu
+
+Kapsam: Codex Sol 6.1/Astra 6/Luna 6 (Terra hariç), Claude Opus/Sonnet/Haiku
+5.5 ve native Fable, Antigravity Argon/Flash/Claude, ZCode GLM plan/free ayrımı,
+Qwen, MiniMax Code/günlük kredi ve WorkBuddy/Freebuff destek sınırları.
+Yürütme ana ajan; native bağımsız inceleme, paralel salt okunur araştırma.
+Repo Brain iş akışını emekliye ayırmış olduğundan takip bu bakım belgesindedir.
+
+- [x] Kurulu native komut/katalog sözleşmelerini doğrula; hesap erişimini küçük
+  izole text çağrılarıyla ayır; doğrulanmamış sürüm/model kimliği ekleme.
+- [x] Adapter/model taşıma hatalarını node:test regresyonlarıyla düzelt;
+  mevcut üyelik/eforları koru, desteklenmeyen model seçimini sessizce yok sayma.
+- [x] Yerel katalogda yalnızca istenen Codex modellerini aç; Terra'yı kalıcı
+  filtrele; native Claude Fable kimliğini ve erişimini doğrula.
+- [x] MiniMax günlük kredilerini abonelikten ayrı doğrula; Freebuff ve WorkBuddy
+  için gerçek programatik sözleşme veya somut engeli kaydet.
+- [x] npm test/check/secrets/audit, bağımsız inceleme ve Brain RPC uyumluluğu;
+  kurulu paket/servis durumunu aktif işlere dokunmadan doğrula.
+
+İlk mimari bulgular: ZCode -p model bayrağı sunmuyor; Freebuff 0.2.29 yalnızca
+etkileşimli CLI/MCP istemcisi. Claude native katalog Fable 5.1 bildiriyor; kayıtlı
+Fable [1m] kimliğinin yeni temel kimlikle uzlaştırılması incelenecek. Credentials
+resmî CLI deposunda kalır; ücretli API fallback ve native izin atlama yok.
+
+Uygulama kanıtı: ZCode yanlış model pinleme reddi; stdout JSON hatası/kredi
+sınıflaması; bir sonraki result ile önceki hata kaybının önlenmesi; JSON içinde
+tırnaklı Cookie/Set-Cookie maskelemesi; MMX plansız günlük kredi bakiyesinin
+bilinmiyor kalması testlidir. Skill'deki yanlış GLM pinleme örneği düzeltildi.
+MiniMax Code lightweight dosya aracı sunmadığından write standard moda alındı.
+Gerçek ayrı native test dosyası oluşturuldu, ana süreç OK içeriğini doğruladı.
+Native smart=auto salt okunur değildir: mcode read katalog/admission ve doğrudan
+çağrı düzeyinde kapatıldı; read yerine write'a otomatik yükseltme yok.
+
+Gerçek kısa yanıtlar: Codex Astra; Claude Opus/Sonnet/Haiku 5.5; Antigravity
+Argon, Flash, Opus, Sonnet, GPT-OSS; MiniMax Code M3.1 Flash. Hesap engelleri:
+Sol6.1/Luna6 ChatGPT CLI tarafından reddedildi; native Fable5.1 kullanım kredisi
+istiyor; Qwen aylık kota ve ZCode429; MMX günlük kredi denemesi1008 yetersiz bakiye.
+Terra ve istenmeyen Codex kimlikleri yerel kalıcı filtreye alındı. Erişimsiz
+Sol/Luna ve kredi isteyen Fable pasif; native kimlikler korunuyor.
+WorkBuddyAI gömülü CLI hem Node hem kendi Electron runtime'ıyla eksik dist modülü
+bildirdi; Freebuff --help headless sunmuyor. Bunlar çalışan Pool worker sayılmaz.
+ZCode app-server seçim API'si bulundu; OAuth/host, izin, katalog/billing sözleşmesi
+doğrulanmadan yeni worker yolu eklenmedi. Bu açık gereksinim tamamlanmış değildir.
+
+Brain test_pool_modes.py ve gerçek kurulu Pool ile test_pool_integration.py geçti:
+auto-start, RPC/MCP, execute raporu, fixed effort, kanıt ve no-replay kontrol edildi.
+1.8.2 kurulum ve42managed skill dağıtımı yapıldı; kaynak/merkez/Codex hash'i eşleşti.
+Bu oturumun araçsız MiniMax yazma probu dosya oluşturmamıştı; klasör ve rapor
+incelenip yalnızca bu probe'un karantinası kaldırıldı. Diğer karantinalar korunur.
+Ek native MiniMax kanıtı: --output-schema gerçek çağrıda modelin prose+JSON
+yanıtını STRUCTURED_OUTPUT_INVALID ile reddetti; güvenilir yürütme yolu olarak
+eklenmedi. Adapter yalnızca execute için tek, sonda duran json fence içindeki
+mevcut katı rapor şemasına uyan nesneyi normalleştirir. Bozuk/çoklu rapor, native
+hata ve blocked statüsü korunur; global parser gevşetilmez, tekrar yürütme yok.
+exec.completed nesne output ve error ayrıştırması testlidir. Gerçek ayrı native
+çağrı geçerli completed rapor verdi; tam OK içeriği ana süreçten doğrulandı.
+Bu oturumun izole başarısız probe'ları içerik/rapor incelemesi sonrası çözülür;
+diğer projelerin karantinaları korunur.
+Son kurulu servis kanıtı: MiniMax M3.1 Flash write/execute succeeded, completed
+rapor kabul edildi ve gerçek final.txt dosyasının tam OK içeriği ana süreçten
+okundu.101 node:test, syntax/secrets/audit (0 açık) geçti. Bağımsız incelemenin
+son delimiter gözlemi tek, tam satır json fence çiftini zorunlu kılan testlerle
+kapatıldı. ZCode model seçimi/Freebuff/WorkBuddy ve hesap engelleri açık kalır;
+bu kontrol listesi onların tüm modellerinin çalıştığı iddiası değildir.
+
 ## Antigravity execute repair — 30 October 2026
 
 Owner-approved scope: repair Antigravity first, prove native write/check execution and parallel scheduling, then update installed Pool. Existing project-root writes remain exclusive/queued; no new worktrees, automatic merge, cleanup or replay.
@@ -91,7 +479,7 @@ karmaşası yerine bu belge ve Git geçmişi üzerinden devam edilecek. Brain ka
 kurulu kopyaları ve dağıtımı bu bakım planının parçası olarak değiştirilmedi.
 Pool API değişirse ayrı Brain deposunda uyumluluk testi yapılacak; ancak gerçekten
 gerekiyorsa Brain güncellenecek, sürümlenecek ve Skills Manager ile dağıtılacak.
-Başlangıç/yayın skill'lerinin önerisi [ayrı tasarım belgesinde](lifecycle-protocols.md).
+Güncel istemci sözleşmesi [ajan API belgesindedir](agent-api.md); başlangıç/yayın hizmetleri bu projenin dışında kalır.
 
 ## Bu incelemede gerçekten doğrulananlar
 
@@ -477,3 +865,116 @@ genel write_file(*) deny kaldırıldı. Komut ve sandbox dışı komut deny kura
 korundu; bypass bayrağı kullanılmadı. Yeni izole native çağrı succeeded/completed
 raporu verdi; input okundu, output yazıldı ve ana süreç tam içeriği doğruladı.
 Bu makineye özgü izin ayarı Git'e veya dağıtılan skill'e taşınmadı.
+
+## 1 Kasım 2026 devam — sürüm, servis ve canlı kanıt
+
+Resmi updater/paket kanalıyla güncellenip sürüm komutlarıyla doğrulananlar:
+Codex CLI 0.166.0, Claude Code 2.1.316, OpenCode 1.19.5, MiniMax Code 0.7.4,
+`mmx` 1.0.28 ve Freebuff 0.2.35. Qwen 0.26.5 ve Antigravity 1.4.12 resmi
+güncel sürümle aynı. MiniMax Code'un çakışan eski launcher'ları yalnızca etkin
+`mcode` süreci olmadığı doğrulandıktan sonra geçici klasöre yedeklendi; yeni
+resmi paket çalışıyor. Eski launcher yedeği `%TEMP%` altında bırakıldı.
+ZCode masaüstü 3.17.1; bundled CLI 0.17.1. Masaüstü güncellemesi CLI'ya Start
+Plan model seçimini kazandırmadı.
+
+- Antigravity kota modeli düzeltmesi `src/routing.js` içinde: model-scope
+  `rate_limited` artık başka model ailesinin sıfır kotasıyla Gemini'yi bloklamaz.
+  Havuzda aktif görev olmadığı doğrulandı, servis (1.8.4) yenilendi. Canlı RPC'de
+  `gemini-3.8-flash` seçimi başarılı; okunan Gemini bakiyesi haftalık %88.8,
+  5 saatlik %91.5. Claude/GPT aileleri sıfır. Kullanıcı isteğiyle Pool'dan küçük
+  text çağrısı yapıldı; CLI doğru `gemini-3.8-flash-low` varyantını başlattı, ancak
+  30 saniyede `TIMEOUT` verdi ve hata ayrıntısında `permission_mode: request-review`
+  ile `--mode plan` uyarısı yer aldı. Gerçek yanıt alınmadı; Antigravity Gemini
+  seçimi düzeldi, uçtan uca çağrı hâlâ doğrulanmadı. Otomatik tekrar yapılmadı.
+  Devam incelemesinde CLI 1.4.12'nin slash genişletmesi kapalıyken `--mode plan`
+  bayrağını yok saydığı doğrulandı. Metin görevleri artık oturumluk
+  `agentMode: plan` kullanıyor; `request-review` ve deny kuralları değişmedi.
+  Yeni kodla canlı Pool çağrısı `gemini-3.8-flash-low` üzerinden `succeeded` ve
+  `OK` döndürdü; zaman aşımı, izin hatası veya `errorDetail` kalmadı.
+- Codex 0.166.0 ile Pool text çağrısı gerçek yanıt verdi. MiniMax Code 0.7.4
+  `free_credits` rotasıyla `MiniMax-M3.1-Flash` gerçek yanıtı verdi.
+- OpenCode katalog düzeltmesi `src/adapters.js`: ilk 100 model kesilmeden önce
+  sıfır maliyetli modeller öne alınıp korunuyor; regresyon testi eklendi. 12
+  OpenRouter ücretsiz model Pool'da `billing: free` / auto-select olarak
+  sınıflandı. `google/gemma-4-26b-a4b-it:free` ilk gerçek çağrıyı verdi; sonraki
+  çağrı ortak upstream havuzdan 429 verdi. OpenCode'un kendi `beam-free` rotası
+  geçersiz credential ile 401 verdi. Ücretli API fallback yapılmadı.
+- Qwen 0.26.5 auth doğrulandı, fakat International Qwen Cloud Official kotası
+  ayın 3'ündeki sıfırlanmaya kadar dolu; bu nedenle yeni inference denenmedi.
+- Claude Pro girişi var; 5 saatlik pencere %100, 7 günlük pencere %0 ve 3 Kasım
+  08:00 UTC'de sıfırlanıyor. Uygun canlı inference kotası olmadığından denenmedi.
+- ZCode Lite planı `zcode-local` monitor/readback'inde görünüyor; haftalık
+  pencere %0 ve 1 Kasım 17:31 UTC'de sıfırlanıyor. Kampanya `zai-start-plan` /
+  `GLM-5.3-Flash`, CLI provider registry'de yok; Pool bu modeli seçip çalıştıramıyor.
+  Kullanıcıya ait model tanımı var, secret okunmadı/kopyalanmadı. Upstream
+  standalone app-server sınırı: https://github.com/zai-org/feedback/issues/1014 .
+- `mmx` OAuth durumu var, ancak Token Plan yok ve plan kotası raporlanmıyor;
+  bu `mcode` günlük free-credit rotasından ayrı. Ücretli çağrı/fallback yok.
+- Freebuff 0.2.35 ve WorkBuddy MCP konfigürasyonlarındaki kayıtlı `command/args/env`
+  ile iki ayrı MCP stdio istemcisi başlatıldı. Her ikisinde el sıkışma başarılı,
+  11 tool listelendi, `pool_list_connections` 13 bağlantı döndürdü ve
+  `pool_get_quotas(agy-local)` başarılı oldu (Gemini haftalık %88.8 / 5 saatlik
+  %91.5; Claude/GPT %0). Böylece iki kayıtlı MCP istemci yolu ve canlı kota
+  readback'i doğrulandı. Freebuff'un Google oturum/login akışı ayrıca tamamlandı
+  diye doğrulanmadı; WorkBuddy masaüstü arayüzünden ayrı bir görev çalıştırılmadı.
+  Kullanıcının isteğiyle Qoder Desktop kullanıcı MCP yapılandırmasına aynı
+  credential-free `cli-agent-pool` stdio bağlantısı eklendi. Kayıt `applied`,
+  sunucu `ready`; Qoder'ın `list_tools` readback'i 11 Pool aracını döndürdü.
+  Aynı Qoder MCP bağlantısından `pool_get_quotas(agy-local)` çağrısı başarılı oldu;
+  Gemini haftalık %19,64 / 5 saatlik %97,96 ve Claude/GPT haftalık %40,52 okundu.
+  Qoder üzerinden ayrı bir model görevi çalıştırılmadı.
+
+Son kod kontrolleri: `npm test` 108/108; `npm run check`, `npm run secrets`
+(64 dosya) ve `npm audit` (0 açık) geçti. Antigravity ve OpenCode yeni regresyon
+testleri dahil. Bu kanıt, yukarıdaki açık kota/plan/uygulama engellerini kapatmaz;
+bakım planı öncelikli hesap hedeflerinin hepsini tamamlandı olarak işaretlemez.
+
+## 1 Kasım 2026 — tüm bağlantılarda görünürlük ve güvenilirlik kontrolü
+
+Kapsam yalnızca örnek verilen sağlayıcılar değil, 13 kayıtlı bağlantının tamamı:
+katalog/havuz görünürlüğü, seçim politikası, adaptör izinleri ve hata protokolleri,
+kota/oturum readback'i ve üç masaüstü MCP istemcisinin kayıtlı bağlantısı.
+
+- [x] Kapalı bağlantıyı katalog sekmeleri, aile görünümü, havuz üyeleri ve havuz
+  sayaçlarından çıkar. Ayarlar kaydı ve model üyelikleri yeniden açmak için korunsun;
+  aynı modelin başka açık bağlantıdaki kopyası görünür kalsın.
+- [x] Ücretsiz model etiketi açık `autoSelect:false` kararını aşmasın. Açıkça
+  bağlantı seçimi ve belirtilmemiş otomatik seçim varsayılanı ayrı test edilsin.
+- [x] MCP'nin düz metin doğrulama hatasını JSON.parse/SyntaxError yerine kararlı
+  TOOL_FAILED olarak ilet; protokol metnindeki olası özel veriyi hata içine kopyalama.
+- [x] 13 bağlantının tamamından güncel kota/oturum readback'i al; kapalı bağlantıları
+  çalıştırma veya yeniden etkinleştirme. Ücretli fallback ve otomatik görev tekrarı yok.
+- [x] Freebuff, WorkBuddy ve Qoder kayıtlı command/args üzerinden ayrı MCP stdio
+  el sıkışması, 11 araç listesi ve canlı Antigravity kota sorgusu: üçü de başarılı.
+- [x] 111/111 node:test; syntax, secrets (65 dosya), npm audit (0 açık).
+
+Canlı readback (15:05–15:06 UTC): Codex kısa dönem %75 / haftalık %96;
+Antigravity Gemini haftalık %19.17 / 5 saatlik %96.98, Claude/GPT haftalık
+%40.52 / 5 saatlik %100. Claude haftalık %0 (3 Kasım 08:00 UTC), ZCode
+haftalık %0 (1 Kasım 17:31:55 UTC). Qwen model-list girişi doğrulandı ama
+kalan kota endpointte yok; önceki quota rejection hâlâ gerçek inference engeli
+olabilir. MiniMax Code günlük/account credits bakiyesi bu API'de görünmüyor;
+MMX OAuth var, etkin Token Plan yok. Kapalı Kimi oturum jetonu süresi dolmuş;
+MiMo yalnızca credential varlığını bildiriyor. OpenCode/OpenRouter negatif bakiye
+bildiriyor; bağlantı kullanıcı tarafından kapalı. OmniRoute/Hermes kota sunmuyor;
+LM Studio yerel bağlantısında model yok. Bunlar başarılı inference kanıtı sayılmadı.
+Önceki başarılı/başarısız görevler tekrar edilmedi; çağrı geçmişi korundu.
+
+Gerçek tarayıcıda Codex Ayarlar'dan kapatılıp kaydedildi; katalog ve havuz
+kartları sıfıra düştü, sayfa yenilenince kapalı kaldı. MiMo gibi önceden kapalı
+bağlantılar da görünmüyor. Kontrol sonrası Codex eski açık durumuna geri alındı;
+model ve havuz üyelikleri silinmez. Aktif/kuyrukta iş olmadığı doğrulanıp tanınan
+Pool daemon'u yeni kodla yeniden başlatıldı; global npm paketi bu kaynak ağacına
+junction olduğu için ikinci paket kopyası kurulmadı.
+
+Qoder Desktop kurulu; ayrı `qoder`/`qodercli`/`coder` komutu PATH'te yok ve
+Pool'da Qoder worker adaptörü yok. Desktop'un MCP istemcisi olması kendi
+modellerini Pool worker yapmaz. Resmî günlük 100 Credits kampanyası desktop'ta
+manuel claim gerektirir; claim edilmiş krediler aynı hesapla CLI'da da kullanılabilir:
+https://docs.qoder.com/events/100credits . Hesaba ait claim/bakiye doğrulanmadı,
+desktop credential'ı çıkarılmadı. Desteklenen CLI/model/izin sözleşmesi ayrıca
+doğrulanmadan worker veya otomatik bakiye entegrasyonu varmış gibi sunulmadı.
+Antigravity 1.4.12 metin modu oturumluk agentMode:plan düzeltmesi korundu;
+önceki başarılı canlı yanıt kaydı ve izin/regresyon testleri yeniden incelendi.
+Freebuff/WorkBuddy'nin kendi UI login'i ve uygulama içinden görev çalıştırması
+bu MCP transport kontrolüyle tamamlandı sayılmaz. Commit/push yapılmadı.

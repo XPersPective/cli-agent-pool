@@ -5,22 +5,23 @@ import { supportsExecution } from './task-protocol.js';
 export function rejectionReason(model, route, snapshot, request) {
   if (!model.enabled) return 'DISABLED';
   if (!activeBillings.has(model.billing)) return 'BILLING_UNCONFIRMED';
-  if (!request.routeId && !model.autoSelect) return 'AUTOSELECT_DISABLED';
+  if (model.billing === 'paid_api' && !request.routeId && !model.autoSelect) return 'PAID_ROUTE_REQUIRED';
   if (!model.kinds.includes(request.kind)) return 'KIND_UNSUPPORTED';
   if (request.mode === 'execute' && !supportsExecution(route)) return 'EXECUTION_UNSUPPORTED';
-  if (request.effort && model.fixedEffort && request.effort !== model.fixedEffort) return 'FIXED_EFFORT';
   if (request.effort && !model.efforts.includes(request.effort)) return 'EFFORT_UNSUPPORTED';
   if (snapshot && Date.now() - Date.parse(snapshot.observedAt) < 60_000) {
     if (snapshot.status === 'auth_required') return 'AUTH_REQUIRED';
     if (snapshot.subscription === 'none' && ['subscription', 'token_plan'].includes(route.billing)) return 'SUBSCRIPTION_REQUIRED';
-    if (snapshot.status === 'rate_limited' || snapshot.windows?.some(window => quotaApplies(window, model.id) && window.remainingPercent != null && window.remainingPercent <= Math.max(route.minRemainingPercent, request.minRemainingPercent ?? 0))) return 'QUOTA_RESERVE';
+    const accountLimited = snapshot.status === 'rate_limited' && snapshot.scope !== 'model';
+    const modelWindowLimited = snapshot.windows?.some(window => quotaApplies(window, model.id) && window.remainingPercent != null && window.remainingPercent <= Math.max(route.minRemainingPercent, request.minRemainingPercent ?? 0));
+    if (accountLimited || modelWindowLimited) return 'QUOTA_RESERVE';
   }
   return null;
 }
 
 const explanations = {
   DISABLED: 'bağlantı veya model kapalı', BILLING_UNCONFIRMED: 'ödeme/plan türü doğrulanmamış',
-  AUTOSELECT_DISABLED: 'otomatik seçime kapalı', KIND_UNSUPPORTED: 'istenen metin/okuma/yazma yeteneği yok',
+  PAID_ROUTE_REQUIRED: 'ücretli API için bağlantıyı açıkça seçin', KIND_UNSUPPORTED: 'istenen metin/okuma/yazma yeteneği yok',
   EXECUTION_UNSUPPORTED: 'adaptör icra modunu desteklemiyor', FIXED_EFFORT: 'istenen efor havuzun sabit eforuyla çakışıyor',
   EFFORT_UNSUPPORTED: 'istenen efor desteklenmiyor', AUTH_REQUIRED: 'CLI oturumu gerekli',
   SUBSCRIPTION_REQUIRED: 'bu CLI için gerekli plan yok', QUOTA_RESERVE: 'kota dolu veya kalan kota rezervin altında',

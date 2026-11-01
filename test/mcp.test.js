@@ -24,7 +24,7 @@ async function application(t) {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-mcp-'));
   const executable = path.join(root, 'fake-codex.js');
   writeFileSync(executable, `if(process.argv.includes('login')){console.log('Logged in using ChatGPT')}else{process.stdin.resume();process.stdin.on('end',()=>{console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'verified result'}}));console.log(JSON.stringify({type:'turn.completed'}))})}`);
-  const config = configSchema.parse({ workspaceRoots: [], routes: [{ id: 'test', adapter: 'codex', executable, enabled: true, billing: 'subscription', models: [{ id: 'test-model', alias: 'Test', group: 'default', kinds: ['read'] }] }] });
+  const config = configSchema.parse({ workspaceRoots: [], routes: [{ id: 'test', adapter: 'codex', executable, enabled: true, billing: 'subscription', models: [{ id: 'test-model', alias: 'Test', group: 'high', kinds: ['read'] }] }] });
   const store = new Store(path.join(root, 'pool.sqlite'));
   const pool = new Pool(config, store, { directory: root });
   store.saveQuota('test', { status: 'available', windows: [], observedAt: new Date().toISOString() });
@@ -98,7 +98,7 @@ test('standalone dashboard uses one-time login, signed HttpOnly cookie and same-
   assert.equal((await post('https://attacker.invalid')).status, 403);
   assert.equal((await post(url.origin, cookie.slice(0, -1) + 'x')).status, 403);
   const result = await post(url.origin); assert.equal(result.status, 200);
-  const view = await result.json(); assert.deepEqual(view.installed.map(cli => cli.adapter), ['codex', 'claude', 'opencode', 'zcode', 'qwen', 'mcode', 'mmx', 'kimi', 'mimo', 'agy', 'omniroute', 'lmstudio', 'ollama', 'aider', 'kilocode', 'hermes']);
+  const view = await result.json(); assert.deepEqual(view.installed.map(cli => cli.adapter), ['codex', 'claude', 'opencode', 'zcode', 'qoder', 'qwen', 'mcode', 'mmx', 'kimi', 'mimo', 'agy', 'omniroute', 'lmstudio', 'ollama', 'aider', 'kilocode', 'hermes']);
   assert.ok(!JSON.stringify(view).includes(token));
   assert.equal((await fetch(url, { method: 'POST', headers: { Cookie: cookie, Origin: url.origin, 'Content-Type': 'application/json' }, body: '{}' })).status, 403);
 });
@@ -108,7 +108,7 @@ test('stdio MCP connector shares the HTTP owner without putting secrets in tool 
   const client = new Client({ name: 'stdio-test', version: '1.0.0' });
   await client.connect(new StdioClientTransport({ command: process.execPath, args: [fileURLToPath(new URL('../bin/pool.js', import.meta.url)), 'stdio'], env: { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => ['PATH', 'SystemRoot', 'SYSTEMROOT', 'TEMP', 'TMP'].includes(name))), CLI_AGENT_POOL_HOME: root }, stderr: 'pipe' }));
   t.after(() => client.close());
-  assert.equal((await client.listTools()).tools.length, 11);
+  assert.equal((await client.listTools()).tools.length, 12);
   const response = await client.callTool({ name: 'pool_submit', arguments: { prompt: 'Test through stdio', workspace: root, kind: 'read', idempotencyKey: 'stdio-test-123' } });
   assert.ok(!response.isError);
   assert.equal(pool.list()[0].id, response.structuredContent.data.id);
@@ -150,11 +150,13 @@ test('real MCP client discovers tools and executes shell-free fake CLI through p
   await client.connect(new StreamableHTTPClientTransport(url, { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
   t.after(() => client.close());
   const tools = await client.listTools();
-  assert.equal(tools.tools.length, 11);
+  assert.equal(tools.tools.length, 12);
   const input = { prompt: 'Read only', workspace: root, kind: 'read', idempotencyKey: 'mcp-request-123' };
   const first = await client.callTool({ name: 'pool_submit', arguments: input });
   assert.ok(!first.isError);
   const task = first.structuredContent.data;
+  assert.equal(task.prompt, undefined);
+  assert.equal(task.events, undefined);
   const second = await client.callTool({ name: 'pool_submit', arguments: input });
   assert.equal(second.structuredContent.data.id, task.id);
   let result;
@@ -172,30 +174,24 @@ test('real MCP client discovers tools and executes shell-free fake CLI through p
   assert.ok(denied.isError); assert.match(denied.content[0].text, /INVALID_WORKSPACE/);
 });
 
-test('MCP exposes grouping permission and only owner-enabled assignments can change groups', async t => {
-  const { url, token, managementToken } = await application(t);
-  const client = new Client({ name: 'grouping-test', version: '1.0.0' });
-  await client.connect(new StreamableHTTPClientTransport(url, { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
-  t.after(() => client.close());
-  let policy = (await client.callTool({ name: 'pool_get_policy', arguments: {} })).structuredContent.data;
-  assert.equal(policy.groupingMode, 'manual');
-  const assignments = [{ routeId: 'test', modelId: 'test-model', group: 'medium' }];
-  assert.ok((await client.callTool({ name: 'pool_assign_groups', arguments: { revision: policy.revision, assignments } })).isError);
-  const manage = async body => (await fetch(new URL('/manage', url), { method: 'POST', headers: { Authorization: `Bearer ${managementToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
-  const view = await manage({ operation: 'get' }); view.config.groupingMode = 'agent'; view.config.selectionMode = 'manual';
-  await manage({ operation: 'save', ...view });
-  policy = (await client.callTool({ name: 'pool_get_policy', arguments: {} })).structuredContent.data;
-  assert.equal(policy.groupingMode, 'agent');
-  const saved = await client.callTool({ name: 'pool_assign_groups', arguments: { revision: policy.revision, assignments } });
-  assert.equal(saved.structuredContent.data.updated, 1);
-  assert.equal((await client.callTool({ name: 'pool_list_models', arguments: {} })).structuredContent.data[0].group, 'medium');
-  const pools = (await client.callTool({ name: 'pool_list_pools', arguments: {} })).structuredContent.data;
-  assert.equal(pools.selectionMode, 'manual');
-  assert.equal(pools.pools[1].members[0].id, 'test-model');
-  const missingPool = await client.callTool({ name: 'pool_select', arguments: { kind: 'read' } });
-  assert.ok(missingPool.isError); assert.match(missingPool.content[0].text, /POOL_REQUIRED/);
-  const selected = await client.callTool({ name: 'pool_select', arguments: { kind: 'read', group: 'medium' } });
-  assert.equal(selected.structuredContent.data.selected.id, 'test-model');
+test('MCP exposes a short service map, custom category pages and independent catalog selection', async t => {
+  const {url,token,managementToken}=await application(t);
+  const client=new Client({name:'categories-test',version:'1.0.0'});
+  await client.connect(new StreamableHTTPClientTransport(url,{requestInit:{headers:{Authorization:'Bearer '+token}}}));t.after(()=>client.close());
+  assert(!(await client.listTools()).tools.some(t=>t.name==='pool_assign_groups'));
+  const map=(await client.callTool({name:'pool_help',arguments:{}})).structuredContent.data;
+  assert(map.entries.pools);assert(map.entries.catalog);assert(!JSON.stringify(map).includes('selectionMode'));
+  const manage=async body=>(await fetch(new URL('/manage',url),{method:'POST',headers:{Authorization:'Bearer '+managementToken,'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
+  const view=await manage({operation:'get'});view.config.categories.push({id:'research',name:'Araştırma'});view.config.routes[0].models[0].memberships=[{group:'research'}];await manage({operation:'save',...view});
+  const pools=(await client.callTool({name:'pool_list_pools',arguments:{}})).structuredContent.data;
+  assert(pools.categories.some(c=>c.id==='research'&&c.count===1));assert(!('models' in pools));
+  const page=(await client.callTool({name:'pool_list_pools',arguments:{group:'research'}})).structuredContent.data;
+  assert.equal(page.models[0].modelId,'test-model');
+  const selected=await client.callTool({name:'pool_select',arguments:{kind:'read',modelId:'test-model'}});
+  assert.equal(selected.structuredContent.data.selected.modelId,'test-model');
+  const error=await client.callTool({name:'pool_select',arguments:{kind:'read',group:'missing'}});
+  const payload=JSON.parse(error.content[0].text);assert.equal(payload.error.code,'CATEGORY_NOT_FOUND');assert.equal(payload.error.help.tool,'pool_help');
+  assert(error.content[0].text.length<500);
 });
 
 test('CLI submits an unregistered project without changing owner configuration', async t => {
@@ -215,7 +211,7 @@ test('CLI execute infers write and MCP compact result returns the validated repo
  const report={status:'completed',summary:'Created artifact',files:[{path:'artifact.txt',change:'Created'}],checks:[{command:'content check',outcome:'passed'}],research:[],blockers:[]};
  pool.config.routes[0].models[0].kinds.push('write');
  writeFileSync(path.join(root,'fake-codex.js'),`if(process.argv.includes('login')){console.log('Logged in using ChatGPT')}else{let input='';process.stdin.on('data',c=>input+=c).on('end',()=>{if(!input.includes('subagent protocol v1'))process.exit(2);require('node:fs').writeFileSync('artifact.txt','done');console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:${JSON.stringify(JSON.stringify(report))}}}));console.log(JSON.stringify({type:'turn.completed'}));});}`);
- const result=await runTaskFromCli(root,{mode:'execute',workspace:root,prompt:'Implement the task',group:'default',idempotencyKey:'cli-execute-report-test',waitSeconds:5});
+ const result=await runTaskFromCli(root,{mode:'execute',workspace:root,prompt:'Implement the task',group:'high',idempotencyKey:'cli-execute-report-test',waitSeconds:5});
  assert.equal(result.state,'succeeded');assert.equal(result.kind,'write');assert.deepEqual(result.report,report);
  assert(!('prompt' in result));assert(!('events' in result));assert(!('result' in result));
  const fs=await import('node:fs');assert.equal(fs.readFileSync(path.join(root,'artifact.txt'),'utf8'),'done');

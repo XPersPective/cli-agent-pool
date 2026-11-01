@@ -9,6 +9,27 @@ Uzaktan erişim (mobil/VPN/tünel) bu projenin kapsamı dışındadır; uzaktan 
 ihtiyacı Codex veya Antigravity gibi ana geliştirme araçlarının kendi uzak erişim
 özellikleriyle karşılanır. Gemini CLI desteği kaldırılmıştır.
 
+### Ajanlar için kısa kullanım
+
+2.0.0: **kategoriler** ve **katalog** bağımsızdır; seçimi çağıranın talimatı belirler.
+UI'dan özel kategori oluşturulur, yeniden adlandırılır ve kaldırılır. Katalogdan
+model çağırmak kategori gerektirmez. `pool_help` kısa haritayı, hata kodu verilirse
+yalnız o sorunun çözüm yolunu sunar. Boş keşif sorguları bütün modelleri dökmez.
+
+Havuz belli ise doğrudan çalıştırın; kaynak kodu veya bütün kataloğu taramak gerekmez:
+
+```powershell
+cli-agent-pool run --mode execute --group medium --workspace "D:\projeler\uygulama" --prompt "İstenen değişikliği uygula ve ilgili kontrolleri çalıştır"
+cli-agent-pool catalog --query flash --kind write --limit 8
+```
+
+İkinci komut yalnız model kimliği bilinmiyorsa gerekir. MCP'de aynı akış
+`pool_submit` → `pool_get_task(compact:true)`; kısa keşif aracı `pool_catalog`.
+Seçim, kota kontrolü ve native araç kapsamı havuz tarafından uygulanır.
+1.9.0 Qoder CLI native giriş, katalog, text/read/write ve execute desteği ekler.
+Ücretsiz/hesap kredili modeller yalnız hesabın gerçek erişimi ve native billing
+kurallarıyla çalışır; desktop girişi tek başına CLI oturumu değildir.
+
 ## Gereksinimler
 
 - Node.js 24.7 veya üstü (`node:sqlite` bu sürümde deneysel).
@@ -49,7 +70,6 @@ web yönetim ekranından bağlantı ekleyebilirsiniz:
 {
   "port": 43127,
   "python": "python",
-  "concurrency": 1,
   "routes": [{
     "id": "codex-local",
     "adapter": "codex",
@@ -77,7 +97,7 @@ Her bağlantı (`route`) aşağıdaki `billing` modlarından biriyle tanımlanı
 
 - `subscription`: Resmî CLI aboneliği (ChatGPT Plus/Pro, `claude.ai` Max/Pro vb.).
 - `token_plan`: Sabit kotalı/abonelikli coding veya token planları (ör. Z.AI GLM Coding Plan `zcode`, Qwen/DashScope Coding Plan, MiniMax Token Plan `mcode`/`mmx`, Kimi Coding Plan `kimi`).
-- `free_credits`: Günlük veya promosyon kredi tanımlı hesaplar (ör. MiniMax `mmx` günlük kredileri — aktif token plan aboneliği olmasa bile günlük kredilerle kullanılabilir).
+- `free_credits`: Günlük veya promosyon kredi tanımlı hesaplar (MiniMax Code `mcode` hesabındaki MiniMax Credits gibi). `mcode` mevcut hesap kredileriyle çalışabilir; Token Plan varsa MiniMax Code önce plan kotasını kullanır. `mmx` resmi CLI ise Token Plan odaklıdır ve günlük MiniMax Code kredilerini doğrulamaz.
 - `free`: Ücretsiz modeller (ör. OpenCode ücretsiz modelleri, ZCode `longcat:free`, yerel `lmstudio`/`ollama`).
 - `paid_api`: Kullanım başına ücretli API. Varsayılan olarak otomatik model seçimine (`autoSelect: false`) girmez; yalnızca `routeId` açıkça seçildiğinde veya kullanıcı `autoSelect: true` açtığında kullanılır.
 
@@ -100,9 +120,10 @@ dosyasında saklanır ve tarayıcıya veya MCP istemcilerine hiçbir zaman geri 
 | **Claude Code** (`claude`) | `subscription`, `token_plan`, `paid_api` | `claude auth status` + Anthropic OAuth kullanım kotası (5 saat / 7 gün). Abonelik çalıştırmaları kullanıcı ayarındaki uç nokta yönlendirmesini atlar | `claude auth login` |
 | **OpenCode** (`opencode`) | `free`, `token_plan`, `subscription`, `paid_api` | `opencode models --verbose` ve `~/.config/opencode/opencode.json` keşfi | `opencode providers login` |
 | **ZCode / Z.AI** (`zcode`) | `token_plan` (GLM Coding Plan), `free`, `subscription` | Tek model: ZCode içinde seçili varsayılan GLM (`-p` model bayrağı sunmaz) + Z.AI monitor kotası (5 saat / haftalık, plan seviyesi) | `zcode login zai` |
+| **Qoder** (`qoder`) | `free_credits`, modele özel doğrulanmış `free` | `qodercli status -o json` native giriş; `--list-models` exact katalog. Credit bakiyesi bilinmiyor | `qodercli login` |
 | **Qwen CLI** (`qwen`) | `token_plan`, `subscription`, `free` | `~/.qwen/settings.json` model keşfi (`qwen3.8-max`, `deepseek-v4` vb.) | `qwen` |
-| **MiniMax Code** (`mcode`) | `token_plan`, `free_credits`, `subscription` | `~/.minimax/config.yaml` (`MiniMax-M3`, `MiniMax-M2.7`) keşfi + Coding Plan kalan kotası | `mcode login --region global` |
-| **MiniMax CLI** (`mmx`) | `free_credits` (günlük kredi), `token_plan`, `subscription` | `mmx quota show` ve `mmx auth status` ile plan/kredi durumu | `mmx auth login --recommend --region=global` |
+| **MiniMax Code** (`mcode`) | `token_plan`, `free_credits`, `subscription` | `~/.minimax/config.yaml` (`MiniMax-M3`, `MiniMax-M2.7`) keşfi + Token Plan kotası; günlük MiniMax Credits bakiyesi bu quota API'sinde görünmez | `mcode login --region global` |
+| **MiniMax CLI** (`mmx`) | `token_plan`, `subscription` | `mmx quota show` Token Plan kotasını, `mmx auth status` giriş türünü gösterir; MiniMax Code günlük kredilerini göstermez | `mmx auth login --recommend --region=global` |
 | **Kimi Code** (`kimi`) | `token_plan`, `subscription` | `~/.kimi-code/config.toml` (`kimi-code/k3-256k`) + Kimi Code kullanım kotası | `kimi login --region global` |
 | **Xiaomi MiMo** (`mimo`) | `token_plan`, `subscription` | `~/.mimocode` CLI keşfi (`mimo-v2-pro`) | `mimo providers login` |
 | **Antigravity** (`agy`) | `subscription` | `agy models` + Cloud Code grup (5 saat / haftalık) ve model kotası; Argon kotası bildirilmezse bilinmiyor | `agy` |
@@ -147,9 +168,9 @@ Bu bağlantı yeni bir havuz oluşturmaz; çalışan tek HTTP servisine bağlan�
 Stdio bağlantısı havuz kapalıysa otomatik başlatır. İstemci yapılandırmasına sağlayıcı anahtarı,
 abonelik tokenı veya Pool erişim anahtarı yazılması gerekmez.
 
-Araçlar: `pool_list_connections`, `pool_list_models`, `pool_get_policy`,
-`pool_list_pools`, `pool_select`, `pool_assign_groups`, `pool_submit`, `pool_get_task`, `pool_list_tasks`,
-`pool_cancel_task`, `pool_get_quotas`.
+İki keşif girişi: `pool_list_pools` (kategoriler) ve `pool_catalog` (katalog).
+Kısa harita/hata başvurusu `pool_help`; çalıştırma `pool_submit` ve `pool_get_task`.
+Katalog ve kategori model sayfaları varsayılan 12, en fazla 40 kayıt döndürür.
 
 `pool_submit` için `prompt`, `workspace`, `kind` (`text`, `read`, `write`) ve
 `idempotencyKey` gerekir. İsteğe bağlı `routeId`, `modelId`, `group`, `effort`,
@@ -176,17 +197,13 @@ değişmez. Aynı model farklı
 havuzlara farklı eforlarla eklenebilir. Çıkar düğmesi yalnızca seçili havuzdaki
 üyeliği kaldırır. Araç kataloğu ve havuzlar ayrı hiyerarşilerdir.
 
-Modelin `memberships: [{ group: "high", effort: "high" }]` kaydı o üyelik için
-zorunlu efor tanımlar. İstemci farklı efor isteyerek bu kuralı aşamaz. Efor boşsa
-CLI varsayılanı kullanılır; bu bir model veya güç kategorisi değildir. Eski `group`
-ve `defaultEffort` kayıtları okunabilir; yeni üyelik listesi varsa o liste geçerlidir.
-
-**Havuzlarım** (`selectionMode: "manual"`) açıkken her yeni
-seçim/gönderim `high`, `medium` veya `low` gruplarından birini ister. Açık model veya
-bağlantı seçimi de havuz üyeliğini aşamaz. **Ajan seçsin** (`"auto"`)
-seçeneğinde ajan grup belirtmeden katalogdaki uygun modelleri de seçebilir. Grup
-belirtilirse o grup ve üyelik eforu her iki modda da bağlayıcıdır. Eski yapılandırma
-ve istemcilerle uyumluluk için `selectionMode` varsayılanı `auto`dur.
+Kategoriler UI'da oluşturulabilir, yeniden adlandırılabilir ve kaldırılabilir.
+High/medium/low/free başlangıç kategorileridir; özel kategoriler de kullanılabilir.
+Bir model birden fazla kategoride bulunabilir. Üyelikteki efor varsayılandır;
+çağıran desteklenen başka eforu seçebilir. Katalogdan model seçmek kategori
+üyeliği gerektirmez. Seçim/gruplama yetki anahtarları kaldırıldı; çağıran kendi
+talimatına göre iki girişten birini kullanır. Kategoriden çıkarmak modeli
+katalogdan gizlemez; kapalı/gizli modeller dışarıya verilmez.
 
 Kullanıcı onayından sonra eklenen model ve bağlantısı etkinleşir; CLI ayarlarını
 inceleme, yerel oturum ve ücretli API otomatik seçim izinleri geçerliliğini korur.
@@ -228,9 +245,9 @@ başlatır; kota, plan, etkinlik ve manuel havuz kuralları geçerlidir. İstemc
 bildirilmediyse tahmin edilmez. Sohbet/composer ve proje seçimi bu ekrandan kaldırıldı;
 ajanlar çalışma kökünü MCP/CLI üzerinden göndermeye devam eder.
 
-Tamamlanan çağrı gövdeleri 7 gün veya en son 500 tamamlanan kayıt sınırında tutulur.
-Saatlik temizlik yalnızca gövdeleri/olayları siler; idempotency kayıtları ve inceleme
-karantinası korunur. Resmî web sohbeti bağlantıları Ayarlar'dadır; tarayıcı oturumu
+Tamamlanan çağrılar en fazla 7 gün ve son 500 kayıt sınırında tutulur.
+Tamamlanma sonrası ve saatlik temizlik kayıtları, olayları ve idempotency anahtarlarını siler.
+Çağrılar ekranındaki “Tamamlananları temizle” düğmesi elle temizlik sağlar; aktif ve inceleme bekleyen işler korunur. Resmî web sohbeti bağlantıları Ayarlar'dadır; tarayıcı oturumu
 otomatik CLI çalışanı veya ücretsiz API erişimi sayılmaz.
 
 **Kaydet** yalnızca değişiklik olduğunda etkinleşir; **Vazgeç** kaydedilmemiş
@@ -242,16 +259,44 @@ Bağlı ajanlar için örnekler ve hata kodları: [Ajan API rehberi](docs/agent-
 
 ### Project Brain ve Freebuff
 
+1 Kasım 2026 yerel uyumluluk kontrolünde Claude Opus/Sonnet/Haiku 5.5,
+Antigravity'nin katalogdaki beş modeli, Codex Astra ve MiniMax Code Flash kısa
+metin yanıtı verdi. Bu, dosya araçlarının veya her hesabın erişiminin kanıtı değildir.
+Model kataloğu hesap erişimi garantisi vermez: Sol/Luna için ChatGPT CLI erişimi,
+Fable için ek kullanım kredisi, Qwen/ZCode için kota ayrı denetlenir. Native Claude
+kataloğu Fable 5.1 bildirir; 5.5 adı uydurulmaz. `CREDITS_REQUIRED` ek kullanım
+kredisi gerektiğini bildirir; ödeme açılmaz. MiniMax Code account credits rotası
+`free_credits` kullanır; kota API'si bakiyeyi göstermediğinden gerçek `mcode`
+çağrısı başarılı olana kadar kullanılabilirlik bilinmiyor kalır. Ayrı `mmx` CLI
+Token Plan içindir ve MiniMax Code kredilerini kullanmaz/doğrulamaz.
+
+ZCode `-p` yolu yalnızca `zcode-default` modelini kabul eder; belirli GLM veya
+free sağlayıcısını ZCode içinde seçmek gerekir. Desteklenmeyen model pinleme
+varsayılan modele sessizce dönmek yerine `MODEL_UNAVAILABLE` verir.
+WorkBuddyAI masaüstü kurulumunun varlığı bağımsız CodeBuddy CLI çalıştığını
+kanıtlamaz; gömülü giriş noktasında eksik modül hatası doğrulanmıştır.
+MiniMax Code yazma görevleri artık dosya araçlarını açan `standard` modda çalışır;
+gerçek dosya oluşturma ve içeriği ana süreçten okuma doğrulanmıştır. `smart` izin
+politikası salt okunur olmadığından bu adaptörde bağımsız `read` görevi sunulmaz;
+Pool başka uygun okuma çalışanını seçer. `text` görevleri `lightweight` kalır.
+
 Project Brain 3.3.0+ ayrı skill olarak kalır; görev planını ve kalite kanıtlarını
 yönetir. Varsayılan ajan keşfi ve görev yürütmesi bu Pool'a bağlanır. Servis kapalıysa
-başlar; kullanıcının high/medium/low üyelikleri, sabit effort'u ve kota rezervleri
+başlar; çağıranın kategori/model tercihi, desteklenen efor ve kota rezervleri
 uygulanır. Kayıp yanıt aynı istek anahtarıyla, başlamış görev mevcut kimliğiyle okunur.
 Başarısız yazma görevi otomatik tekrarlanmaz. Ek bir Project Brain bağımlılığı yoktur.
+
+Qwen için giriş terminal TUI’sidir: `qwen` açın, `/auth` → QwenCloud → Token Plan → International seçin ([resmî giriş kılavuzu](https://github.com/QwenLM/qwen-code/blob/main/docs/users/configuration/auth.md)). Qwen anahtarı ve sağlayıcı ayarını kendi `~/.qwen/settings.json` dosyasına kaydeder; Pool’a geri token göndermez. Pool seçili sağlayıcıda anahtar yapılandırmasını gösterir; bu, girişin veya kotanın doğrulandığı anlamına gelmez. Gerçek erişim kısa model yanıtıyla doğrulanır. Hesap değiştirince Pool’daki **Hesabı değiştir** ile `/auth` akışını yeniden açıp **Kontrol et** ile yerel durumu yenileyin. Güncel Qwen CLI’da `qwen auth status` kaldırılmıştır.
 
 `cli-agent-pool rpc`, stdin üzerinden `{tool, arguments}` JSON alır; editörden bağımsız
 11 ajan aracına erişim sağlar. `cli-agent-pool mcp-config` ise tokensız stdio bağlantı
 ayarını üretir. Freebuff Desktop/CLI bunu `~/.agents/mcp.json` üzerinden kullanabilir.
 Freebuff burada istemcidir; desteklenmeyen otomatik model yürütmesi uydurulmaz.
+Tencent WorkBuddy de Settings → MCP/Connectors üzerinden aynı Pool MCP sunucusunu
+yerel istemci olarak ekleyebilir ([resmî connector kılavuzu](https://open.workbuddy.cn/en/docs/connector)). Bu istemciler sağlayıcı hesabını Pool’a aktaran
+login adaptörleri değildir; kendi araç güven/onay pencereleri geçerli kalır. Bağlantı
+sonrası WorkBuddy araçlarını etkinleştirin, Freebuff MCP bağlantısını yeniden yükleyin
+ve `cli-agent-pool status` ile Pool’un bağlantı durumunu kontrol edin.
 
 Ayarlar içindeki **Tema** menüsünden Açık / Koyu / Sistem seçilir; tercih bu tarayıcıda hatırlanır.
 Uygulama sürümü üst çubukta görünür; MCP ve CLI aynı paket sürümünü bildirir.
@@ -301,7 +346,7 @@ terminalde açar. Giriş kullanıcı tarafından tamamlanır; **Kontrol et** ön
 beklemeden durumu yeniden sorgular. API bağlantıları anahtar ayarlarına yönlenir.
 Bilinmeyen oturum bilgisi giriş yapılmış gibi sunulmaz; Ayarlar'da giriş eylemi de vardır.
 
-Kart testleri manuel modda sahibin mevcut havuz üyeliği ve sabit eforunu kullanır.
+Kartlar katalogdan üyelik gerektirmeden test edilebilir; kategori eforu varsayılandır.
 Daha sonra elle seçilen havuz korunur. Proje yolu giriş kutusunda, görev/model/efor
 seçenekleri altındadır. Gönderilemiyorsa eksik proje, boş havuz veya gerekli giriş
 kutunun yanında açıklanır. Tema Ayarlar'dadır; bağlantı noktası ve simgeli işlemler
@@ -345,3 +390,5 @@ Native kodlama CLI'larında eski metin-only model kaydı dosya araçlarını kap
 rapor döndürür. Native CLI izinleri ve kotaları korunur. Ayarlardaki Dosya araçları
 seçimiyle bağlantının kayıtlı model kapsamı ayrıca sınırlandırılabilir. Sohbet CLI'ı
 (MMX vb.) dosya aracı sağlamıyorsa yazma yeteneği varmış gibi gösterilmez.
+Antigravity metin görevlerinde slash genişletmesi kapalıyken etkisiz kalan
+`--mode plan` yerine oturumluk `agentMode: plan` kullanılır; native izinler değişmez.

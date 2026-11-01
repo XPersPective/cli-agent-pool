@@ -11,14 +11,14 @@ import { existsSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { Store } from '../src/store.js';
-import { Pool } from '../src/pool.js';
+import { Pool, taskSchema } from '../src/pool.js';
 import { runProcess, childEnvironment } from '../src/process.js';
 import { buildArguments, checkAuth, execute, quota, routeEnvironment, opencodeCatalog, importDiscoveredRoutes } from '../src/adapters.js';
 import { saveSecret, hasSecret, loadSecret } from '../src/secrets-store.js';
 
 function fixture(t, dependencies = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-test-'));
-  const config = configSchema.parse({ workspaceRoots: [root], routes: [{ id: 'test', adapter: 'codex', executable: process.execPath, enabled: true, billing: 'subscription', models: [{ id: 'test-model', alias: 'Test', group: 'manual', efforts: ['low'], kinds: ['read', 'write', 'text'] }] }] });
+  const config = configSchema.parse({ workspaceRoots: [root], routes: [{ id: 'test', adapter: 'codex', executable: process.execPath, enabled: true, billing: 'subscription', models: [{ id: 'test-model', alias: 'Test', group: 'high', efforts: ['low'], kinds: ['read', 'write', 'text'] }] }] });
   const store = new Store(path.join(root, 'pool.sqlite'));
   const pool = new Pool(config, store, { checkAuth: async () => {}, execute: () => ({ cancel() {}, done: Promise.resolve({ result: 'ok' }) }), ...dependencies });
   t.after(async () => { await pool.close(); store.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
@@ -64,7 +64,7 @@ test('lost response and concurrent same-key submissions create one durable task'
 
 test('manual group, explicit route and effort are hard filters', t => {
   const { pool, request } = fixture(t);
-  assert.equal(pool.select({ kind: 'read', group: 'manual', effort: 'low' }).selected.id, 'test-model');
+  assert.equal(pool.select({ kind: 'read', group: 'high', effort: 'low' }).selected.id, 'test-model');
   assert.throws(() => pool.submit({ ...request, effort: 'invented' }), { code: 'NO_ROUTE' });
   assert.throws(() => pool.select({ kind: 'read', routeId: 'unknown' }), { code: 'NO_ROUTE' });
   pool.config.routes[0].enabled = false;
@@ -91,43 +91,22 @@ test('overlapping workspace stays reserved until cancellation cleanup finishes',
   pool.cancel(second.id);
 });
 
-test('serial and parallel admission follows the configured task limit for separate workspaces', async t => {
-  for (const [mode, limit] of [['serial', 1], ['parallel-20', 20], ['parallel-30', 30], ['parallel-32', 32]]) {
-    const pending = [];
-    let starts = 0;
-    const { root, pool, request } = fixture(t, { execute: () => {
-      starts++;
-      return { cancel() {}, done: new Promise(resolve => pending.push(resolve)) };
-    } });
-    pool.config.concurrency = limit;
-    pool.config.routes[0].maxConcurrent = limit;
-    const totalTasks = mode === 'serial' ? 5 : limit;
-    const workspaces = Array.from({ length: totalTasks }, (_, index) => path.join(root, `workspace-${index}`));
-    workspaces.forEach(workspace => mkdirSync(workspace));
-    const tasks = workspaces.map((workspace, index) => pool.submit({ ...request, workspace, idempotencyKey: `workspace-task-${index}-123` }));
-    await delay(40);
-    assert.equal(starts, limit, `${mode} should admit ${limit} distinct-workspace tasks`);
-    if (mode === 'serial') {
-      for (let index = 0; index < tasks.length; index++) {
-        pending.shift()({ result: 'done' });
-        await terminal(pool, tasks[index].id);
-        if (index + 1 < tasks.length) {
-          await delay(40);
-          assert.equal(starts, index + 2, 'serial mode should admit the next task after the previous one settles');
-        }
-      }
-    } else {
-      for (const resolve of pending) resolve({ result: 'done' });
-      await Promise.all(tasks.map(task => terminal(pool, task.id)));
-    }
-  }
+test('caller can submit 128 independent tasks without global, route or queued-job caps', async t => {
+ const pending=[];let starts=0;
+ const {root,pool,request}=fixture(t,{execute:()=>{starts++;return{cancel(){},done:new Promise(resolve=>pending.push(resolve))};}});
+ pool.config.concurrency=1;pool.config.routes[0].maxConcurrent=1;
+ const tasks=Array.from({length:128},(_,i)=>{const workspace=path.join(root,'w'+i);mkdirSync(workspace);return pool.submit({...request,workspace,idempotencyKey:'parallel-'+i});});
+ await delay(40);assert.equal(starts,128);assert(tasks.every(t=>pool.get(t.id).state==='running'));
+ for(const finish of pending)finish({result:'done'});await Promise.all(tasks.map(t=>terminal(pool,t.id)));
 });
 
-test('concurrency and route concurrency reject values above the supported cap', () => {
-  assert.throws(() => configSchema.parse({ concurrency: 33, routes: [] }));
-  assert.throws(() => configSchema.parse({ routes: [{ id: 'test', adapter: 'codex', executable: process.execPath, maxConcurrent: 33, models: [] }] }));
-  assert.equal(configSchema.parse({ routes: [] }).concurrency, 32);
-  assert.equal(configSchema.parse({ routes: [{ id: 'test', adapter: 'codex', executable: process.execPath, models: [] }] }).routes[0].maxConcurrent, 32);
+test('legacy worker limits migrate away and caller timeouts are not capped at an hour',()=>{
+ const config=configSchema.parse({concurrency:32,routes:[{id:'test',adapter:'codex',executable:process.execPath,maxConcurrent:32,models:[]}]});
+ assert(!('concurrency'in config));assert(!('maxConcurrent'in config.routes[0]));
+ const task={prompt:'bounded task',workspace:tmpdir(),kind:'text',idempotencyKey:'long-timeout'};
+ assert.equal(taskSchema.parse({...task,timeoutSeconds:86400}).timeoutSeconds,86400);
+ assert.equal(taskSchema.parse(task).timeoutSeconds,300);
+ assert.throws(()=>taskSchema.parse({...task,timeoutSeconds:2147484}));
 });
 
 test('write failure quarantines the workspace and never retries', async t => {
@@ -222,8 +201,9 @@ test('auth checks enforce subscription vs token_plan vs free_credits and reject 
   const missing = mmx('mmx-none', `if(a.includes('auth status'))console.log(JSON.stringify({method:'oauth'}));else{process.stderr.write(JSON.stringify({error:{code:1,message:'API error: no active token plan subscription (HTTP 200)'}}));process.exit(1)}`);
   await assert.rejects(checkAuth(missing, root, py), { code: 'SUBSCRIPTION_REQUIRED' });
   assert.equal((await quota(missing, root, py)).subscription, 'none');
-  // Daily / free credits on mmx work even when there is no active token plan subscription.
-  await checkAuth({ ...missing, billing: 'free_credits' }, root, py);
+  // mmx is Token Plan-only; MiniMax Code account credits are tested on mcode.
+  assert.throws(() => configSchema.parse({ workspaceRoots: [], routes: [{ ...missing, billing: 'free_credits', models: [] }] }));
+  await assert.rejects(checkAuth({ ...missing, billing: 'free_credits' }, root, py), { code: 'SUBSCRIPTION_REQUIRED' });
   const drift = mmx('mmx-drift', `if(a.includes('auth status'))console.log(JSON.stringify({method:'oauth'}));else console.log('not json')`);
   assert.equal((await quota(drift, root, py)).subscription, 'unknown');
   await assert.rejects(checkAuth(drift, root, py), { code: 'SUBSCRIPTION_REQUIRED' });
@@ -251,6 +231,14 @@ test('OpenCode JSON events, free model catalog and custom API routes work with w
     const models=(await opencodeCatalog({...freeRoute,executable:routerScript,billing},root,py)).models;
     assert.deepEqual(models.map(model=>model.id),billing==='paid_api'?['openrouter/vendor/free:free','openrouter/vendor/paid']:['openrouter/vendor/free:free']);
   }
+  const overflowScript=path.join(root,'router-overflow.cjs');
+  const manyModels=Array.from({length:105},(_,i)=>`openrouter/vendor/paid-${i}`).map(id=>`${id}\n${JSON.stringify({cost:{input:1,output:1}})}`);
+  manyModels.push(`openrouter/vendor/late-free:free\n${JSON.stringify({cost:{input:0,output:0}})}`);
+  writeFileSync(overflowScript,`console.log(${JSON.stringify(manyModels.join('\n'))})`);
+  const overflow=(await opencodeCatalog({...freeRoute,billing:'paid_api',executable:overflowScript},root,py)).models;
+  assert.equal(overflow.length,100);
+  assert.equal(overflow[0].id,'openrouter/vendor/late-free:free');
+  assert.equal(overflow[0].free,true);
 
   const apiRoute = { id: 'custom-openai', adapter: 'opencode', billing: 'token_plan', trustedSettings: true, executable: script, api: { protocol: 'openai', baseUrl: 'https://example.invalid/v1', secretRef: 'my-api' }, models: [{ id: 'qwen-max', alias: 'Qwen Max', group: 'api', efforts: [], kinds: ['text', 'read', 'write'] }] };
   await checkAuth(apiRoute, root, py, root);
@@ -279,7 +267,7 @@ test('ZCode stream-json response, MiniMax Code, Custom CLI argsTemplate and impo
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const zcodeFile = path.join(root, 'zcode.cjs');
   writeFileSync(zcodeFile, `const args=process.argv.slice(2);const pIdx=args.indexOf('-p');const p=pIdx>=0?args[pIdx+1]:'';console.log(JSON.stringify({type:'result',response:'zcode:'+p+':'+args.includes('--disallowed-tools')}));`);
-  const zRoute = { id: 'zcode-local', adapter: 'zcode', billing: 'token_plan', trustedSettings: true, executable: zcodeFile, models: [{ id: 'builtin:zai-coding-plan/GLM-5.3', alias: 'GLM-5.3', group: 'zai', efforts: ['low', 'high'], kinds: ['text', 'read', 'write'] }] };
+  const zRoute = { id: 'zcode-local', adapter: 'zcode', billing: 'token_plan', trustedSettings: true, executable: zcodeFile, models: [{ id: 'zcode-default', alias: 'ZCode default', group: 'zai', efforts: [], kinds: ['text', 'read', 'write'] }] };
   const zRead = await execute(zRoute, zRoute.models[0], { prompt: 'hello-glm', workspace: root, kind: 'read', timeoutSeconds: 10 }, py, () => {}, root).done;
   assert.deepEqual(zRead, { result: 'zcode:hello-glm:true' });
   const zWriteArgs = buildArguments(zRoute, zRoute.models[0], { prompt: 'edit', workspace: root, kind: 'write', effort: 'high' });
@@ -314,7 +302,8 @@ test('Antigravity streams large Unicode prompts on stdin without changing explic
   assert.ok(argv.includes('--input-format') && argv[argv.indexOf('--input-format') + 1] === 'stream-json');
   assert.ok(argv.includes('--output-format') && argv[argv.indexOf('--output-format') + 1] === 'stream-json');
   assert.ok(!argv.some(arg => arg.includes(prompt) || arg.startsWith('--print=')));
-  assert.ok(argv.includes('--mode') && argv[argv.indexOf('--mode') + 1] === 'plan');
+  assert.ok(!argv.includes('--mode') && argv.includes('--disable-slash-commands'));
+  assert.ok(argv.includes('--settings') && argv[argv.indexOf('--settings') + 1] === '{"agentMode":"plan"}');
   assert.ok(argv.includes('--model') && argv[argv.indexOf('--model') + 1] === 'gemini-4-argon-medium');
   assert.ok(argv.includes('--effort') && argv[argv.indexOf('--effort') + 1] === 'medium');
   const streamed = await execute(route, model, task, py, () => {}, root).done;
@@ -331,7 +320,7 @@ test('non-metered routes are preferred over paid_api and missing subscription pl
     routes: [
       { id: 'paid', adapter: 'claude', executable: process.execPath, enabled: true, billing: 'paid_api', autoSelect: false, priority: 1, api: { protocol: 'anthropic', baseUrl: 'https://example.invalid' }, models: [{ id: 'paid-m', alias: 'Paid', group: 'g', efforts: [], kinds: ['text', 'read'] }] },
       { id: 'free-oc', adapter: 'opencode', executable: process.execPath, enabled: true, billing: 'free', priority: 100, models: [{ id: 'free-m', alias: 'Free', group: 'g', efforts: [], kinds: ['text', 'read'] }] },
-      { id: 'mmx-cred', adapter: 'mmx', executable: process.execPath, enabled: true, billing: 'free_credits', priority: 50, models: [{ id: 'mmx-m', alias: 'MMX', group: 'g', efforts: [], kinds: ['text'] }] },
+      { id: 'mcode-cred', adapter: 'mcode', executable: process.execPath, enabled: true, billing: 'free_credits', priority: 50, models: [{ id: 'mcode-m', alias: 'MCode', group: 'g', efforts: [], kinds: ['text'] }] },
     ],
   });
   const store = new Store(path.join(root, 'pool.sqlite'));
@@ -344,11 +333,11 @@ test('non-metered routes are preferred over paid_api and missing subscription pl
   // Even with autoSelect=true, non-metered routes win over paid_api.
   pool.config.routes[0].autoSelect = true;
   assert.equal(pool.select({ kind: 'read' }).selected.id, 'free-m');
-  // Snapshot with subscription='none' does NOT block free_credits on mmx, but DOES block subscription/token_plan.
-  store.saveQuota('mmx-cred', { connection: 'mmx-cred', status: 'available', subscription: 'none', windows: [], observedAt: new Date().toISOString() });
-  assert.equal(pool.select({ kind: 'text', routeId: 'mmx-cred' }).selected.id, 'mmx-m');
+  // Snapshot with subscription='none' does NOT block mcode account credits, but DOES block subscription/token_plan.
+  store.saveQuota('mcode-cred', { connection: 'mcode-cred', status: 'available', subscription: 'none', windows: [], observedAt: new Date().toISOString() });
+  assert.equal(pool.select({ kind: 'text', routeId: 'mcode-cred' }).selected.id, 'mcode-m');
   pool.config.routes[2].billing = 'token_plan';
-  assert.throws(() => pool.select({ kind: 'text', routeId: 'mmx-cred' }), { code: 'NO_ROUTE' });
+  assert.throws(() => pool.select({ kind: 'text', routeId: 'mcode-cred' }), { code: 'NO_ROUTE' });
 });
 
 test('supervisor preserves Unicode and literal prompt data', async () => {

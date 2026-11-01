@@ -1,5 +1,7 @@
 import { modelFiltered } from '../web/pool-state.js';
-import { taskPrompt, executionReportJsonSchema } from './task-protocol.js';
+import { agyProjectArguments } from './agy-project.js';
+import { zcodePlanConfig, zcodePlanFile } from './zcode-plan.js';
+import { taskPrompt, executionReportJsonSchema, parseExecutionReport } from './task-protocol.js';
 import { existsSync, readFileSync, realpathSync, statSync, accessSync, constants, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -13,9 +15,10 @@ export const adapterSpecs = [
   { adapter: 'claude', label: 'Anthropic Claude Code', binaries: ['claude'], pkg: '@anthropic-ai/claude-code', defaultBilling: 'subscription', loginCommand: 'claude auth login' },
   { adapter: 'opencode', label: 'OpenCode CLI', binaries: ['opencode'], pkg: 'opencode-ai', defaultBilling: 'free', loginCommand: 'opencode providers login' },
   { adapter: 'zcode', label: 'ZCode / Z.AI (GLM)', binaries: ['zcode'], pkg: null, defaultBilling: 'token_plan', loginCommand: 'zcode login zai' },
+  { adapter: 'qoder', label: 'Qoder CLI (Account Credits)', binaries: ['qoder', 'qodercli'], pkg: '@qoder-ai/qodercli', defaultBilling: 'free_credits', loginCommand: 'qodercli login' },
   { adapter: 'qwen', label: 'Qwen Code CLI', binaries: ['qwen'], pkg: '@qwen-code/qwen-code', defaultBilling: 'token_plan', loginCommand: 'qwen' },
   { adapter: 'mcode', label: 'MiniMax Code (mcode)', binaries: ['mcode'], pkg: '@minimax-ai/code', defaultBilling: 'token_plan', loginCommand: 'mcode login --region global' },
-  { adapter: 'mmx', label: 'MiniMax CLI (mmx)', binaries: ['mmx'], pkg: 'mmx-cli', defaultBilling: 'free_credits', loginCommand: 'mmx auth login --recommend --region=global' },
+  { adapter: 'mmx', label: 'MiniMax CLI (mmx)', binaries: ['mmx'], pkg: 'mmx-cli', defaultBilling: 'token_plan', loginCommand: 'mmx auth login --recommend --region=global' },
   { adapter: 'kimi', label: 'Moonshot Kimi Code', binaries: ['kimi'], pkg: null, defaultBilling: 'token_plan', loginCommand: 'kimi login --region global' },
   { adapter: 'mimo', label: 'Xiaomi MiMoCode', binaries: ['mimo'], pkg: '@mimo-ai/cli', defaultBilling: 'token_plan', loginCommand: 'mimo providers login' },
   { adapter: 'agy', label: 'Google Antigravity CLI', binaries: ['agy', 'antigravity'], pkg: null, defaultBilling: 'subscription', loginCommand: 'agy' },
@@ -40,6 +43,89 @@ function readJsonSafe(filePath) {
   } catch { return {}; }
 }
 
+// Qwen stores provider credentials in its own settings/env resolver instead of
+// returning an OAuth token to the launcher. Inspect only presence, never value.
+function qwenEnvValue(filePath, envKey) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(envKey || '')) return false;
+  try {
+    for (const line of readFileSync(filePath, 'utf8').split(/\r?\n/)) {
+      const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
+      if (match?.[1] !== envKey) continue;
+      const value = match[2].replace(/^(?:"([\s\S]*)"|'([\s\S]*)')$/, (_, doubleQuoted, singleQuoted) => doubleQuoted ?? singleQuoted ?? '');
+      return value.trim() && !value.startsWith('#') ? value.trim() : null;
+    }
+  } catch { /* A missing dotenv file is not an auth error by itself. */ }
+  return null;
+}
+
+function qwenProjectEnvValue(cwd, home, envKey) {
+  let current = path.resolve(cwd);
+  const homeDir = path.resolve(home);
+  for (let depth = 0; depth < 32; depth++) {
+    if (current === homeDir) break;
+    const value = qwenEnvValue(path.join(current, '.qwen', '.env'), envKey) || qwenEnvValue(path.join(current, '.env'), envKey);
+    if (value) return value;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return null;
+}
+
+function qwenProviderContext(home, env, requestedModelId, cwd) {
+  const qwenDir = env.QWEN_HOME ? path.resolve(env.QWEN_HOME) : path.join(home, '.qwen');
+  const cfg = readJsonSafe(path.join(qwenDir, 'settings.json'));
+  const authType = cfg.security?.auth?.selectedType;
+  const defaultModelId = cfg.model?.name;
+  const modelId = requestedModelId || defaultModelId;
+  const baseUrl = modelId === defaultModelId ? cfg.model?.baseUrl : undefined;
+  const providerProtocol = cfg.providerProtocol || {};
+  const providers = Object.entries(cfg.modelProviders || {})
+    .filter(([providerId]) => providerId === authType || providerProtocol[providerId] === authType)
+    .flatMap(([, models]) => Array.isArray(models) ? models : []);
+  const matching = providers.filter(model => model && typeof model.id === 'string' && (!modelId || model.id === modelId));
+  // Match Qwen's provider lookup: prefer the paired id+baseUrl, then fall back
+  // to the first matching model when that pair is absent or stale.
+  const selected = (baseUrl ? matching.find(model => model.baseUrl === baseUrl) : null) || matching[0];
+  const envKey = selected?.envKey || ({ openai: 'OPENAI_API_KEY', anthropic: 'ANTHROPIC_API_KEY', gemini: 'GEMINI_API_KEY', 'vertex-ai': 'GOOGLE_API_KEY' })[authType];
+  const hasText = value => typeof value === 'string' && value.trim().length > 0;
+  const key = (envKey && (hasText(cfg.env?.[envKey]) ? cfg.env[envKey].trim() : null)) ||
+    (envKey && hasText(env[envKey]) ? env[envKey].trim() : null) ||
+    (envKey && (qwenEnvValue(path.join(qwenDir, '.env'), envKey) || qwenEnvValue(path.join(home, '.qwen', '.env'), envKey) || qwenEnvValue(path.join(home, '.env'), envKey) || qwenProjectEnvValue(cwd, home, envKey))) ||
+    (!selected?.envKey && hasText(cfg.security?.auth?.apiKey) ? cfg.security.auth.apiKey.trim() : null);
+  return { authType, modelId, selected, key };
+}
+
+export function qwenAuthStatus(home = homedir(), env = process.env, requestedModelId, cwd = home) {
+  const { authType, key } = qwenProviderContext(home, env, requestedModelId, cwd);
+  if (key) return { status: 'unknown', auth: 'credentials_present', note: 'Qwen anahtarı yerel CLI ayarında bulundu; gerçek endpoint doğrulaması ve kota durumu ayrı gösterilir.' };
+  if (authType === 'qwen-oauth') return { status: 'auth_required', auth: 'missing', note: 'Qwen OAuth artık desteklenmiyor; qwen içinde /auth ile International QwenCloud Token Plan veya API anahtarı yapılandırın.' };
+  return { status: 'auth_required', auth: 'missing', note: 'Qwen için etkin sağlayıcı/anahtar bulunamadı; qwen içinde /auth ile International QwenCloud bağlantısını yapılandırın.' };
+}
+
+export async function qwenLiveAuth(home = homedir(), env = process.env, requestedModelId, cwd = home, fetcher = globalThis.fetch) {
+  const { authType, modelId, selected, key } = qwenProviderContext(home, env, requestedModelId, cwd);
+  if (!key) return qwenAuthStatus(home, env, requestedModelId, cwd);
+  const qwenDir = env.QWEN_HOME ? path.resolve(env.QWEN_HOME) : path.join(home, '.qwen');
+  const settings = readJsonSafe(path.join(qwenDir, 'settings.json'));
+  const baseUrl = selected?.baseUrl || (modelId === settings.model?.name ? settings.model?.baseUrl : null);
+  let apiUrl;
+  try { apiUrl = new URL(baseUrl); } catch { return { status: 'unknown', auth: 'credentials_present', note: 'Qwen anahtarı kayıtlı; seçili sağlayıcının API adresi doğrulanamadı.' }; }
+  const host = apiUrl.hostname.toLowerCase();
+  const officialHost = host === 'token-plan.maas.qwencloudapi.com' || host === 'coding-intl.dashscope.aliyuncs.com' ||
+    /^token-plan(?:\.[a-z0-9-]+)?\.maas\.aliyuncs\.com$/.test(host);
+  if (apiUrl.protocol !== 'https:' || !officialHost) return { status: 'unknown', auth: 'credentials_present', note: 'Qwen anahtarı kayıtlı; bu API adresi güvenli otomatik doğrulama izin listesinde değil.' };
+  try {
+    const endpoint = `${apiUrl.href.replace(/\/+$/, '')}/models`;
+    const response = await fetcher(endpoint, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10_000) });
+    if (response.status === 200) return { status: 'unknown', auth: 'verified', note: `Qwen sağlayıcısı ${host} için API anahtarı doğrulandı; bu endpoint kota yüzdesi bildirmiyor.${modelId ? ` Model: ${modelId}.` : ''}` };
+    if (response.status === 401) return { status: 'auth_required', auth: 'rejected', note: 'Qwen endpoint kayıtlı anahtarı reddetti; qwen içinde /auth ile hesabı yeniden bağlayın.' };
+    return { status: 'unknown', auth: 'credentials_present', note: `Qwen API anahtarı kayıtlı; model kataloğu HTTP ${response.status} döndürdü, bu sonuç tek başına oturum hatası sayılmaz.` };
+  } catch {
+    return { status: 'unknown', auth: 'credentials_present', note: 'Qwen API anahtarı kayıtlı; endpoint şu anda doğrulanamadı. Ağ hatası giriş yok anlamına gelmez.' };
+  }
+}
+
 function npmEntry(directory, binName, pkgName) {
   if (!pkgName) return null;
   try {
@@ -59,6 +145,8 @@ function knownAdapterPaths(adapter) {
   const progFiles = process.env.ProgramFiles || 'C:\\Program Files';
   const progFiles86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
   const npmDir = path.join(roamingApp, 'npm');
+
+  if (adapter === 'qoder') return [path.join(home, '.qoder', 'bin', 'qodercli', process.platform === 'win32' ? 'qodercli.exe' : 'qodercli')];
 
   if (adapter === 'zcode') {
     return [
@@ -144,6 +232,34 @@ function findExecutableForSpec(spec) {
   return null;
 }
 
+// Headless ZCode cannot choose a model per call: it runs whatever ZCode itself has
+// selected. Read that selection from the CLI's own personal provider config so the
+// pool reports the real plan and model instead of an invented catalogue.
+export function zcodeSelection(home = homedir()) {
+  const raw = readJsonSafe(path.join(home, '.zcode', 'v2', 'provider_config.json'));
+  const body = raw?.config ?? raw;
+  if (!body || typeof body !== 'object') return null;
+  const selection = body.defaultModelSelection;
+  if (typeof selection?.providerId === 'string' && typeof selection?.modelId === 'string' && selection.providerId && selection.modelId) {
+    return { providerId: selection.providerId, modelId: selection.modelId };
+  }
+  const rules = Array.isArray(body.providerConfigRules?.providerRules) ? body.providerConfigRules.providerRules : [];
+  const order = Array.isArray(body.providerOrder) ? body.providerOrder : [];
+  for (const providerId of order) {
+    if (typeof providerId !== 'string') continue;
+    const rule = rules.find(item => item?.providerId === providerId);
+    const models = rule?.config?.modelOrder ?? rule?.config?.personalModelIds ?? [];
+    const modelId = models.find(item => typeof item === 'string' && item.trim());
+    if (modelId) return { providerId, modelId };
+  }
+  return null;
+}
+
+export function assertZcodePlanSelection(route, selection) {
+  if (!['token_plan', 'subscription'].includes(route.billing)) return;
+  zcodePlanConfig(selection);
+}
+
 export function localModelsFor(adapter) {
   const home = homedir();
   const models = [];
@@ -163,7 +279,11 @@ export function localModelsFor(adapter) {
 
   if (adapter === 'zcode') {
     // Headless ZCode cannot pick a model per call; expose exactly what it will run.
-    add('zcode-default', 'ZCode varsayılan modeli (ZCode içinde seçilen GLM)', 'zai-plan');
+    const selection = zcodeSelection(home);
+    const alias = selection
+      ? `ZCode varsayılan modeli: ${selection.modelId} (${selection.providerId})`
+      : 'ZCode varsayılan modeli (ZCode içinde seçilmeli)';
+    add('zcode-default', alias, 'zai-plan');
   } else if (adapter === 'qwen') {
     const cfg = readJsonSafe(path.join(home, '.qwen', 'settings.json'));
     const selectedName = cfg.model?.name;
@@ -267,7 +387,6 @@ export function importDiscoveredRoutes(config) {
         billing: cli.defaultBilling || 'token_plan',
         trustedSettings: cli.defaultBilling === 'free',
         priority: 100,
-        maxConcurrent: cloned.concurrency || 32,
         minRemainingPercent: 0,
         models: [],
       };
@@ -278,7 +397,7 @@ export function importDiscoveredRoutes(config) {
       if (cli.adapter === 'claude' && ['opus', 'sonnet', 'haiku'].includes(model.id) && route.models.some(existing => existing.id.startsWith(`claude-${model.id}-`))) continue;
       if (!modelFiltered(cloned.modelFilters, route.id, model.id) && !route.models.some(existing => existing.id === model.id) && route.models.length < 100) {
         const { free, ...cleanModel } = model;
-        route.models.push(cleanModel);
+        route.models.push({ ...cleanModel, ...(free === true ? { billing: 'free' } : {}) });
         addedModels++;
       }
     }
@@ -354,6 +473,7 @@ export function routeEnvironment(route, directory = dataDirectory(), taskKind = 
     }
   } else if (route.adapter === 'zcode') {
     Object.assign(extra, zcodeEnvironment(route.executable));
+    if (['token_plan', 'subscription'].includes(route.billing)) extra.ZCODE_PERSONAL_PROVIDER_CONFIG_FILE = zcodePlanFile(directory, zcodeSelection());
   } else if (route.adapter === 'opencode' || route.adapter === 'mimo') {
     const permission = taskKind === 'write'
       ? { question: 'deny', external_directory: 'deny' }
@@ -386,26 +506,38 @@ export function buildArguments(route, model, task) {
   if (route.adapter === 'claude') return [...argv, '-p', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--permission-mode', task.kind === 'write' ? 'acceptEdits' : 'dontAsk', '--permission-prompts', 'none', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--disable-slash-commands', ...claudeSettingSources(route), '--tools', task.kind === 'text' ? '' : task.kind === 'read' ? 'Read,Glob,Grep' : task.mode === 'execute' ? 'default' : 'Read,Glob,Grep,Edit,Write', '--model', model.id, ...(effort ? ['--effort', effort] : [])];
   if (route.adapter === 'opencode' || route.adapter === 'mimo') return [...argv, 'run', '--format', 'json', '--pure', '-m', opencodeModelId(route, model.id), '--agent', task.kind === 'write' ? 'build' : 'plan', ...(effort ? ['--variant', effort] : [])];
   // ZCode -p has no model flag: it runs the default model selected in ZCode itself.
-  if (route.adapter === 'zcode') return [...argv, '--cwd', task.workspace, '--mode', task.kind === 'write' ? 'edit' : 'plan', ...(task.mode === 'execute' ? [] : ['--disallowed-tools', task.kind === 'write' ? 'Bash' : 'Bash,Edit,Write']), '--json', '--no-color', '-p', task.prompt];
-  if (route.adapter === 'mcode') return [...argv, 'exec', '--input', '-', '--cwd', task.workspace, '--model', model.id, '--prompt-mode', 'coding', '--permission', task.kind === 'write' ? 'full' : 'smart', '--mode', 'lightweight', '--output-format', 'stream-json', ...(effort ? ['--effort', effort] : [])];
+  if (route.adapter === 'zcode') {
+    if (model.id !== 'zcode-default') throw new PoolError('MODEL_UNAVAILABLE', 'ZCode headless yalnızca ZCode içinde seçilen varsayılan modeli çalıştırır. GLM/free sağlayıcısını ZCode içinde seçin; Pool modeli zcode-default olmalı.');
+    return [...argv, '--cwd', task.workspace, '--mode', task.kind === 'write' ? 'edit' : 'plan', ...(task.mode === 'execute' ? [] : ['--disallowed-tools', task.kind === 'write' ? 'Bash' : 'Bash,Edit,Write']), '--json', '--no-color', '-p', task.prompt];
+  }
+  if (route.adapter === 'mcode') {
+    if (task.kind === 'read') throw new PoolError('UNSUPPORTED_TASK_KIND', 'MiniMax Code standard modu dosya araçları sunar; smart salt okunur sınırı sağlamaz. Dosya görevleri write, araçsız yanıtlar text kullanmalı.');
+    return [...argv, 'exec', '--input', '-', '--cwd', task.workspace, '--model', model.id, '--prompt-mode', 'coding', '--permission', task.kind === 'write' ? 'full' : 'smart', '--mode', task.kind === 'write' ? 'standard' : 'lightweight', '--output-format', 'stream-json', ...(effort ? ['--effort', effort] : [])];
+  }
   if (route.adapter === 'kimi') return [...argv, '-m', model.id, '--output-format', 'stream-json', ...(task.kind === 'write' ? ['--auto'] : []), '-p', task.prompt];
   if (route.adapter === 'agy') {
     const selectedEffort = effort || model.defaultEffort || Object.keys(model.variants || {})[0];
     if (model.variants && !model.variants[selectedEffort]) throw new PoolError('INVALID_EFFORT', 'Bu model için desteklenen bir efor seçin.');
     const promptArg = route.promptStdin === false ? [`--print=${task.prompt}`] : ['--input-format', 'stream-json'];
-    return [...argv, '--output-format', 'stream-json', ...promptArg, '--mode', task.kind === 'write' ? 'accept-edits' : 'plan', ...(task.mode === 'execute' ? ['--json-schema', JSON.stringify(executionReportJsonSchema)] : []), ...(task.kind === 'text' ? ['--disable-slash-commands'] : []), '--model', model.variants?.[selectedEffort] || model.id, ...(selectedEffort ? ['--effort', selectedEffort] : [])];
+    const modeArgs = task.kind === 'write' ? ['--mode', 'accept-edits'] : task.kind === 'text' ? ['--disable-slash-commands', '--settings', '{"agentMode":"plan"}'] : ['--mode', 'plan'];
+    return [...argv, ...agyProjectArguments(task.workspace), '--output-format', 'stream-json', ...promptArg, ...modeArgs, ...(task.mode === 'execute' ? ['--json-schema', JSON.stringify(executionReportJsonSchema)] : []), '--model', model.variants?.[selectedEffort] || model.id, ...(selectedEffort ? ['--effort', selectedEffort] : [])];
   }
   if (route.adapter === 'omniroute') return [...argv, 'chat', '--stdin', '--no-history', '-m', model.id, ...(effort ? ['--reasoning-effort', effort] : [])];
   if (route.adapter === 'mmx') return [...argv, 'text', 'chat', '--model', model.id, '--messages-file', '-', '--output', 'json'];
   if (route.adapter === 'qwen') {
     return [...argv, '--model', model.id, '--output-format', 'stream-json', '--approval-mode', task.kind === 'write' ? 'auto-edit' : 'plan', ...(task.kind === 'text' ? ['--max-tool-calls', '0'] : [])];
   }
+  if (route.adapter === 'qoder') {
+    const tools = task.kind === 'text' ? '' : task.kind === 'read' ? 'Read,Glob,Grep' : task.mode === 'execute' ? 'default' : 'Read,Glob,Grep,Edit,Write';
+    const grants = task.kind === 'text' ? [] : ['--allowed-tools', task.kind === 'read' ? 'Read,Glob,Grep' : task.mode === 'execute' ? 'Read,Glob,Grep,Edit,Write,Bash' : 'Read,Glob,Grep,Edit,Write'];
+    return [...argv, '--cwd', task.workspace, '--tools', tools, ...grants, '-p', '--model', model.id, '--output-format', 'stream-json', '--no-session-persistence', '--max-model-request-retries', '0', '--permission-mode', task.kind === 'write' ? 'accept_edits' : 'dont_ask', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', ...(effort ? ['--reasoning-effort', effort] : [])];
+  }
   if (route.adapter === 'ollama') return [...argv, 'run', model.id];
   if (route.adapter === 'aider') return [...argv, '--model', model.id, '--yes-always', '--no-auto-commits', '--message', task.prompt];
   throw new PoolError('UNSUPPORTED_ADAPTER', 'Bu CLI için çalıştırma şablonu (argsTemplate) tanımlanmalı.');
 }
 
-export async function checkAuth(route, cwd, python, directory = dataDirectory()) {
+export async function checkAuth(route, cwd, python, directory = dataDirectory(), model = null) {
   if (!activeBillings.has(route.billing)) throw new PoolError('BILLING_UNCONFIRMED', 'Ödeme türü yerel ayarlarda doğrulanmalı.');
   const argv = executableArgv(route.executable);
   if (route.api) {
@@ -417,6 +549,11 @@ export async function checkAuth(route, cwd, python, directory = dataDirectory())
   if (route.adapter === 'codex') {
     const result = await capture([...argv, 'login', 'status'], cwd, python);
     if (result.code !== 0 || !/Logged in using ChatGPT/i.test(result.output + result.stderr)) throw new PoolError('AUTH_REQUIRED', `Codex CLI içinde hesabınızla giriş yapın (${loginCommands.codex}).`);
+  } else if (route.adapter === 'qoder') {
+    const result = await capture([...argv, 'status', '-o', 'json'], cwd, python);
+    let status;
+    try { status = JSON.parse(result.output); } catch { /* Native status must be verified. */ }
+    if (result.code !== 0 || status?.logged_in !== true) throw new PoolError('AUTH_REQUIRED', 'Qoder CLI içinde qodercli login ile giriş yapın; masaüstü girişi CLI oturumu sayılmaz.');
   } else if (route.adapter === 'claude') {
     if (!route.trustedSettings) throw new PoolError('SETTINGS_NOT_TRUSTED', 'Claude yerel ayarları ve hook’ları incelenerek trustedSettings etkinleştirilmeli.');
     // Inspect the same settings scope the run uses; a user-level token would otherwise mask the claude.ai login.
@@ -426,14 +563,18 @@ export async function checkAuth(route, cwd, python, directory = dataDirectory())
     if (result.code !== 0 || !status?.loggedIn) throw new PoolError('AUTH_REQUIRED', `Claude Code içinde giriş yapın (${loginCommands.claude}).`);
     // Subscription runs skip user settings (claudeSettingSources), so a user-level endpoint redirect cannot bill elsewhere.
     if (route.billing === 'subscription' && status.authMethod !== 'claude.ai') throw new PoolError('AUTH_REQUIRED', `Claude aboneliği için claude.ai hesabıyla giriş yapın (${loginCommands.claude}) veya bağlantı ödeme türünü token_plan / paid_api olarak seçin.`);
+  } else if (route.adapter === 'qwen') {
+    const status = await qwenLiveAuth(homedir(), process.env, model?.id, cwd);
+    if (status.status === 'auth_required') throw new PoolError('AUTH_REQUIRED', status.note);
   } else if (route.adapter === 'opencode' || route.adapter === 'mimo' || route.adapter === 'lmstudio' || route.adapter === 'ollama') {
     if (route.billing !== 'free' && !route.trustedSettings) throw new PoolError('SETTINGS_NOT_TRUSTED', 'Yerel CLI ayarları incelenerek trustedSettings etkinleştirilmeli.');
   } else {
     if (!route.trustedSettings) throw new PoolError('SETTINGS_NOT_TRUSTED', 'Bu bağlantının abonelik/plan ve CLI ayarları yerel olarak doğrulanmalı.');
+    if (route.adapter === 'zcode') assertZcodePlanSelection(route, zcodeSelection());
     if (route.adapter === 'mmx') {
       const snapshot = await quota(route, cwd, python, directory);
-      if ((route.billing === 'subscription' || route.billing === 'token_plan') && snapshot.subscription !== 'active') {
-        throw new PoolError('SUBSCRIPTION_REQUIRED', 'mmx için etkin token plan aboneliği doğrulanamadı. Günlük/ücretsiz kredileri kullanmak için bağlantı ödeme türünü free_credits olarak seçin.');
+      if (snapshot.subscription !== 'active') {
+        throw new PoolError('SUBSCRIPTION_REQUIRED', 'mmx resmi CLI erişimi için etkin MiniMax Token Plan gerekir. Günlük MiniMax Credits bakiyesi MiniMax Code (mcode) hesabı üzerinden kullanılır.');
       }
       if (snapshot.auth === 'missing') throw new PoolError('AUTH_REQUIRED', `mmx içinde giriş yapın (${loginCommands.mmx}).`);
     }
@@ -441,6 +582,7 @@ export async function checkAuth(route, cwd, python, directory = dataDirectory())
 }
 
 export function classifyFailure(message) {
+  if (/requires? usage credits|usage credits (?:are )?(?:required|exhausted)|no (?:remaining )?usage credits/i.test(message)) return 'CREDITS_REQUIRED';
   if (/current subscription does not have access|active subscription (?:is )?required|no resource package|\b1113\b/i.test(message)) return 'SUBSCRIPTION_REQUIRED';
   if (/only.*(?:within|official)|unsupported client|client.*not allowed/i.test(message)) return 'PROVIDER_RESTRICTION';
   if (/unauthorized|not logged|login required|token expired|invalid.{0,20}(?:api.?key|token)|\b401\b/i.test(message)) return 'AUTH_REQUIRED';
@@ -450,7 +592,15 @@ export function classifyFailure(message) {
   return 'CLI_FAILED';
 }
 
-const strictJsonlAdapters = new Set(['codex', 'claude', 'qwen', 'opencode', 'mimo', 'agy', 'mcode']);
+export function parseQoderModels(output) {
+  const lines = output.trim().split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  if (lines.shift() !== 'MODEL' || !lines.length || lines.some(line => !/^[a-zA-Z0-9][a-zA-Z0-9_.:+/-]{0,99}$/.test(line))) {
+    throw new PoolError(classifyFailure(output) === 'AUTH_REQUIRED' ? 'AUTH_REQUIRED' : 'DISCOVERY_FAILED', 'Qoder model kataloğu alınamadı; qodercli login ve --list-models çıktısını kontrol edin.');
+  }
+  return [...new Set(lines)].slice(0, 100).map(id => ({ id, name: id, efforts: [], free: false }));
+}
+
+const strictJsonlAdapters = new Set(['codex', 'claude', 'qoder', 'qwen', 'opencode', 'mimo', 'agy', 'mcode']);
 const promptArgAdapters = new Set(['zcode', 'kimi', 'aider']);
 
 export function execute(route, model, task, python, progress, directory = dataDirectory()) {
@@ -507,7 +657,13 @@ export function execute(route, model, task, python, progress, directory = dataDi
         if (event.type === 'turn.failed' || event.type === 'error') productError = true;
       } else if (route.adapter === 'mcode') {
         if (event.type === 'item.completed' && event.item?.type === 'agent_message') answer = event.item.content || answer;
-        if (event.type === 'exec.completed') { sawResult = true; productError ||= event.result?.status !== 'succeeded'; if (typeof event.result?.output === 'string' && event.result.output) answer = event.result.output; }
+        if (event.type === 'exec.completed') {
+          sawResult = true;
+          productError ||= event.result?.status !== 'succeeded';
+          if (event.result?.error) failureText = JSON.stringify(event.result.error);
+          if (typeof event.result?.output === 'string' && event.result.output) answer = event.result.output;
+          else if (task.mode === 'execute' && event.result?.output && typeof event.result.output === 'object' && !Array.isArray(event.result.output)) answer = JSON.stringify(event.result.output);
+        }
         if (/.failed$/.test(event.type || '')) { productError = true; failureText = JSON.stringify(event.error || event.result?.error || ''); }
         if (event.type === 'turn.completed' && typeof event.model?.modelId === 'string') progress('model:' + event.model.modelId.slice(0, 100));
       } else if (route.adapter === 'opencode' || route.adapter === 'mimo') {
@@ -516,8 +672,12 @@ export function execute(route, model, task, python, progress, directory = dataDi
         if (event.type === 'error') productError = true;
       } else {
         if (event.type === 'result') {
+          if (route.adapter === 'qoder' && Array.isArray(event.permission_denials) && event.permission_denials.length) {
+            permissionDenied = true;
+            permissionDetail = redact(`Qoder native permission denied: ${event.permission_denials.slice(0, 5).map(item => item.tool_name || 'native tool').join(', ')}`).slice(0, 600);
+          }
           answer = event.result || event.response || event.text || answer;
-          productError = Boolean(event.is_error || event.error);
+          productError ||= Boolean(event.is_error || event.error);
           sawResult = true;
         } else if (event.type === 'text' && (event.text || event.part?.text)) {
           answer += event.text || event.part.text;
@@ -548,6 +708,8 @@ export function execute(route, model, task, python, progress, directory = dataDi
         const fallback = answer.trim() || rawLines.join('\n').trim() || result.output.trim();
         if (fallback) { answer = fallback; sawResult = true; }
       }
+      // Some CLIs emit a single JSON error on stdout even on a nonzero exit.
+      if (result.code !== 0 && !failureText) failureText = result.output;
       // Keep a short redacted vendor message so the calls screen can explain a failure.
       const detail = redact(`${failureText} ${result.stderr} ${sawResult ? '' : rawLines.join('\n')}`.replace(/\s+/g, ' ').trim()).slice(-600);
       const failed = error => ({ error, ...(detail ? { detail } : {}) });
@@ -555,6 +717,17 @@ export function execute(route, model, task, python, progress, directory = dataDi
       if (permissionDenied) return { error: 'PERMISSION_REQUIRED', detail: permissionDetail || 'Native tool permission denied.', ...(answer.trim() ? { result: redact(answer) } : {}) };
       if (result.code !== 0 || productError) return failed(classifyFailure(`${failureText} ${result.stderr} ${rawLines.join('\n')}`));
       if (!sawResult || !answer.trim()) return failed('INVALID_RESULT');
+      if (route.adapter === 'mcode' && task.mode === 'execute') {
+        // MiniMax may introduce its final report with prose. Accept only one
+        // trailing JSON fence containing an otherwise fully valid report.
+        // Native failures above remain failures, and invalid reports stay raw.
+        const delimiters = [...answer.matchAll(/`{3,}/g)];
+        const fence = answer.match(/(?:^|\r?\n)```json[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]*\s*$/);
+        if (delimiters.length === 2 && delimiters.every(item => item[0] === '```') && fence) {
+          const report = parseExecutionReport(fence[1]);
+          if (report) answer = JSON.stringify(report);
+        }
+      }
       return { result: redact(answer) };
     }),
   };
@@ -586,7 +759,11 @@ export async function opencodeCatalog(route, cwd, python) {
       });
     } catch { /* Ignore malformed entries */ }
   }
-  return { connection: route.id, models: models.slice(0, 100), nextCursor: null };
+  // Keep zero-cost options visible even when large provider catalogs exceed the
+  // route limit; otherwise free OpenRouter models near the end stay mislabeled
+  // as paid_api and never become eligible for the free pool.
+  const prioritized = [...models.filter(model => model.free), ...models.filter(model => !model.free)];
+  return { connection: route.id, models: prioritized.slice(0, 100), nextCursor: null };
 }
 
 export async function claudeCatalog(route, cwd, python) {
@@ -626,7 +803,15 @@ export function mergeCatalogModels(route, catalog, filters = []) {
 
 function mergeCatalogModelsInto(route, catalog, filters) {
   let added = 0;
-  if(route.adapter==='mimo' || route.adapter==='zcode' || route.adapter==='opencode' && route.billing==='free') {
+  if (route.adapter === 'opencode') {
+    const catalogModels = new Map(catalog.models.map(model => [model.id, model]));
+    for (const model of route.models) {
+      const item = catalogModels.get(model.id);
+      if (item?.free === true) model.billing = 'free';
+      else if (model.billing === 'free') delete model.billing;
+    }
+  }
+  if(route.adapter==='mimo' || route.adapter==='opencode' && route.billing==='free') {
     const available=new Set(catalog.models.map(model=>model.id));
     for(const model of route.models) if(!available.has(model.id))model.enabled=false;
   }
@@ -665,14 +850,39 @@ function mergeCatalogModelsInto(route, catalog, filters) {
       if (item.variants) existing.variants = item.variants;
       if (!item.efforts.includes(existing.defaultEffort)) delete existing.defaultEffort;
     } else if (route.models.length < 100) {
-      route.models.push({ id: item.id, alias: (item.name || item.id).slice(0, 100), group: 'unassigned', memberships: [], enabled: true, efforts: item.efforts, ...(item.variants?{variants:item.variants}:{}), kinds: ['mmx', 'ollama', 'lmstudio', 'omniroute'].includes(route.adapter) ? ['text'] : ['text', 'read', 'write'] });
+      route.models.push({ id: item.id, alias: (item.name || item.id).slice(0, 100), group: 'unassigned', memberships: [], enabled: true, efforts: item.efforts, ...(route.adapter === 'opencode' && item.free === true ? { billing: 'free' } : {}), ...(item.variants?{variants:item.variants}:{}), kinds: ['mmx', 'ollama', 'lmstudio', 'omniroute'].includes(route.adapter) ? ['text'] : ['text', 'read', 'write'] });
       added++;
+    }
+  }
+  if (route.adapter === 'zcode') {
+    // Headless ZCode runs exactly one model. Older catalogues listed provider
+    // identities such as `builtin:zai-coding-plan/GLM-5.3` that the CLI cannot
+    // select, so they are retired and their pool membership moves to the model
+    // that really runs.
+    const runnable = route.models.find(model => model.id === 'zcode-default');
+    const stale = route.models.filter(model => model.id !== 'zcode-default');
+    for (const model of stale) model.enabled = false;
+    if (runnable && stale.length) {
+      const members = new Map();
+      for (const model of [...stale, runnable]) {
+        const list = model.memberships ?? (['high','medium','low'].includes(model.group) ? [{group:model.group, ...(model.defaultEffort?{effort:model.defaultEffort}:{})}] : []);
+        for (const member of list) if (!members.has(member.group)) members.set(member.group, { ...member });
+      }
+      if (members.size) {
+        runnable.memberships = [...members.values()];
+        runnable.group = runnable.memberships[0].group;
+      }
     }
   }
   return added;
 }
 
 export async function routeCatalog(route, cwd, python) {
+  if (route.adapter === 'qoder') {
+    const result = await capture([...executableArgv(route.executable), '--list-models'], cwd, python);
+    if (result.code !== 0) throw new PoolError(classifyFailure(result.output + result.stderr), 'Qoder native model listesi alınamadı; CLI girişini kontrol edin.');
+    return { connection: route.id, models: parseQoderModels(result.output), nextCursor: null };
+  }
   if (route.adapter === 'agy' && !route.api) {
     const result = await capture([...executableArgv(route.executable), 'models'], cwd, python);
     if (result.code !== 0 || result.stopReason) throw new PoolError('DISCOVERY_FAILED', 'Antigravity model listesi alınamadı. CLI giriş durumunu kontrol edin.');
@@ -742,13 +952,33 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
     return vendor ? { ...fallback, ...vendor, auth: 'api_key' } : fallback;
   }
   const argv = executableArgv(route.executable);
+  if (route.adapter === 'qoder') {
+    const result = await capture([...argv, 'status', '-o', 'json'], cwd, python);
+    let status;
+    try { status = JSON.parse(result.output); } catch { /* Never persist account identifiers. */ }
+    const loggedIn = result.code === 0 && status?.logged_in === true;
+    return { ...base, status: loggedIn ? 'unknown' : 'auth_required', auth: loggedIn ? 'verified' : 'missing', windows: [], source: 'qoder-status', note: 'Qoder native login doğrulanır; kalan account credits bu komutta bildirilmez.' };
+  }
   if (route.adapter === 'claude' && route.billing !== 'subscription') {
     // Token-plan Claude routes use the user's configured endpoint; claude.ai usage does not apply.
     const text = await capture([...argv, 'auth', 'status', '--text'], cwd, python);
     const endpoint = /base URL:\s*(\S+)/i.exec(text.output + text.stderr)?.[1] || 'https://api.anthropic.com';
     return { ...base, status: 'unknown', auth: 'token_plan', endpoint, windows: [], source: 'claude-settings', note: `Uç nokta: ${endpoint} · Bu sağlayıcı kota yüzdesi bildirmiyor.` };
   }
-  if (nativeQuota[route.adapter]) return { ...base, ...(await nativeQuota[route.adapter]()) };
+  if (route.adapter === 'qwen') {
+    const auth = await qwenLiveAuth(homedir(), process.env, undefined, cwd);
+    // A route contains multiple model/provider credentials. Only checkAuth for
+    // the selected model may reject a task; the default model cannot log out
+    // every other provider in the route.
+    return { ...base, ...auth, status: auth.status === 'auth_required' ? 'unknown' : auth.status, windows: [], source: 'qwen-model-list' };
+  }
+  if (nativeQuota[route.adapter]) {
+    const snapshot = await nativeQuota[route.adapter]();
+    if (route.adapter === 'mcode' && route.billing === 'free_credits' && snapshot.subscription === 'none') {
+      return { ...base, ...snapshot, note: 'MiniMax Coding Plan kotası yok. Bu sorgu MiniMax Credits bakiyesini göstermez; MiniMax Code CLI mevcut hesap kredileriyle yine de çalışabilir.' };
+    }
+    return { ...base, ...snapshot };
+  }
   if (route.adapter === 'opencode' || route.adapter === 'mimo') {
     let snapshot = { status: 'unknown', auth: 'unverified', windows: [], source: route.adapter };
     try {
@@ -776,6 +1006,6 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
   const failure = result.code !== 0 || !body || body.error || body.base_resp?.status_code;
   const subscription = !failure ? 'active' : /no active (?:token )?plan/i.test(result.output + result.stderr) ? 'none' : 'unknown';
   const windows = failure ? [] : minimaxWindows(body.data || body);
-  const status = !loggedIn ? 'auth_required' : windows.some(window => window.remainingPercent <= 0) ? 'rate_limited' : (subscription === 'active' || route.billing === 'free_credits' || route.billing === 'paid_api') ? 'available' : 'unknown';
+  const status = !loggedIn ? 'auth_required' : windows.some(window => window.remainingPercent <= 0) ? 'rate_limited' : subscription === 'active' ? 'available' : 'unknown';
   return { ...base, status, auth: loggedIn ? authJson.method : 'missing', subscription, windows, source: 'mmx' };
 }

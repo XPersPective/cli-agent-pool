@@ -13,7 +13,9 @@ test('Antigravity execute supplies native structured report schema without weake
  const schema=JSON.parse(args[args.indexOf('--json-schema')+1]);
  assert.equal(schema.additionalProperties,false);assert(schema.required.includes('checks'));assert(schema.required.includes('blockers'));
  assert(!args.includes('--dangerously-skip-permissions'));assert(!args.includes('--settings'));assert(args.includes('accept-edits'));
- assert(!buildArguments(route,{id:'flash'},{...task,kind:'text',mode:'response'}).includes('--json-schema'));
+ const textArgs=buildArguments(route,{id:'flash'},{...task,kind:'text',mode:'response'});
+ assert(!textArgs.includes('--json-schema'));assert(!textArgs.includes('--mode'));assert(textArgs.includes('--disable-slash-commands'));
+ assert.equal(textArgs[textArgs.indexOf('--settings')+1],'{"agentMode":"plan"}');assert(!textArgs.includes('--dangerously-skip-permissions'));
 });
 
 test('Antigravity retains redacted native denial and blocked report even on SUCCESS', async t => {

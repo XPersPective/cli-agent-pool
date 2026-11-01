@@ -37,6 +37,7 @@ export class Store {
   update(id, state, result = null, error = null) {
     this.db.prepare('UPDATE tasks SET state=?,result=?,error=?,updated=? WHERE id=?').run(state, result, error, new Date().toISOString(), id);
     this.event(id, 'state', state);
+    if (['succeeded','failed','timed_out','cancelled'].includes(state)) this.pruneHistory();
   }
   event(id, kind, detail) { this.db.prepare('INSERT INTO events(task_id,time,kind,detail) VALUES(?,?,?,?)').run(id, new Date().toISOString(), kind, detail); }
   events(id, after = 0) { return this.db.prepare('SELECT seq,time,kind,detail FROM events WHERE task_id=? AND seq>? ORDER BY seq LIMIT 100').all(id, after); }
@@ -45,13 +46,16 @@ export class Store {
   quota(routeId) { const row = this.db.prepare('SELECT snapshot FROM quotas WHERE route_id=?').get(routeId); return row ? JSON.parse(row.snapshot) : null; }
   saveQuota(routeId, snapshot) { this.db.prepare('INSERT INTO quotas(route_id,snapshot) VALUES(?,?) ON CONFLICT(route_id) DO UPDATE SET snapshot=excluded.snapshot').run(routeId, JSON.stringify(snapshot)); }
   pruneHistory(before = new Date(Date.now()-7*86400_000).toISOString()) {
-    // Keep admission keys/fingerprints and quarantine; only completed payloads expire.
+    // Expire completed records and their admission keys together; never erase quarantine.
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      this.db.prepare("UPDATE tasks SET request=json_set(json_remove(request,'$.prompt'),'$.historyExpired',json('true')), result=NULL WHERE state IN ('succeeded','failed','timed_out','cancelled') AND (updated<? OR id IN (SELECT id FROM tasks WHERE state IN ('succeeded','failed','timed_out','cancelled') ORDER BY updated DESC,rowid DESC LIMIT -1 OFFSET 500))").run(before);
-      this.db.prepare("DELETE FROM events WHERE task_id IN (SELECT id FROM tasks WHERE json_extract(request,'$.historyExpired')=1)").run();
+      const expired = "SELECT id FROM tasks WHERE state IN ('succeeded','failed','timed_out','cancelled') AND (updated<? OR id IN (SELECT id FROM tasks WHERE state IN ('succeeded','failed','timed_out','cancelled') ORDER BY updated DESC,rowid DESC LIMIT -1 OFFSET 500))";
+      this.db.prepare('DELETE FROM events WHERE task_id IN ('+expired+')').run(before);
+      const removed = this.db.prepare('DELETE FROM tasks WHERE id IN ('+expired+')').run(before).changes;
       this.db.exec('COMMIT');
+      return { removed };
     } catch(error){this.db.exec('ROLLBACK');throw error;}
   }
+  clearHistory() { return this.pruneHistory('9999-01-01'); }
   close() { this.db.close(); this.owner.close(); }
 }

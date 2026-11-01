@@ -15,11 +15,11 @@ test('backdrop dismissal ignores clicks and drags originating inside the dialog'
 
 test('routing explains kind, quota, fixed effort and policy rejection without relaxing admission',()=>{
  const route={adapter:'codex',billing:'subscription',minRemainingPercent:10};
- const model={enabled:true,billing:'subscription',autoSelect:true,kinds:['text','read'],efforts:['high'],fixedEffort:'high',id:'model'};
+ const model={enabled:true,billing:'subscription',autoSelect:true,kinds:['text','read'],efforts:['low','high'],defaultEffort:'high',id:'model'};
  assert.equal(rejectionReason(model,route,null,{kind:'write',mode:'execute'}),'KIND_UNSUPPORTED');
- assert.equal(rejectionReason(model,route,null,{kind:'read',effort:'low'}),'FIXED_EFFORT');
+ assert.equal(rejectionReason(model,route,null,{kind:'read',effort:'low'}),null);
  assert.equal(rejectionReason(model,route,{status:'available',observedAt:new Date().toISOString(),windows:[{remainingPercent:5}]},{kind:'read'}),'QUOTA_RESERVE');
- assert.equal(rejectionReason({...model,autoSelect:false},route,null,{kind:'read'}),'AUTOSELECT_DISABLED');
+ assert.equal(rejectionReason({...model,autoSelect:false},route,null,{kind:'read'}),null);
  assert.equal(rejectionReason({...model,autoSelect:false},route,null,{kind:'read',routeId:'explicit'}),null);
  assert.match(noRouteMessage({group:'low',mode:'execute'},new Map([['KIND_UNSUPPORTED',3]])),/low.*yazma yeteneği yok/);
  assert.match(noRouteMessage({group:'medium'},new Map()),/üyeliği bulunamadı/);

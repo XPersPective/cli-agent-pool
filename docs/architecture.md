@@ -21,7 +21,7 @@ CLI Agent Pool strictly manages the local model and CLI pool on `127.0.0.1`.
 3. Support five explicit billing/plan declarations per route:
    - `subscription`: Official vendor CLI subscription (`codex`, `claude.ai`, `agy`, etc.).
    - `token_plan`: Fixed-quota coding/token plans (e.g. Z.AI GLM Coding Plan on `zcode`, Qwen/DashScope Coding Plan on `qwen`/`claude`/`opencode`, MiniMax Token Plan on `mcode`/`mmx`, Kimi Coding Plan on `kimi`).
-   - `free_credits`: Daily or promotional credit balances (e.g. MiniMax `mmx` daily credits when no monthly token plan is active).
+   - `free_credits`: Daily or promotional account credits, such as MiniMax Code `mcode` account credits. MiniMax `mmx` is a separate Token Plan CLI and does not expose those Code credits.
    - `free`: Zero-cost models discovered from OpenCode (`cost.input === 0 && cost.output === 0`), `:free` models on ZCode/OpenRouter, or local models (`lmstudio`, `ollama`).
    - `paid_api`: Metered pay-per-token API routes. Never used as an implicit fallback; excluded from automatic selection unless `routeId` is explicitly requested or the owner opts in with `autoSelect: true`, and always ranked behind non-metered routes.
 4. Support custom API providers through two protocol slots without building a custom HTTP agent loop:
@@ -50,7 +50,7 @@ directory (`%LOCALAPPDATA%\cli-agent-pool` or `~/.local/share/cli-agent-pool`), 
 Configuration changes use schema validation, revision conflicts, fsync and atomic
 rename. Quota snapshots include observation time, expire for routing after 60 seconds
 and are cached for at least 15 seconds. Missing token-plan subscriptions (`subscription: 'none'`)
-block `subscription` and `token_plan` routes but allow `free_credits` routes (such as MiniMax daily credits).
+block `subscription` and `token_plan` routes but allow `free_credits` routes (such as MiniMax Code account credits). The `mmx` quota endpoint reports Token Plan usage, not MiniMax Code daily/account credits.
 
 ## Verified capabilities
 
@@ -60,7 +60,7 @@ block `subscription` and `token_plan` routes but allow `free_credits` routes (su
   - Real Codex model discovery and live MCP task execution.
   - OpenCode JSONL event parsing, automatic free model catalog discovery (`opencode models --verbose --pure`), and OpenAI-compatible custom API execution via `OPENCODE_CONFIG_CONTENT`.
   - Claude Code subscription verification (`claude.ai`), token-plan / third-party Coding Plan support (`billing: 'token_plan'`), and Anthropic-compatible custom API execution via isolated environment variables.
-  - MiniMax Code (`mcode`) and MiniMax CLI (`mmx`) daily credits (`billing: 'free_credits'`) vs active token plan (`billing: 'token_plan' | 'subscription'`) differentiation and quota inspection.
+  - MiniMax Code (`mcode`) account credits (`billing: 'free_credits'`) vs Token Plan billing; MiniMax CLI (`mmx`) Token Plan auth/quota inspection. The latter does not expose the former's account-credit balance.
   - Qwen Code `~/.qwen/settings.json` multi-provider model discovery and `stream-json` result envelope parsing with request-scoped native plan/auto-edit tools.
   - Kimi Code (`kimi`), Xiaomi MiMoCode (`mimo`), Google Antigravity (`agy`), OmniRoute (`omniroute`), LM Studio (`lmstudio`), Ollama (`ollama`), and Custom CLI (`argsTemplate`) support.
   - Gemini CLI removed.
@@ -68,24 +68,29 @@ block `subscription` and `token_plan` routes but allow `free_credits` routes (su
 
 ## Pool grouping and workspace dashboard
 
-The three strength pools are the primary navigation. CLI/API catalogs are a
-secondary picker beneath the selected pool. A model can belong to several pools
-through `memberships`, with a separate optional mandatory effort on each membership.
-An empty membership list removes the model from all strength pools. Legacy group
-and default effort fields are read only when memberships are absent.
+Categories are owner-editable data with stable IDs and display names, not access
+policies. The UI can create, rename and remove arbitrary categories and manage
+model memberships with a default effort per category. Removing membership keeps
+catalog access. Removing a category removes only those membership references.
+Legacy selectionMode/groupingMode inputs migrate out of saved/public config;
+existing explicit memberships and free-category membership are preserved once.
 
-`selectionMode: manual` requires a strength pool even for explicit route/model
-requests. Only its members are eligible. Fixed membership effort cannot be overridden
-by the requester. In `auto` mode ungrouped catalog selection is also permitted;
-explicit groups remain hard filters. Auto is the compatibility default.
-`groupingMode` separately controls whether agents may edit membership. Agents
-cannot change selection mode, billing, native CLI permission policy.
+The caller chooses category or catalog. A category request filters by its members;
+a catalog request needs no membership/group. A supported requested effort overrides
+the category default. Hidden models, disabled routes/models, native permissions,
+capabilities, explicit paid billing, quota reserves and workspace locks still apply.
+Legacy non-paid autoSelect flags do not act as a caller selection authority.
 
-Selection/admission refreshes quota snapshots before running the existing selector.
-Shared account windows and model-specific windows remain distinguishable. Numeric
-quota is never fabricated. Execution retains the existing no-retry/no-replay policy.
-Started task metadata records the selected group/effort and any model ID reported
-by CLI events. It never claims unreported runtime identity was verified.
+pool_help provides a short map and per-error recovery. pool_list_pools without a
+group returns category summaries; a group yields a bounded model page. pool_catalog
+without filters returns source summaries; filters or view:models yield a deduplicated
+model page. Default page size is 12, maximum 40, with nextOffset. Cached model quota
+summaries accompany entries; live quota is queried separately. Compatibility list
+aliases are bounded. Task results default to compact. Caller instructions govern
+selection; no policy-query/assignment-permission roundtrip is required. Owner UI
+category edits retain revision conflict checks and preserve unrelated drafts.
+Multiple MCP clients share one local service and existing workspace scheduling;
+this is not a remote multi-tenant identity system.
 
 Claude catalogs come from its control initialization response without submitting a
 user message. Resolved model IDs replace ambiguous aliases while preserving owner
@@ -158,8 +163,8 @@ text probes. Agent submit/skills/folder APIs remain available for compatibility.
 Only owner probe_model can mark an internal runtime probe workspace; agent requests
 cannot forge that flag. The normal policy, quota and CLI
 permission checks still apply. Client labels are self-reported metadata, not identity.
-Completed payloads expire after seven days or 500 completed entries; durable keys,
-fingerprints and quarantine survive cleanup. Active jobs are prioritized in snapshots.
+Completed records and events expire after seven days or 500 completed entries;
+admission keys expire with history. Cleanup runs on completion and hourly; owner UI can clear terminal records. Active tasks and quarantine survive cleanup. Active jobs are prioritized in snapshots.
 Antigravity effort variants are canonical catalog entries with exact native ID maps;
 merges stage changes atomically and reject conflicting memberships. Provider-declared
 quota scopes apply identically in the UI and selector, including explicit Argon groups.
@@ -209,4 +214,44 @@ promise failures after write execution begins retain needs_review quarantine.
 CLIs default to text/read/write, and toolPolicy configured preserves explicit owner
 kinds restrictions. Qwen uses auto-edit/plan; Antigravity workspace tasks retain
 native plan/accept-edits without disabling skills. Permission bypass flags are never
-added. Chat CLI adapters remain text-only; arbitrary templates own their tool scopes.
+added. Antigravity text tasks select plan through session-only `agentMode` because
+`--mode plan` is ignored while slash expansion is disabled; native request-review
+permissions remain unchanged. Chat CLI adapters remain text-only; arbitrary templates own their tool scopes.
+
+1.8.2 uses MiniMax Code standard mode for write tasks; lightweight mode has no
+workspace tools. Native smart permissions are not read-only, so standalone mcode
+read requests are excluded from effective kinds and rejected before execution.
+Text remains lightweight. ZCode print mode rejects model IDs other than
+zcode-default instead of silently ignoring model selection. Additional usage-credit
+requirements and stdout-only vendor failures remain explicit errors. Cookie headers
+are redacted before diagnostics are persisted.
+
+Antigravity workers explicitly select the closest existing native project whose
+workspace resource contains the task directory. Both native folder and gitFolder
+file URIs are supported; real paths and directory boundaries prevent sibling
+matches. Missing, malformed or ambiguous project records leave native selection
+unchanged. This only reuses owner permissions: submitting a task never creates a
+project, edits grants or bypasses native checks. Owner-authorized local project
+grants are separate from Pool task admission and read/write scope.
+
+1.9.0 adds cached, filtered and paginated `pool_catalog` metadata discovery. Known
+pool/model requests submit directly; submit replies default to compact and CLI
+polling always uses compact results. Full diagnostics remain opt-in. Skill entry
+instructions use this path; provider/setup details load only from a reference.
+Qoder uses the installed official CLI, exact native model names, native status
+without account identifiers, zero model request retries, strict empty worker MCP
+configuration and scoped native tool lists. Execute uses native accept_edits and
+session allow grants for file tools/Bash; native deny rules still apply. Read
+excludes edits/commands, text disables tools. Native permission denials override
+successful result envelopes. Account credit quotas remain unknown unless reported.
+ZCode token-plan runs use an immutable, secret-free account-only provider config.
+Personal API providers and legacy import are excluded, so an unavailable native
+Starter/Individual account cannot silently use another billing source. Account
+selection is configured through native login/default-model selection; the native
+CLI must still provision that account. Credentials remain in the official store.
+
+2.1.0 removes global/per-route worker count and queued-job caps. The caller
+controls parallelism through submissions; workspace reader/writer fairness and
+review locks remain. Retired concurrency/maxConcurrent inputs migrate away.
+Task timeout is caller-supplied (default 300s), bounded only by Node timer range,
+not a one-hour product ceiling. Waiting expiry still returns a durable task ID.

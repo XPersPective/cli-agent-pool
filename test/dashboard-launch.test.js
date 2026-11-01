@@ -45,3 +45,14 @@ test('pool CLI entrypoint executes when invoked through a directory symlink or j
   const parsed = JSON.parse(result.stdout);
   assert.ok(parsed?.mcpServers?.['cli-agent-pool']);
 });
+
+test('normal dashboard launch ensures the daemon before activating an existing window', () => {
+  const source = fs.readFileSync(new URL('../src/dashboard.cs', import.meta.url), 'utf8');
+  const ensure = source.indexOf('string url = args[1] == "--url" ? args[2] : EnsureUrl(directory, args[1], args[2]);');
+  const existingWindow = source.indexOf('var windows = Windows(profile);');
+  const activateExisting = source.indexOf('if (windows.Count > 0) { Activate(windows); return 0; }');
+
+  assert.notEqual(ensure, -1, 'normal shortcut path should ensure the daemon; --url keeps the supplied URL');
+  assert.ok(existingWindow > ensure, 'daemon ensure must run before looking for a window to activate');
+  assert.ok(activateExisting > existingWindow, 'existing window activation must remain in place');
+});
