@@ -316,7 +316,7 @@ test('owner login opens the native CLI using a fixed platform script and data-on
 
 test('failed Codex quota control distinguishes missing login from an unknown quota',async t=>{
  const root=mkdtempSync(path.join(tmpdir(),'pool-auth-')),file=path.join(root,'codex.cjs');writeFileSync(file,'process.exit(1)');
- const config=configSchema.parse({workspaceRoots:[root],routes:[{id:'codex',adapter:'codex',executable:file,enabled:true,billing:'subscription',models:[{id:'gpt-test',alias:'GPT',group:'medium',kinds:['text']}]}]});
+ const config=configSchema.parse({python:process.platform==='win32'?'python':'python3',workspaceRoots:[root],routes:[{id:'codex',adapter:'codex',executable:file,enabled:true,billing:'subscription',models:[{id:'gpt-test',alias:'GPT',group:'medium',kinds:['text']}]}]});
  const store=new Store(':memory:'),pool=new Pool(config,store);
  t.after(async()=>{await pool.close();store.close();await rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});});
  assert.equal((await pool.getQuota('codex')).status,'auth_required');

@@ -267,7 +267,7 @@ test('ZCode stream-json response, MiniMax Code, Custom CLI argsTemplate and impo
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const zcodeFile = path.join(root, 'zcode.cjs');
   writeFileSync(zcodeFile, `const args=process.argv.slice(2);const pIdx=args.indexOf('-p');const p=pIdx>=0?args[pIdx+1]:'';console.log(JSON.stringify({type:'result',response:'zcode:'+p+':'+args.includes('--disallowed-tools')}));`);
-  const zRoute = { id: 'zcode-local', adapter: 'zcode', billing: 'token_plan', trustedSettings: true, executable: zcodeFile, models: [{ id: 'zcode-default', alias: 'ZCode default', group: 'zai', efforts: [], kinds: ['text', 'read', 'write'] }] };
+  const zRoute = { id: 'zcode-local', adapter: 'zcode', billing: 'free', trustedSettings: true, executable: zcodeFile, models: [{ id: 'zcode-default', alias: 'ZCode default', group: 'zai', efforts: [], kinds: ['text', 'read', 'write'] }] };
   const zRead = await execute(zRoute, zRoute.models[0], { prompt: 'hello-glm', workspace: root, kind: 'read', timeoutSeconds: 10 }, py, () => {}, root).done;
   assert.deepEqual(zRead, { result: 'zcode:hello-glm:true' });
   const zWriteArgs = buildArguments(zRoute, zRoute.models[0], { prompt: 'edit', workspace: root, kind: 'write', effort: 'high' });
