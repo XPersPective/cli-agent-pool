@@ -32,7 +32,16 @@ export function validateMode(task) {
     throw new PoolError('INVALID_REQUEST', 'response modu text veya read gerektirir; dosya değişikliği için execute kullanın.');
 }
 
-export function taskPrompt(task) {
+const reportFormat = `Finish with ONLY one JSON report (maximum 200 words and 6000 characters) in this exact format: {"status":"completed|partial|blocked","summary":"short outcome","files":[{"path":"relative/path","change":"what changed"}],"checks":[{"command":"actual command","outcome":"passed|failed|not_run"}],"research":[{"source":"URL or source path","finding":"short finding"}],"blockers":["remaining work or denied permission"]}. Use one allowed enum value, not the pipe-separated examples. All six fields are required; use empty arrays when absent.`;
+
+// Director prompt authorizes only the work described by the caller; relay decisions stay external.
+export function directorPrompt(task, context) {
+  return `${task.prompt}\n\n[CLI Agent Pool director protocol v1]\nYou are a director working in ${task.workspace}. Follow the task and project instructions. Use Pool MCP to start and poll workers in external sibling worktrees; overlapping workers and paid API workers are refused. You may commit/push when authorized by the task. Relay selection and recovery belong to the caller's relay system. Honor its takeover and handoff protocol. Native permission checks apply; report denied tools as blockers. Never disclose environment secrets or task tokens. ${reportFormat} Never claim unperformed work.\n[End protocol]`;
+}
+
+export function taskPrompt(task, context = null) {
+  if (context?.promptOverride) return context.promptOverride;
+  if (context?.profile === 'director') return directorPrompt(task, context);
   if (task.mode !== 'execute') return task.prompt;
   return `${task.prompt}\n\n[CLI Agent Pool subagent protocol v1]\nWork in the supplied workspace. Read its AGENTS.md and applicable project instructions. Perform the requested work using native file, command and research tools; run relevant checks. Preserve unrelated edits. Respect native permission checks; report denied tools as blockers. Do not delegate back into Pool, change Pool billing/quota policy, commit, push, publish or deploy unless the task explicitly authorizes it. Do not merely propose changes. Finish with ONLY one JSON report (maximum 200 words and 6000 characters) in this exact format: {"status":"completed|partial|blocked","summary":"short outcome","files":[{"path":"relative/path","change":"what changed"}],"checks":[{"command":"actual command","outcome":"passed|failed|not_run"}],"research":[{"source":"URL or source path","finding":"short finding"}],"blockers":["remaining work or denied permission"]}. Use one allowed enum value, not the pipe-separated examples. All six fields are required; use empty arrays when absent. List every changed file, actual pass/fail checks, and sources used for research. Never claim unperformed work or infer successful tests. The calling agent reviews the changes.\n[End protocol]`;
 }

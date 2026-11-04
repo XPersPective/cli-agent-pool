@@ -15,12 +15,14 @@ import { Pool, taskSchema } from '../src/pool.js';
 import { runProcess, childEnvironment } from '../src/process.js';
 import { buildArguments, checkAuth, execute, quota, routeEnvironment, opencodeCatalog, importDiscoveredRoutes } from '../src/adapters.js';
 import { saveSecret, hasSecret, loadSecret } from '../src/secrets-store.js';
+// These fixtures model workers that changed files: each fingerprint differs.
+const changedWorkspace = () => { let n = 0; return async () => `changed:${++n}`; };
 
 function fixture(t, dependencies = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-test-'));
   const config = configSchema.parse({ workspaceRoots: [root], routes: [{ id: 'test', adapter: 'codex', executable: process.execPath, enabled: true, billing: 'subscription', models: [{ id: 'test-model', alias: 'Test', group: 'high', efforts: ['low'], kinds: ['read', 'write', 'text'] }] }] });
   const store = new Store(path.join(root, 'pool.sqlite'));
-  const pool = new Pool(config, store, { checkAuth: async () => {}, execute: () => ({ cancel() {}, done: Promise.resolve({ result: 'ok' }) }), ...dependencies });
+  const pool = new Pool(config, store, { checkAuth: async () => {}, execute: () => ({ cancel() {}, done: Promise.resolve({ result: 'ok' }) }), fingerprint: changedWorkspace(), ...dependencies });
   t.after(async () => { await pool.close(); store.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
   const request = { prompt: 'test', workspace: root, kind: 'read', idempotencyKey: 'test-key-123' };
   return { root, config, store, pool, request };

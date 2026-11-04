@@ -229,8 +229,8 @@ are redacted before diagnostics are persisted.
 Antigravity workers explicitly select the closest existing native project whose
 workspace resource contains the task directory. Both native folder and gitFolder
 file URIs are supported; real paths and directory boundaries prevent sibling
-matches. Missing, malformed or ambiguous project records leave native selection
-unchanged. This only reuses owner permissions: submitting a task never creates a
+matches. Missing/malformed project records leave native selection unchanged; ambiguous
+deepest project mappings now fail PROJECT_AMBIGUOUS before execution. This only reuses owner permissions: submitting a task never creates a
 project, edits grants or bypasses native checks. Owner-authorized local project
 grants are separate from Pool task admission and read/write scope.
 
@@ -269,3 +269,14 @@ sync) mirror native project records, file grants and trusted folders into the
 profile with Windows→/mnt path translation; task submission never creates
 grants and credentials are never copied. Account choice and switching thresholds
 belong to the caller; routes expose `account` and per-route quota.
+
+
+2.2.0 adds optional pb-director/1 mechanisms, with no Project Brain dependency.
+The caller alone owns relay records and successor selection. Pool owns a native
+non-paid director profile, HMAC/tool-event verified cached preflight, task-token
+worker linking, ack/start/idle deadlines, memory-only PB_ secret environment,
+change-aware failed-write lock release and durable owner exit hooks. Hook claims
+are persisted before shell-free dispatch after final lock state; exit 75 alone
+retries. Interrupted writes require two equal fingerprints 60 seconds apart.
+Unknown/changed/WSL fingerprints preserve quarantine. See director-tasks.md for
+trust boundaries and at-most-once crash limits.

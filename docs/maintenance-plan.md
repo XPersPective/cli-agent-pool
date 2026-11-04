@@ -1051,3 +1051,31 @@ boş bağlantılar biriktirdiğini bildirdi; ZCode ve diğer CLI'lar için de he
   canlı doğrulandı; kota/katalog/giriş kontrolü profil evini kullanır.
 - [x] 136/136 node:test, check, secrets, audit 0 açık; kurulum ve servis yenilendi.
 - [ ] Kullanıcının gerçek ek hesap girişleri sonrası kota readback ve kısa text çağrısı.
+
+
+## 5 Kasım 2026 — Director mechanisms, pb-director/1
+
+- [x] Read repo docs and sibling director contract; revise design to PB-owned relay.
+- [x] Self-critique and independent reviewer: preflight and fingerprint gaps identified.
+- [x] Profile/preflight/agy/lock and contract lifecycle implementation.
+- [x] Isolated node:test and MCP contract validation; 157/157; check/secrets/audit (0 vulnerabilities).
+- [x] Skill documentation, managed deployment and local install verification.
+- [x] Commit, push and report evidence to lead (release completion is reported with the final commit ID in the lead chat).
+
+
+Evidence: independent review accepted the mechanism-only architecture and fixes
+for hidden-index edits, native read/token evidence, queued probe cleanup,
+atomic task/hook registration and idempotent director replay. Isolated lifecycle
+suite 9/9; all tests 157/157. Project Brain committed runnable cross-repo
+`tools/test_relay_integration.mjs` (a6e09e5): real transport/watchdog, synthetic
+native executor, scratch git/bare remote; preflight -> permission failure ->
+onExit recover -> failover -> takeover/ack -> commit/push -> complete PASS.
+No credential copies, native permission bypass or implicit paid fallback.
+
+Local acceptance: global npm 2.2.0 installed, existing service replaced only with
+0 active jobs; live MCP reports pb-director/1 and all eight features. Runtime
+src/bin/web/skills content matches source (npm shebang newline normalized).
+Skills Manager preserved the existing skill ID/source and 42 deployments;
+SKILL.md plus operations.md match every deployed target by SHA-256. Desktop
+and Start Menu shortcuts refreshed. Source rerun of the cross-repo integration
+also PASS. No live vendor readiness is claimed by this synthetic-executor test.

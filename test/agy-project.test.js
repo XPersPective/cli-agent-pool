@@ -33,7 +33,9 @@ test('Antigravity selects the closest native project and preserves its permissio
   writeFileSync(path.join(directory, 'broken.json'), '{');
   writeFileSync(path.join(directory, 'stale.json'), JSON.stringify({ id: 'stale', projectResources: { resources: [{ folderUri: 'https://example.com' }] } }));
   assert.deepEqual(agyProjectArguments(nested, home), ['--project', 'child']);
-  add('duplicate', nested);
-  assert.deepEqual(agyProjectArguments(nested, home), []);
+  const duplicate = add('duplicate', nested);
+  assert.throws(() => agyProjectArguments(nested, home), error => error.code === 'PROJECT_AMBIGUOUS' && error.message.includes(duplicate) && error.message.includes('child.json'));
+  // The parent root is still unambiguous for a workspace outside the duplicated child.
+  assert.deepEqual(agyProjectArguments(workspace, home), ['--project', 'parent']);
   assert.deepEqual(agyProjectArguments(path.join(home, 'missing'), home), []);
 });

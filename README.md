@@ -428,3 +428,15 @@ seçimiyle bağlantının kayıtlı model kapsamı ayrıca sınırlandırılabil
 (MMX vb.) dosya aracı sağlamıyorsa yazma yeteneği varmış gibi gösterilmez.
 Antigravity metin görevlerinde slash genişletmesi kapalıyken etkisiz kalan
 `--mode plan` yerine oturumluk `agentMode: plan` kullanılır; native izinler değişmez.
+
+
+### Director profili ve hazırlık kontrolü (2.2.0)
+
+Uzun süren director görevleri için `pool_capabilities` ile `pb-director/1`
+desteğini sorgulayın. Sahip oturumundan `cli-agent-pool preflight --route ROUTE
+--model MODEL --workspace "D:/project"` çalıştırın; başarısız yetenekler native
+izin düzeltmesini gösterir. Ardından aynı kapsamla `profile:"director"`,
+`kind:"write"`, `mode:"execute"` gönderilebilir. İsteğe bağlı çıkış kancası,
+devralma/kuyruk/boşta kalma süreleri ve bellekte tutulan `secretEnv` desteklenir.
+Relay yönetimi ve halef seçimi çağırana aittir; Pool ikinci relay oluşturmaz.
+Ayrıntılar: [director tasarımı](docs/director-tasks.md).

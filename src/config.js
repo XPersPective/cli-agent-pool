@@ -58,6 +58,8 @@ export const configSchema = z.object({
   selectionMode: z.unknown().optional(),
   categories: z.array(z.object({ id: label.refine(isCategoryId), name: label }).strict()).max(64).optional(),
   modelFilters: z.array(z.object({ match: z.enum(['model', 'family']), value: label, routeId: label.optional() }).strict()).max(500).default([]),
+  // Owner-approved roots that director tasks may read outside their workspace (e.g. the skills library).
+  directorReadRoots: z.array(z.string().min(1).max(4096).refine(value => path.isAbsolute(value), 'Okuma kökü mutlak olmalı.')).max(20).default(() => [path.join(homedir(), '.skills-manager', 'skills')]),
   routes: z.array(z.object({
     id: label.regex(/^[a-zA-Z0-9_-]+$/),
     adapter: z.enum(adapterValues),
@@ -80,6 +82,8 @@ export const configSchema = z.object({
     api: apiBlockSchema.optional(),
     argsTemplate: z.array(z.string().min(1).max(512).refine(v => !/[\u0000]/.test(v), 'NUL karakteri kullanılamaz.')).min(1).max(32).optional(),
     promptStdin: z.boolean().optional(),
+    // Owner opt-in: codex director runs may use the network from shell commands (git push, 127.0.0.1).
+    sandboxNetwork: z.boolean().optional(),
     models: z.array(z.object({
       id: label, alias: label, group: label,
       billing: z.enum(['free', 'paid_api']).optional(),
@@ -112,6 +116,8 @@ export const configSchema = z.object({
       ctx.addIssue({ code: 'custom', message: 'mmx yalnızca metin görevi destekler.' });
     if (route.adapter === 'mmx' && route.billing === 'free_credits')
       ctx.addIssue({ code: 'custom', message: 'mmx MiniMax Token Plan kullanır; günlük MiniMax Credits için mcode rotası seçilmelidir.' });
+    if (route.sandboxNetwork && route.adapter !== 'codex')
+      ctx.addIssue({ code: 'custom', message: `${route.id}: sandboxNetwork yalnızca codex için geçerlidir.` });
     if (route.adapter === 'custom' && (!route.argsTemplate || route.argsTemplate.length === 0))
       ctx.addIssue({ code: 'custom', message: 'Özel CLI (custom) bağlantısı için argsTemplate tanımlanmalıdır.' });
     if (route.models.some(m => m.defaultEffort && !m.efforts.includes(m.defaultEffort)))

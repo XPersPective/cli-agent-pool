@@ -50,6 +50,12 @@ resolution; do not clear unrelated locks or recursively delegate into Pool.
 Execute reports use JSON: status(completed|partial|blocked), summary, files,
 checks, research, blockers; target 200 words, maximum 6000 characters.
 
+For unattended directors, first read pool_capabilities and follow the caller's
+relay contract. profile:director requires current verified preflight. Pool owns
+execution/deadlines/hooks; the caller owns successor selection and handoff.
+Director workers link automatically through the task token and use external
+worktrees with native project permissions. See operations for director setup.
+
 For setup, provider limitations and recovery only, read
 [operations](references/operations.md). Project Brain owns its own instructions;
 Pool serves categories/catalog and has no Project Brain dependency.

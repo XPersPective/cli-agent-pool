@@ -10,12 +10,14 @@ import {Pool} from '../src/pool.js';
 import {configSchema} from '../src/config.js';
 import {buildArguments,execute} from '../src/adapters.js';
 import {waitForTask,compactTask,taskPrompt} from '../src/task-protocol.js';
+// These fixtures model workers that changed files: each fingerprint differs.
+const changedWorkspace = () => { let n = 0; return async () => `changed:${++n}`; };
 
 async function fixture(t, executeTask) {
  const root=mkdtempSync(path.join(tmpdir(),'pool-subagents-'));
  const config=configSchema.parse({concurrency:32,routes:[{id:'test',adapter:'codex',executable:process.execPath,enabled:true,billing:'subscription',models:[{id:'model',alias:'Model',group:'medium',kinds:['text','read','write']}]}]});
  const store=new Store(':memory:');
- const pool=new Pool(config,store,{directory:root,checkAuth:async()=>{},execute:executeTask});
+ const pool=new Pool(config,store,{directory:root,checkAuth:async()=>{},execute:executeTask,fingerprint:changedWorkspace()});
  t.after(async()=>{await pool.close();store.close();await rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});});
  const submit=(key,kind='read',extra={})=>pool.submit({prompt:'implement',workspace:root,kind,idempotencyKey:`subagent-${key}`, ...extra});
  return {root,pool,store,submit};

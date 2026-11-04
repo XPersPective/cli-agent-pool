@@ -70,3 +70,26 @@ yoktur. timeoutSeconds iş süresini belirler (varsayılan 300 saniye; bir saat
 tavanı yok). Çakışan çalışma klasörlerine yazma ve inceleme kilitleri korunur.
 
 Completed tasks expire after 7 days or the most recent 500 completed tasks. Keep needed reports externally; idempotency keys expire with their records. The UI can clear completed history while preserving active/review tasks.
+
+
+## Director mechanisms (2.2.0)
+
+`pool_capabilities` discovers `pb-director/1` and optional features. Director
+profile, verified preflight, task linking, deadlines, secret environment delivery,
+owner review resolution and durable exit hooks are described in
+[director design](director-tasks.md) and the packaged skill operations reference.
+Relay decisions stay with the caller; Pool has no relay state machine.
+
+`pool_preflight` accepts routeId, modelId, effort, workspace, capabilities,
+readPaths, force; returns a cached result or `{id,taskId,state}`. Task retrieval
+exposes `preflight` and `parentTaskId`, including compact mode. Status results
+carry current, ready, checkedAt, retryAfter, error and capability details.
+`pool_preflight_status` reads without a lock/model call. Worker bridges cannot run
+preflight/resolve or create director lifecycle hooks; a valid running director
+token can submit a preflight-ready successor and acknowledge its own takeover.
+
+Director optional fields are `onExit`, `ackDeadlineSeconds`,
+`startDeadlineSeconds`, `idleTimeoutSeconds`, `secretEnv` (PB_ names only).
+See the design for limits and restart semantics. The service injects
+CLI_AGENT_POOL_TASK_ID/TOKEN/WORKER and strips/redacts secret values before
+persistence. Never encode a secret in prompt or hook argv.

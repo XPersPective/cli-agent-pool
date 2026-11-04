@@ -14,6 +14,8 @@ import { stdioBridge } from '../src/stdio.js';
 import { rpcRequest } from '../src/rpc.js';
 import { version } from '../src/version.js';
 import { ensureInitialized, ensureDaemon, managementRequest, openDashboardWindow, withMcpClient, callPoolTool, runTaskFromCli, installDesktopAndSkills } from '../src/daemon.js';
+import { waitForTask } from '../src/task-protocol.js';
+import { setTimeout as delay } from 'node:timers/promises';
 
 function parseFlags(args) {
   const flags = {};
@@ -34,6 +36,27 @@ function parseFlags(args) {
     }
   }
   return { flags, positional };
+}
+
+// Repeated flags (--read-path a --read-path b) collect into arrays.
+function multiFlags(args) {
+  const values = {};
+  const positional = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (!arg.startsWith('--')) { positional.push(arg); continue; }
+    const key = arg.slice(2);
+    const next = args[i + 1];
+    let value = true;
+    if (next !== undefined && !next.startsWith('--')) { value = next; i++; }
+    (values[key] ||= []).push(value);
+  }
+  return { values, positional };
+}
+
+// Pool tasks always carry CLI_AGENT_POOL_WORKER=1; owner operations refuse to run from inside one.
+function ownerOnly() {
+  if (process.env.CLI_AGENT_POOL_WORKER === '1') throw new PoolError('OWNER_ONLY', 'This is an owner operation; it cannot run from inside a Pool task. Ask the owner session to run it.');
 }
 
 export async function main(args = process.argv.slice(2)) {
@@ -64,6 +87,7 @@ export async function main(args = process.argv.slice(2)) {
       '  serve                   Run background HTTP MCP and dashboard server in foreground',
       '  stdio                   Connect an MCP coding tool to the shared pool (auto-starts service)',
       '  resolve <task-id>       Release an interrupted workspace after manual inspection',
+      '  preflight               Director readiness probes (--route R --workspace W [--model M] [--read-path P]... [--capability C]... [--force])',
       '',
       'Configuration: ' + path.join(directory, 'config.json'),
     ].join('\n'));
@@ -196,7 +220,28 @@ export async function main(args = process.argv.slice(2)) {
     } else print(catalog);
     return;
   }
+  if (command === 'preflight') {
+    ownerOnly();
+    const { values } = multiFlags(rest);
+    const input = { routeId: values.route?.[0], workspace: path.resolve(values.workspace?.[0] || process.cwd()),
+      ...(values.model ? { modelId: values.model[0] } : {}), ...(values.effort ? { effort: values.effort[0] } : {}), ...(values['read-path'] ? { readPaths: values['read-path'].map(item => path.resolve(item)) } : {}),
+      ...(values.capability ? { capabilities: values.capability } : {}), ...(values.force ? { force: true } : {}) };
+    if (!input.routeId) throw new PoolError('INVALID_REQUEST', '--route is required.');
+    const config = ensureInitialized(directory, false);
+    await ensureDaemon(directory, config);
+    const started = await managementRequest(directory, config, { operation: 'preflight', input });
+    if (started.cached || values.detach) { print(started); return; }
+    const status = await withMcpClient(directory, async client => {
+      await waitForTask(id => callPoolTool(client, 'pool_get_task', { taskId: id, compact: true }), started.taskId, { waitSeconds: 1200, sleep: delay });
+      const { force, ...query } = input; void force;
+      return callPoolTool(client, 'pool_preflight_status', query);
+    });
+    print({ taskId: started.taskId, ...status });
+    if (!status.ready) process.exitCode = 2;
+    return;
+  }
   if (command === 'resolve') {
+    ownerOnly();
     if (!rest[0]) throw new PoolError('TASK_REQUIRED', 'Elle incelenen görev kimliğini belirtin.');
     const config = ensureInitialized(directory, false);
     await ensureDaemon(directory, config);

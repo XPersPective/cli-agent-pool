@@ -7,6 +7,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { ensureInitialized, ensureDaemon } from './daemon.js';
 import { version } from './version.js';
+import { taskHeader } from './task-header.js';
 
 export async function stdioBridge(directory, config) {
   if (!existsSync(path.join(directory, 'access-token'))) {
@@ -15,7 +16,7 @@ export async function stdioBridge(directory, config) {
   const token = readFileSync(path.join(directory, 'access-token'), 'utf8').trim();
   const makeClient = () => new Client({ name: 'cli-agent-pool-stdio', version });
   const makeTransport = () => new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${config.port}/mcp`), {
-    requestInit: { headers: { Authorization: `Bearer ${token}` } },
+    requestInit: { headers: { Authorization: `Bearer ${token}`, ...taskHeader() } },
   });
   let client = makeClient();
   try {

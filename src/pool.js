@@ -10,6 +10,11 @@ import { codexControl } from './codex-control.js';
 import { supportsExecution, validateMode, workspaceConflict, parseExecutionReport } from './task-protocol.js';
 import { rejectionReason, noRouteMessage } from './routing.js';
 import { taskKinds, toolSupport } from '../web/capabilities.js';
+import { workspaceFingerprint, workspaceUnchanged } from './workspace-state.js';
+import { nativeSettingsFiles } from './native-settings.js';
+import { CAPABILITIES, assertDirectorRoute } from './preflight.js';
+import * as director from './director.js';
+import { lifecycleShape, hasLifecycle, validateHook, TaskWatchdog } from './lifecycle.js';
 
 // A model test must survive a cold start. Antigravity needs ~98s for a one-word
 // reply on this machine, so the old 45s budget killed healthy CLIs and reported a
@@ -29,6 +34,11 @@ export const taskSchema = z.object({
   minRemainingPercent: z.number().min(0).max(100).optional(),
   timeoutSeconds: z.number().int().min(1).max(Math.floor(2147483647 / 1000)).default(300),
   idempotencyKey: z.string().min(8).max(128).regex(/^[a-zA-Z0-9_.:-]+$/),
+  // Director profile (owner surface only) and its declared capabilities.
+  profile: z.enum(['worker', 'director']).optional(),
+  capabilities: z.array(z.enum(CAPABILITIES)).max(6).optional(),
+  readPaths: z.array(z.string().min(1).max(4096)).max(8).optional(),
+  ...lifecycleShape,
 }).strict();
 
 export function suggestGroup(name) {
@@ -43,12 +53,37 @@ export class Pool {
     this.directory = dependencies.directory || dataDirectory();
     this.execute = dependencies.execute || execute;
     this.checkAuth = dependencies.checkAuth || checkAuth;
+    this.fingerprint = dependencies.fingerprint || workspaceFingerprint;
     this.active = new Map();
     this.quotaRequests = new Map();
+    this.taskTokens = new Map(); // sha256(token) -> running director/preflight run
+    this.probes = new Map(); // preflight task id -> in-memory probe secrets
+    this.nonces = new Map(); // preflight nonce -> { probe, capability }
+    this.secrets = new Map();
+    this.watchdog = new TaskWatchdog(this, dependencies.watchdog);
+    this.reconciliationComplete = false;
     this.closed = false;
     this.pumping = false;
     this.historyTimer=setInterval(()=>{try{this.store.pruneHistory();}catch{/* Retain evidence and retry at the next interval. */}},3600_000);
     this.historyTimer.unref();
+    this.reconciled = this.reconcileInterrupted(dependencies.settleMs ?? 60_000).then(() => { this.reconciliationComplete = true; void this.watchdog.tick().catch(() => {}); }).catch(() => {});
+  }
+  // Director context configures MCP; every native task also receives its own run token.
+  taskContext(request) {
+    return request.profile === 'director' ? { profile: 'director', port: this.config.port, directory: this.directory, readPaths: request.readPaths || [] } : null;
+  }
+  preflight(input) { return director.preflight(this, input); }
+  preflightStatus(input) { return director.preflightStatus(this, input); }
+  preflightAck(nonce, token) { return director.preflightAck(this, nonce, token); }
+  serviceAck(nonce, secret) { return director.serviceAck(this, nonce, secret); }
+  submitDirector(input) { return director.submitDirector(this, input); }
+  directorIdentity(input) {
+    const request = taskSchema.parse({ ...input, profile: 'director', kind: 'write', mode: 'execute' });
+    delete request.secretEnv;
+    request.workspace = allowedWorkspace(request.workspace);
+    request.readPaths = [...new Set((request.readPaths || []).map(item => allowedWorkspace(item)))].sort();
+    request.capabilities = [...new Set(request.capabilities?.length ? request.capabilities : CAPABILITIES)].sort();
+    return createHash('sha256').update(JSON.stringify(request)).digest('hex');
   }
   models() {
     return this.config.routes.flatMap(route => route.models.filter(model => !modelFiltered(this.config.modelFilters, route.id, model.id)).flatMap(model => {
@@ -156,32 +191,50 @@ export class Pool {
     const workspace=mkdtempSync(path.join(root,'model-'));
     return this.submitLive({...input,prompt:'Reply with exactly OK. Do not use tools or modify files.',workspace,kind:'text',timeoutSeconds:PROBE_TIMEOUT_SECONDS,clientLabel:'Model testi',idempotencyKey:`probe-${randomUUID()}`},true);
   }
-  async submitLive(input, probe = false) {
+  async submitLive(input, probe = false, options = {}) {
     const request = taskSchema.parse(input);
+    if (request.profile === 'director' && !options.owner) throw new PoolError('OWNER_ONLY', 'Director tasks require the owner surface.');
     allowedWorkspace(request.workspace, probe?[path.join(this.directory,'probes')]:undefined);
-    if (!this.store.byKey(request.idempotencyKey)) await this.selectLive(request);
-    return this.submit(input,probe);
+    if (!this.store.byKey(request.idempotencyKey)) { await this.selectLive(request); }
+    return this.submit(input,probe,options);
   }
-  submit(input, probe = false) {
+  submit(input, probe = false, options = {}) {
     if (this.closed) throw new PoolError('SHUTTING_DOWN', 'Havuz kapanıyor. Yeniden bağlanın.');
     const request = taskSchema.parse(input);
+    const secretEnv = request.secretEnv;
+    delete request.secretEnv;
+    if (hasLifecycle(input) && request.profile !== 'director') throw new PoolError('INVALID_REQUEST', 'Lifecycle options require profile: director.');
+    if (hasLifecycle(input) && !options.owner) throw new PoolError('OWNER_ONLY', 'Director lifecycle options require the owner surface.');
+    validateHook(request.onExit);
+    if (secretEnv && Object.keys(secretEnv).length) request.requiresSecrets = true;
+    if (request.profile === 'director') {
+      if (!options.owner) throw new PoolError('OWNER_ONLY', 'Director tasks require the owner surface.');
+      if (request.kind !== 'write' || request.mode !== 'execute') throw new PoolError('INVALID_REQUEST', 'A director task needs kind: write and mode: execute.');
+    } else if (request.capabilities || request.readPaths) throw new PoolError('INVALID_REQUEST', 'capabilities/readPaths apply only to director tasks.');
     request.workspace = allowedWorkspace(request.workspace, probe?[path.join(this.directory,'probes')]:undefined);
-    const fingerprint = createHash('sha256').update(JSON.stringify(request)).digest('hex');
+    const parent = director.linkedDirector(this, options.taskToken);
+    const fingerprint = createHash('sha256').update(JSON.stringify(Object.fromEntries(Object.entries(request).filter(([key]) => key !== 'requiresSecrets')))).digest('hex');
     const existing = this.store.byKey(request.idempotencyKey);
     if (existing) {
       if (existing.fingerprint !== fingerprint) throw new PoolError('IDEMPOTENCY_CONFLICT', 'Aynı istek anahtarı farklı içerikle kullanıldı. Yeni bir anahtar seçin.');
       return this.get(existing.id);
     }
     const model = this.select(request).selected;
+    if (request.profile === 'director') assertDirectorRoute(this.routeFor({ routeId: model.routeId }));
+    if (parent) director.checkLinkedWorker(this, parent, request, model);
     request.routeId = model.routeId;
     request.modelId = model.id;
     if (request.group) request.group = model.group;
     request.effort = request.effort || model.defaultEffort;
     if(probe)request.probe=true;
-    const id = randomUUID();
-    this.store.insert({ id, key: request.idempotencyKey, fingerprint, workspace: request.workspace, request });
+    if (parent) request.parentTaskId = parent.taskId;
+    if (options.preflight) request.preflight = true;
+    if (options.directorIdentity) request.directorIdentity = options.directorIdentity;
+    const row = { id: randomUUID(), key: request.idempotencyKey, fingerprint, workspace: request.workspace, request };
+    this.store.insert(row);
+    if (request.requiresSecrets) this.secrets.set(row.id, secretEnv);
     this.schedule();
-    return this.get(id);
+    return this.get(row.id);
   }
   get(id, after = 0) {
     const task = this.store.get(id);
@@ -195,19 +248,19 @@ export class Pool {
     const blocker = task.state === 'queued' ? this.store.held().find(held => workspaceConflict(held, scope)) || earlier.find(row => workspaceConflict({ ...JSON.parse(row.request), workspace: row.workspace, state: row.state }, scope)) : null;
     const queueReason = blocker ? blocker.state === 'needs_review' ? 'WORKSPACE_REVIEW_REQUIRED' : 'WORKSPACE_BUSY' : null;
     const report = request.mode === 'execute' && task.result ? parseExecutionReport(task.result) : null;
-    return { id: task.id, state: task.state, mode: request.mode || null, report, routeId: request.routeId, modelId: request.modelId, reportedModel, queueReason, blockedBy:blocker?.id || null, group: request.group, effort: request.effort || null, clientLabel:request.clientLabel || null, historyExpired:Boolean(request.historyExpired), kind: request.kind, workspace: request.workspace, prompt: request.prompt || null, created: task.created, updated: task.updated, result: task.result, error: task.error, errorDetail: this.store.errorDetail(id), events };
+    return { notifications: this.store.notifications(task.id), profile: request.profile || 'worker', parentTaskId: request.parentTaskId || null, preflight: request.preflight ? this.store.preflightForTask(task.id) : undefined, id: task.id, state: task.state, mode: request.mode || null, report, routeId: request.routeId, modelId: request.modelId, reportedModel, queueReason, blockedBy:blocker?.id || null, group: request.group, effort: request.effort || null, clientLabel:request.clientLabel || null, historyExpired:Boolean(request.historyExpired), kind: request.kind, workspace: request.workspace, prompt: request.prompt || null, created: task.created, updated: task.updated, result: task.result, error: task.error, errorDetail: this.store.errorDetail(id), events };
   }
   list(limit = 50, offset = 0, activeFirst = false) {
     return this.store.list(limit, offset, activeFirst);
   }
-  cancel(id) {
+  cancel(id, reason = 'CANCELLED') {
     const task = this.store.get(id);
     if (!task) throw new PoolError('NOT_FOUND', 'Görev bulunamadı.');
-    if (task.state === 'queued') { this.store.update(id, 'cancelled', null, 'CANCELLED'); this.schedule(); }
+    if (task.state === 'queued') { director.failQueuedPreflight(this, id, reason); this.store.update(id, 'cancelled', null, reason); this.secrets.delete(id); void this.watchdog.tick().catch(() => {}); this.schedule(); }
     else if (['starting', 'running'].includes(task.state)) {
       this.store.update(id, 'cancelling');
       const handle = this.active.get(id);
-      if (handle) { handle.cancelled = true; handle.run?.cancel('CANCELLED'); }
+      if (handle) { handle.cancelled = true; handle.cancelReason = reason; handle.run?.cancel(reason); }
     }
     return this.get(id);
   }
@@ -232,7 +285,9 @@ export class Pool {
         for (const task of this.store.queued()) {
           const request = JSON.parse(task.request);
           const route = this.config.routes.find(r => r.id === request.routeId);
-          if (!route || !route.enabled) { this.store.update(task.id, 'failed', null, 'ROUTE_DISABLED'); continue; }
+          if (!route || !route.enabled) { director.failQueuedPreflight(this, task.id, 'ROUTE_DISABLED'); this.store.update(task.id, 'failed', null, 'ROUTE_DISABLED'); void this.watchdog.tick().catch(() => {}); continue; }
+          if (request.startDeadlineSeconds && this.watchdog.now() - Date.parse(task.created) >= request.startDeadlineSeconds * 1000) { this.cancel(task.id, 'START_TIMEOUT'); continue; }
+          if (request.requiresSecrets && !this.secrets.has(task.id)) { this.store.update(task.id, 'failed', null, 'SECRET_LOST'); void this.watchdog.tick().catch(() => {}); continue; }
           const blocked = this.store.held().some(held => workspaceConflict(held, request)) || waiting.some(held => workspaceConflict(held, request));
           waiting.push({ ...request, state: 'queued' });
           if (blocked) continue;
@@ -247,18 +302,46 @@ export class Pool {
       }
     });
   }
+  // A failed write keeps its review lock only when files actually changed.
+  // WSL routes always keep the lock: killing wsl.exe does not reliably end the Linux tree.
+  async writeChanged(taskId, request, before) {
+    if (request.kind !== 'write') return false;
+    if (this.routeFor(request)?.runtime === 'wsl') return true;
+    const after = await this.workspaceState(request);
+    if (!workspaceUnchanged(before, after)) return true;
+    this.store.event(taskId, 'no_workspace_changes', 'Workspace fingerprint unchanged; review lock released.');
+    return false;
+  }
   async run(task, request, route, handle) {
+    let before = null;
     try {
       request.workspace = allowedWorkspace(request.workspace, request.probe?[path.join(this.directory,'probes')]:undefined);
       const model = this.select(request).selected;
       await this.checkAuth(route, request.workspace, this.config.python, this.directory, model);
-      if (handle.cancelled || this.closed) { this.store.update(task.id, 'cancelled', null, 'CANCELLED'); return; }
+      if (handle.cancelled || this.closed) { director.failQueuedPreflight(this, task.id, handle.cancelReason || 'CANCELLED'); this.store.update(task.id, 'cancelled', null, handle.cancelReason || 'CANCELLED'); return; }
+      if (request.kind === 'write') {
+        before = await this.workspaceState(request);
+        this.store.event(task.id, 'workspace_snapshot', before);
+      }
+      const context = this.taskContext(request) || { directory: this.directory };
+      context.secretEnv = this.secrets.get(task.id) || {};
+      if (request.requiresSecrets && !this.secrets.has(task.id)) throw new PoolError('SECRET_LOST', 'Task secrets were lost on service restart.');
+      context.onActivity = () => { handle.activity = this.watchdog.now(); };
+      await director.beforeRun(this, task.id, request, context, handle);
+      const redactToken = handle.redact;
+      const secrets = Object.values(context.secretEnv);
+      handle.redact = text => typeof text === 'string' ? secrets.reduce((value, secret) => value.split(secret).join('[SECRET]'), redactToken(text)) : text;
+      if (handle.cancelled || this.closed) throw new PoolError('CANCELLED', 'Görev başlamadan iptal edildi.');
       this.store.update(task.id, 'running');
+      handle.startedAt = this.watchdog.now();
+      handle.activity = handle.startedAt;
       let events = 0;
       handle.run = this.execute(route, model, request, this.config.python, detail => {
-        if (events++ < 100) this.store.event(task.id, 'progress', detail);
-      }, this.directory);
+        handle.activity = this.watchdog.now();
+        if (events++ < 100) this.store.event(task.id, 'progress', handle.redact ? handle.redact(detail) : detail);
+      }, this.directory, context);
       const outcome = await handle.run.done;
+      if (handle.redact) { if (outcome.result) outcome.result = handle.redact(outcome.result); if (outcome.detail) outcome.detail = handle.redact(outcome.detail); }
       if (outcome.detail) this.store.event(task.id, 'error_detail', outcome.detail);
       if (outcome.error === 'QUOTA_EXHAUSTED') {
         const previous = this.store.quota(route.id);
@@ -277,26 +360,63 @@ export class Pool {
           observedAt: new Date().toISOString(), note: 'Son gerçek CLI çağrısı başarılı; Qwen kalan kota yüzdesi bildirmiyor.',
         });
       }
-      if (handle.cancelled) this.store.update(task.id, request.kind === 'write' ? 'needs_review' : 'cancelled', null, 'CANCELLED');
-      else if (outcome.error) this.store.update(task.id, request.kind === 'write' ? 'needs_review' : outcome.error === 'TIMEOUT' ? 'timed_out' : 'failed', outcome.result || null, outcome.error);
+      await handle.beforeSettle?.(outcome);
+      if (handle.cancelled) this.store.update(task.id, await this.writeChanged(task.id, request, before) ? 'needs_review' : 'cancelled', null, handle.cancelReason || 'CANCELLED');
+      else if (outcome.error) this.store.update(task.id, await this.writeChanged(task.id, request, before) ? 'needs_review' : outcome.error === 'TIMEOUT' ? 'timed_out' : 'failed', outcome.result || null, outcome.error);
       else if (request.mode === 'execute') {
         const report = parseExecutionReport(outcome.result);
         const error = !report ? 'INVALID_REPORT' : report.status !== 'completed' ? 'WORK_INCOMPLETE' : null;
-        this.store.update(task.id, error ? 'needs_review' : 'succeeded', outcome.result, error);
+        this.store.update(task.id, !error ? 'succeeded' : await this.writeChanged(task.id, request, before) ? 'needs_review' : 'failed', outcome.result, error);
       } else this.store.update(task.id, 'succeeded', outcome.result);
     } catch (error) {
-      try { this.store.update(task.id, handle.run && request.kind === 'write' ? 'needs_review' : handle.cancelled ? 'cancelled' : 'failed', null, error instanceof PoolError ? error.code : 'INTERNAL_ERROR'); }
+      try {
+        await director.settlePreflight(this, task.id, { error: error instanceof PoolError ? error.code : 'INTERNAL_ERROR', message: error instanceof PoolError ? error.message : null }).catch(() => {});
+        const changed = handle.run && request.kind === 'write' ? await this.writeChanged(task.id, request, before).catch(() => true) : false;
+        this.store.update(task.id, changed ? 'needs_review' : handle.cancelled ? 'cancelled' : 'failed', null, error instanceof PoolError ? error.code : 'INTERNAL_ERROR');
+        if (error instanceof PoolError && error.message) this.store.event(task.id, 'error_detail', (handle.redact ? handle.redact(error.message) : error.message).slice(0, 600));
+      }
       catch { this.closed = true; handle.run?.cancel('STORAGE_FAILED'); }
     } finally {
+      handle.release?.();
       this.active.delete(task.id);
+      this.secrets.delete(task.id);
+      void this.watchdog.tick().catch(() => {});
       this.schedule();
     }
+  }
+  routeFor(request) { return this.config.routes.find(route => route.id === request.routeId); }
+  workspaceState(request) {
+    return this.fingerprint(request.workspace, this.config.python, nativeSettingsFiles(this.routeFor(request), request.workspace, this.directory));
+  }
+  // Tasks stopped by a service restart: release the lock only when two
+  // fingerprints taken a minute apart both equal the pre-run snapshot.
+  async reconcileInterrupted(settleMs = 60_000) {
+    const candidates = [];
+    for (const task of this.store.interrupted()) {
+      const before = this.store.snapshot(task.id);
+      if (!before) continue;
+      try {
+        const request = JSON.parse(task.request);
+        director.cleanupInterrupted(request, task.id);
+        if (!await this.writeChanged(task.id, request, before)) candidates.push({ task, request, before });
+      } catch { /* Keep the review lock when the workspace cannot be checked. */ }
+    }
+    if (candidates.length && settleMs) await new Promise(resolve => { const timer = setTimeout(resolve, settleMs); timer.unref?.(); });
+    for (const { task, request, before } of candidates) {
+      try {
+        if (this.closed || await this.writeChanged(task.id, request, before)) continue;
+        if (this.store.get(task.id)?.state === 'needs_review') this.store.update(task.id, 'failed', task.result, 'INTERRUPTED');
+      } catch { /* Keep the review lock. */ }
+    }
+    this.schedule();
+    this.onReconciled?.();
   }
   async close() {
     this.closed = true;
     clearInterval(this.historyTimer);
+    await this.watchdog.close();
     const pending = [...this.active.values()];
-    for (const handle of pending) { handle.cancelled = true; handle.run?.cancel('CANCELLED'); }
+    for (const handle of pending) { handle.cancelled = true; handle.cancelReason = 'CANCELLED'; handle.run?.cancel('CANCELLED'); }
     await Promise.allSettled(pending.map(handle => handle.done));
     await Promise.allSettled(this.quotaRequests.values());
   }

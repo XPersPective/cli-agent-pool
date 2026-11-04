@@ -2,13 +2,14 @@ import { readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PoolError } from './config.js';
 
-// Reuse the owner's native project policy. Never create projects or grant trust
-// as a side effect of an agent submitting a task.
-// `resolveUri` maps a native folder URI to a local path; WSL profiles store /mnt URIs.
-export function agyProjectArguments(workspace, home = homedir(), resolveUri = fileURLToPath) {
+export const agyProjectDirectory = (home = homedir()) => path.join(home, '.gemini', 'config', 'projects');
+
+// Native project files whose folder resources contain the workspace, deepest root first.
+export function agyProjectMatches(workspace, home = homedir(), resolveUri = fileURLToPath) {
   let target, files;
-  const directory = path.join(home, '.gemini', 'config', 'projects');
+  const directory = agyProjectDirectory(home);
   try { target = realpathSync(workspace); files = readdirSync(directory).sort(); }
   catch { return []; }
   const matches = [];
@@ -22,19 +23,31 @@ export function agyProjectArguments(workspace, home = homedir(), resolveUri = fi
       for (const resource of resources) {
         const uri = resource?.gitFolder?.folderUri ?? resource?.folderUri;
         if (typeof uri !== 'string') continue;
-        const local = resolveUri(uri);
-        if (!local) continue;
-        const root = realpathSync(local);
+        let root;
+        try { const local = resolveUri(uri); if (!local) continue; root = realpathSync(local); }
+        catch { continue; /* A stale resource does not hide the project's other folders. */ }
         const relative = path.relative(root, target);
         if (relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`))) {
-          matches.push({ id: project.id, root });
+          matches.push({ id: project.id, root, file: path.join(directory, file) });
         }
       }
-    } catch { /* Unavailable/stale native projects do not change task admission. */ }
+    } catch { /* Unreadable/malformed native projects do not change task admission. */ }
   }
-  matches.sort((a, b) => b.root.length - a.root.length || a.id.localeCompare(b.id));
-  // Conflicting policies for the same root require native selection, not a guess.
+  return matches.sort((a, b) => b.root.length - a.root.length || a.id.localeCompare(b.id));
+}
+
+// Reuse the owner's native project policy. Never create projects or grant trust
+// as a side effect of an agent submitting a task.
+// `resolveUri` maps a native folder URI to a local path; WSL profiles store /mnt URIs.
+export function agyProjectArguments(workspace, home = homedir(), resolveUri = fileURLToPath) {
+  const matches = agyProjectMatches(workspace, home, resolveUri);
   const best = matches[0];
-  if (!best || matches.some(item => item.root === best.root && item.id !== best.id)) return [];
+  if (!best) return [];
+  const same = root => process.platform === 'win32' ? root.toLowerCase() === best.root.toLowerCase() : root === best.root;
+  // Two projects for the same root have two permission policies. Running with
+  // no --project would silently fall back to a grant-less default project.
+  const rivals = [...new Map(matches.filter(item => same(item.root)).map(item => [item.id, item])).values()];
+  if (rivals.length > 1) throw new PoolError('PROJECT_AMBIGUOUS',
+    `Antigravity has ${rivals.length} native projects for ${best.root}: ${rivals.map(item => item.file).join(', ')}. Keep one: remove this folder from the other project file (or delete the stale project in Antigravity), then retry. Pool does not pick a permission policy for you.`);
   return ['--project', best.id];
 }

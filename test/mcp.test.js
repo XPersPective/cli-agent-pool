@@ -108,7 +108,7 @@ test('stdio MCP connector shares the HTTP owner without putting secrets in tool 
   const client = new Client({ name: 'stdio-test', version: '1.0.0' });
   await client.connect(new StdioClientTransport({ command: process.execPath, args: [fileURLToPath(new URL('../bin/pool.js', import.meta.url)), 'stdio'], env: { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => ['PATH', 'SystemRoot', 'SYSTEMROOT', 'TEMP', 'TMP'].includes(name))), CLI_AGENT_POOL_HOME: root }, stderr: 'pipe' }));
   t.after(() => client.close());
-  assert.equal((await client.listTools()).tools.length, 12);
+  assert.equal((await client.listTools()).tools.length, 18);
   const response = await client.callTool({ name: 'pool_submit', arguments: { prompt: 'Test through stdio', workspace: root, kind: 'read', idempotencyKey: 'stdio-test-123' } });
   assert.ok(!response.isError);
   assert.equal(pool.list()[0].id, response.structuredContent.data.id);
@@ -150,7 +150,7 @@ test('real MCP client discovers tools and executes shell-free fake CLI through p
   await client.connect(new StreamableHTTPClientTransport(url, { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
   t.after(() => client.close());
   const tools = await client.listTools();
-  assert.equal(tools.tools.length, 12);
+  assert.equal(tools.tools.length, 18);
   const input = { prompt: 'Read only', workspace: root, kind: 'read', idempotencyKey: 'mcp-request-123' };
   const first = await client.callTool({ name: 'pool_submit', arguments: input });
   assert.ok(!first.isError);

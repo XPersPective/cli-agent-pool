@@ -1,4 +1,17 @@
 const actions = {
+  PREFLIGHT_REQUIRED: ['Owner: run cli-agent-pool preflight for the exact route/model/effort/workspace/readPaths before submitting a director.', 'pool_preflight_status'],
+  PREFLIGHT_FAILED: ['Read each failed capability and its native permission fix; owner re-runs preflight after repair.', 'pool_preflight_status'],
+  PROJECT_AMBIGUOUS: ['Keep one native Antigravity project mapping the deepest workspace root; the task error names the conflicting files.', 'pool_get_task'],
+  PROJECT_REQUIRED: ['Map the external worker worktree parent in an owner Antigravity project before submitting.', 'pool_get_task'],
+  PROFILE_UNSUPPORTED: ['Directors require native Claude/Codex/Antigravity non-paid routes; WSL/API/custom routes are unsupported.', 'pool_catalog'],
+  OWNER_ONLY: ['Run this operation from the owner session outside a Pool worker.', 'pool_help'],
+  SECRET_LOST: ['Queued task secrets were lost at service restart. Inspect the stopped task before a new owner submission.', 'pool_get_task'],
+  ACK_TIMEOUT: ['Director did not acknowledge takeover before its deadline. Inspect the stopped task and relay recovery status.', 'pool_get_task'],
+  START_TIMEOUT: ['Queued director did not start before its deadline. Inspect blockedBy; resolve only relay-owned inspected locks.', 'pool_get_task'],
+  IDLE_TIMEOUT: ['Director produced no native output and had no running linked worker before its idle deadline. Inspect its task.', 'pool_get_task'],
+  TASK_TOKEN_LOST: ['Parent execution ended; stop using its old task token. Do not start an unlinked replacement.', 'pool_get_task'],
+  WORKSPACE_HELD_BY_PARENT: ['Place workers in caller-prepared sibling worktrees outside their parent director workspace.', 'pool_get_task'],
+
   AUTH_REQUIRED: ['Complete native CLI login for the route, then query its quota/status.', 'pool_get_quotas'],
   MODEL_UNAVAILABLE: ['Query the model catalog; native CLI may not expose the requested model/account.', 'pool_catalog'],
   BILLING_UNCONFIRMED: ['Owner must configure the route billing/account in Settings.', 'pool_catalog'],

@@ -12,6 +12,7 @@ import { initialize, loadConfig, configView, saveConfig, allowedWorkspace, dataD
 import { importDiscoveredRoutes } from './adapters.js';
 import { capture } from './process.js';
 import { version } from './version.js';
+import { taskHeader } from './task-header.js';
 import { waitForTask } from './task-protocol.js';
 
 const poolBinPath = fileURLToPath(new URL('../bin/pool.js', import.meta.url));
@@ -114,7 +115,7 @@ export async function withMcpClient(directory, callback) {
   const token = readFileSync(path.join(directory, 'access-token'), 'utf8').trim();
   const client = new Client({ name: 'cli-agent-pool-cli', version });
   const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${config.port}/mcp`), {
-    requestInit: { headers: { Authorization: `Bearer ${token}` } },
+    requestInit: { headers: { Authorization: `Bearer ${token}`, ...taskHeader() } },
   });
   await client.connect(transport);
   try {

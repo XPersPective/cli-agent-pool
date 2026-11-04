@@ -78,7 +78,14 @@ function annotateView(view, directory) {
   };
 }
 
+// Private management operations; caller relay state lives outside Pool.
+const ownerDirectorOperations = {
+  preflight: (pool, body) => pool.preflight(body.input || {}),
+  submit_director: (pool, body) => pool.submitDirector(body.input || {}),
+};
+
 export function managementOperation(pool, management, body) {
+  if (ownerDirectorOperations[body.operation]) return ownerDirectorOperations[body.operation](pool, body);
   if (body.operation === 'clear_history') return pool.store.clearHistory();
   if (body.operation === 'resolve') return pool.resolveInspected({ taskId: body.taskId, reviewed: body.reviewed, note: body.note });
   if (body.operation === 'save') {

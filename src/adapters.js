@@ -5,6 +5,7 @@ import { taskPrompt, executionReportJsonSchema, parseExecutionReport } from './t
 import { existsSync, readFileSync, realpathSync, statSync, accessSync, constants, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { capture, runProcess } from './process.js';
 import { PoolError, redact, activeBillings, dataDirectory } from './config.js';
 import { loadSecret, hasSecret } from './secrets-store.js';
@@ -506,7 +507,73 @@ export function zcodeEnvironment(executable, home = homedir()) {
   return existsSync(bundled) ? { ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: bundled, ZCODE_PERSONAL_PROVIDER_CONFIG_FILE: path.join(home, '.zcode', 'v2', 'provider_config.json') } : {};
 }
 
-export function buildArguments(route, model, task) {
+// Pool's own stdio MCP server for director runs. The task token travels in the
+// environment (inherited or forwarded), never in argv.
+const poolBin = fileURLToPath(new URL('../bin/pool.js', import.meta.url));
+export function poolMcpServer(context) {
+  return { command: process.execPath, args: [poolBin, 'stdio'], env: { CLI_AGENT_POOL_HOME: context.directory } };
+}
+// Claude permission rules use //absolute paths; Windows drives become /c/...
+export function claudeReadRule(directory) {
+  const posix = directory.replace(/\\/g, '/').replace(/^([A-Za-z]):/, (_, drive) => `/${drive.toLowerCase()}`);
+  return `Read(/${posix}/**)`;
+}
+const tomlInline = values => `{${Object.entries(values).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(',')}}`;
+export function codexDirectorArguments(route, context) {
+  const server = poolMcpServer(context);
+  return ['-c', `mcp_servers.cli-agent-pool.command=${JSON.stringify(server.command)}`,
+    '-c', `mcp_servers.cli-agent-pool.args=${JSON.stringify(server.args)}`,
+    '-c', `mcp_servers.cli-agent-pool.env=${tomlInline(server.env)}`,
+    '-c', 'mcp_servers.cli-agent-pool.env_vars=["CLI_AGENT_POOL_TASK_TOKEN"]',
+    ...(route.sandboxNetwork ? ['-c', 'sandbox_workspace_write.network_access=true'] : [])];
+}
+
+// Git transport pointers (not credentials) a director needs for push.
+const gitTransportNames = ['SSH_AUTH_SOCK', 'GIT_SSH', 'GIT_SSH_COMMAND', 'GIT_ASKPASS'];
+export function directorEnvironment(context) {
+  const env = { CLI_AGENT_POOL_HOME: context.directory, CLI_AGENT_POOL_TASK_ID: context.taskId || '', CLI_AGENT_POOL_TASK_TOKEN: context.token || '', ...(context.secretEnv || {}) };
+  for (const name of gitTransportNames) if (process.env[name]) env[name] = process.env[name];
+  return env;
+}
+
+// Tool-call events (not user/system/init/result) that carry the probe markers.
+export function watchEvent(context, event) {
+  const watch = context?.watch;
+  if (!watch) return;
+  // Inspect structured native tool inputs only. Assistant prose, echoed user
+  // prompts, command output and tool-result text are not invocation evidence.
+  const calls = [];
+  if (event.type === 'assistant' && Array.isArray(event.message?.content)) {
+    for (const block of event.message.content) if (block.type === 'tool_use') calls.push({ name: block.name, input: block.input });
+  } else if (['item.started', 'item.updated', 'item.completed'].includes(event.type) && event.item?.type === 'command_execution') {
+    calls.push({ name: 'Bash', input: { command: event.item.command } });
+  } else if (event.event === 'step_update' && event.step_update?.state !== 'ERROR') {
+    const step = event.step_update;
+    const tool = step.tool_info;
+    if (tool || step.step_type === 'tool') calls.push({ name: tool?.name || step.tool_name, input: tool?.input || tool?.arguments || tool?.parameters || step.tool_input });
+  }
+  const strings = (value, depth = 0) => {
+    if (typeof value === 'string') return [value];
+    if (!value || typeof value !== 'object' || depth > 5) return [];
+    return Object.values(value).slice(0, 100).flatMap(item => strings(item, depth + 1));
+  };
+  const normalized = value => { const result = value.replace(/\\/g, '/'); return process.platform === 'win32' ? result.toLowerCase() : result; };
+  for (const call of calls) {
+    const name = String(call.name || '').replace(/_/g, '').toLowerCase();
+    const inputs = strings(call.input);
+    if (['bash', 'runcommand', 'runterminalcmd'].includes(name)) {
+      const text = inputs.join('\n');
+      if (!text.includes(watch.scope)) continue;
+      const seen = watch.markers.filter(marker => text.includes(marker));
+      if (seen.length && watch.events.length < 200) watch.events.push(seen);
+    } else if (['read', 'readfile', 'viewfile'].includes(name)) {
+      for (const read of watch.reads || []) if (read.target && inputs.some(value => normalized(value) === normalized(read.target.file))) read.nativeRead = true;
+    }
+  }
+}
+
+export function buildArguments(route, model, task, context = null) {
+  const directorRun = context?.profile === 'director';
   const argv = commandArgv(route);
   const effort = task.effort;
   if (Array.isArray(route.argsTemplate) && route.argsTemplate.length > 0) {
@@ -514,8 +581,8 @@ export function buildArguments(route, model, task) {
     const built = route.argsTemplate.map(token => token.replace(/\{(model|effort|workspace|prompt|kind)\}/g, (_, k) => String(values[k] ?? '')));
     return [...argv, ...built];
   }
-  if (route.adapter === 'codex') return [...argv, '-a', 'never', ...(task.mode === 'execute' ? ['--search'] : []), 'exec', '--ignore-user-config', '--ephemeral', '--skip-git-repo-check', '--json', '--sandbox', task.kind === 'write' ? 'workspace-write' : 'read-only', '-C', task.workspace, ...(process.platform === 'win32' ? ['-c', 'windows.sandbox="elevated"'] : []), '-c', 'model_provider="openai"', '-m', model.id, ...(effort ? ['-c', `model_reasoning_effort=${JSON.stringify(effort)}`] : []), '-'];
-  if (route.adapter === 'claude') return [...argv, '-p', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--permission-mode', task.kind === 'write' ? 'acceptEdits' : 'dontAsk', '--permission-prompts', 'none', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--disable-slash-commands', ...claudeSettingSources(route), '--tools', task.kind === 'text' ? '' : task.kind === 'read' ? 'Read,Glob,Grep' : task.mode === 'execute' ? 'default' : 'Read,Glob,Grep,Edit,Write', '--model', model.id, ...(effort ? ['--effort', effort] : [])];
+  if (route.adapter === 'codex') return [...argv, '-a', 'never', ...(task.mode === 'execute' ? ['--search'] : []), 'exec', '--ignore-user-config', '--ephemeral', '--skip-git-repo-check', '--json', '--sandbox', task.kind === 'write' ? 'workspace-write' : 'read-only', '-C', task.workspace, ...(process.platform === 'win32' ? ['-c', 'windows.sandbox="elevated"'] : []), '-c', 'model_provider="openai"', ...(directorRun ? codexDirectorArguments(route, context) : []), '-m', model.id, ...(effort ? ['-c', `model_reasoning_effort=${JSON.stringify(effort)}`] : []), '-'];
+  if (route.adapter === 'claude') return [...argv, '-p', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--permission-mode', task.kind === 'write' ? 'acceptEdits' : 'dontAsk', '--permission-prompts', 'none', '--strict-mcp-config', '--mcp-config', directorRun ? JSON.stringify({ mcpServers: { 'cli-agent-pool': poolMcpServer(context) } }) : '{"mcpServers":{}}', '--disable-slash-commands', ...claudeSettingSources(route), '--tools', task.kind === 'text' ? '' : task.kind === 'read' ? 'Read,Glob,Grep' : task.mode === 'execute' ? 'default' : 'Read,Glob,Grep,Edit,Write', ...(directorRun && context.readPaths?.length ? ['--allowedTools', ...context.readPaths.map(claudeReadRule)] : []), '--model', model.id, ...(effort ? ['--effort', effort] : [])];
   if (route.adapter === 'opencode' || route.adapter === 'mimo') return [...argv, 'run', '--format', 'json', '--pure', '-m', opencodeModelId(route, model.id), '--agent', task.kind === 'write' ? 'build' : 'plan', ...(effort ? ['--variant', effort] : [])];
   // ZCode -p has no model flag: it runs the default model selected in ZCode itself.
   if (route.adapter === 'zcode') {
@@ -654,8 +721,8 @@ export function parseQoderModels(output) {
 const strictJsonlAdapters = new Set(['codex', 'claude', 'qoder', 'qwen', 'opencode', 'mimo', 'agy', 'mcode']);
 const promptArgAdapters = new Set(['zcode', 'kimi', 'aider']);
 
-export function execute(route, model, task, python, progress, directory = dataDirectory()) {
-  task = { ...task, prompt: taskPrompt(task) };
+export function execute(route, model, task, python, progress, directory = dataDirectory(), context = null) {
+  task = { ...task, prompt: taskPrompt(task, context) };
   let answer = '';
   let rawLines = [];
   let productError = false;
@@ -663,19 +730,21 @@ export function execute(route, model, task, python, progress, directory = dataDi
   let failureText = '';
   let permissionDenied = false;
   let permissionDetail = '';
-  const argv = buildArguments(route, model, task);
-  const extraEnv = { ...profileEnvironment(route, directory), ...routeEnvironment(route, directory, task.kind), CLI_AGENT_POOL_WORKER: '1' };
+  const argv = buildArguments(route, model, task, context);
+  const extraEnv = { ...profileEnvironment(route, directory), ...routeEnvironment(route, directory, task.kind), ...(context ? directorEnvironment(context) : {}), CLI_AGENT_POOL_WORKER: '1' };
   const usesStdin = route.promptStdin ?? !promptArgAdapters.has(route.adapter);
   const input = !usesStdin ? '' : route.adapter === 'mmx' ? JSON.stringify([{ role: 'user', content: task.prompt }]) : route.adapter === 'agy' ? `${JSON.stringify({ event: 'user', message: { content: task.prompt } })}\n` : task.prompt;
   const process = runProcess({ argv, cwd: task.workspace, input, extraEnv, python, timeoutMs: task.timeoutSeconds * 1000,
     onLine(line) {
       if (!line.trim()) return;
+      context?.onActivity?.();
       let event;
       try { event = JSON.parse(line); } catch {
         if (strictJsonlAdapters.has(route.adapter)) throw new Error('Invalid JSONL');
         rawLines.push(line);
         return;
       }
+      watchEvent(context, event);
       if (route.adapter === 'agy' && event.event) {
         if (event.event === 'init') {
           progress('started');

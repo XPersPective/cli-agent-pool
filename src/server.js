@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { timingSafeEqual } from 'node:crypto';
+import { timingSafeEqual, createHash } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
@@ -10,9 +10,18 @@ import { taskSchema } from './pool.js';
 import { version } from './version.js';
 import { compactTask } from './task-protocol.js';
 import { serviceHelp } from './service-help.js';
+import { preflightSchema } from './director.js';
+import { directorFeatures } from './lifecycle.js';
 
-export function mcpServer(pool) {
+const tokenHash = value => createHash('sha256').update(value).digest('hex');
+
+export function mcpServer(pool, caller = {}) {
   const server = new McpServer({ name: 'cli-agent-pool', version });
+  const parent = () => caller.taskToken ? pool.taskTokens.get(tokenHash(caller.taskToken)) : null;
+  const directing = () => parent()?.director && !parent()?.preflight;
+  const owner = () => {
+    if (caller.taskToken || caller.worker) throw new PoolError('OWNER_ONLY', 'This operation requires an owner session outside a Pool task.');
+  };
   const register = (name, description, inputSchema, callback, readOnly = true) => server.registerTool(name, {
     description, inputSchema, annotations: { readOnlyHint: readOnly, destructiveHint: !readOnly, idempotentHint: readOnly, openWorldHint: !readOnly },
   }, async input => {
@@ -31,11 +40,25 @@ export function mcpServer(pool) {
   register('pool_help', 'Short service map, or recovery guidance for one error code.', {code:z.string().max(100).optional()}, ({code}) => serviceHelp(code));
   register('pool_get_policy', 'Compatibility service map; no selection or authority modes. Prefer pool_help.', {}, () => serviceHelp());
   register('pool_select', 'Recommend an allowed model without starting a task. mode: execute requires write and native tool support. minRemainingPercent can raise the owner quota reserve, never lower it.', { kind: z.enum(['text', 'read', 'write']), mode: z.enum(['response', 'execute']).optional(), routeId: z.string().optional(), modelId: z.string().optional(), group: z.string().optional(), effort: z.string().optional(), minRemainingPercent: z.number().min(0).max(100).optional() }, async input => { const result = await pool.selectLive(input); return {selected:compactModel(pool,result.selected),alternatives:result.alternatives.length}; });
-  register('pool_submit', 'Start one bounded CLI task. For implementation use kind: write, mode: execute and the calling project/worktree absolute workspace. Native tools perform edits and checks, then return a short report. Reuse the same idempotency key for a lost response; poll the returned ID, never replay a started write.', taskSchema.extend({ compact: z.boolean().default(true) }).shape, async ({ compact, ...input }) => { const task = await pool.submitLive(input); return compact ? compactTask(task) : task; }, false);
+  register('pool_submit', 'Start one bounded CLI task. For implementation use kind: write, mode: execute and the calling project/worktree absolute workspace. Native tools perform edits and checks, then return a short report. Reuse the same idempotency key for a lost response; poll the returned ID, never replay a started write.', taskSchema.extend({ compact: z.boolean().default(true) }).shape, async ({ compact, ...input }) => { let task;
+    if (input.profile === 'director') {
+      if (caller.taskToken && !directing()) throw new PoolError('OWNER_ONLY', 'Workers cannot submit directors.');
+      if (caller.worker && !directing()) owner();
+      task = await pool.submitDirector(input);
+    } else task = await pool.submitLive(input, false, { taskToken: caller.taskToken }); return compact ? compactTask(task) : task; }, false);
   register('pool_catalog', 'Sources only by default; billing/adapter/query filters return short model pages. No category required; no CLI discovery.', catalogSchema.shape, input => compactCatalog(pool, input));
   register('pool_get_task', 'Read task state and result. compact: true omits prompt/events and bounds the report to reduce tokens. Queued is not failure; inspect queueReason/blockedBy.', { taskId: z.string().uuid(), after: z.number().int().min(0).default(0), compact: z.boolean().default(true) }, ({ taskId, after, compact }) => compact ? compactTask(pool.get(taskId, after)) : pool.get(taskId, after));
   register('pool_list_tasks', 'Read paginated local task history.', { limit: z.number().int().min(1).max(100).default(50), offset: z.number().int().min(0).max(1_000_000).default(0) }, ({ limit, offset }) => pool.list(limit, offset));
   register('pool_cancel_task', 'Request cancellation and wait for subsequent task state to confirm it.', { taskId: z.string().uuid() }, ({ taskId }) => pool.cancel(taskId), false);
+  register('pool_capabilities', 'Supported optional task contracts and director mechanisms.', {}, () => directorFeatures);
+  register('pool_preflight', 'Owner-only verified director readiness probes; takes normal workspace lock.', preflightSchema.shape, input => { owner(); return pool.preflight(input); }, false);
+  register('pool_preflight_status', 'Cached director readiness; lock-free and runs no model.', preflightSchema.omit({ force: true }).shape, input => pool.preflightStatus(input));
+  register('pool_preflight_ack', 'Used only by the running preflight probe.', { nonce: z.string().regex(/^[a-f0-9]{64}$/) }, ({ nonce }) => pool.preflightAck(nonce, caller.taskToken), false);
+  register('pool_ack_task', 'Acknowledge running director takeover; idempotent while running.', { taskId: z.string().uuid() }, ({ taskId }) => {
+    if ((caller.taskToken || caller.worker) && parent()?.taskId !== taskId) throw new PoolError('OWNER_ONLY', 'A task can acknowledge only itself.');
+    return pool.watchdog.ack(taskId);
+  }, false);
+  register('pool_resolve_task', 'Owner: release an inspected stopped review lock without reverting files.', { taskId: z.string().uuid(), reviewed: z.literal(true), note: z.string().trim().min(1).max(600) }, input => { owner(); return pool.resolveInspected(input); }, false);
   register('pool_get_quotas', 'Query vendor quota through the installed CLI. Unsupported quotas remain unknown.', { routeId: z.string() }, ({ routeId }) => pool.getQuota(routeId));
   return server;
 }
@@ -54,6 +77,19 @@ export function createServer(pool, token, port = pool.config.port, management) {
     if (browser) {
       if (req.headers.origin !== `http://127.0.0.1:${actualPort}` || !ui.authorized(req, actualPort)) return fail(403, 'UNAUTHORIZED', 'Yönetim oturumu geçersiz. Terminaldeki bağlantıdan yeniden açın.');
     } else if ('origin' in req.headers || 'sec-fetch-site' in req.headers) return fail(403, 'ORIGIN_DENIED', 'Bu bağlantı kaynağına izin verilmiyor.');
+    // Preflight poolService probe: no bearer token, only a live 256-bit single-use nonce plus its secret.
+    const probe = /^\/preflight\/([a-f0-9]{64})$/.exec(req.url || '');
+    if (probe) {
+      if (req.method !== 'POST') return fail(405, 'METHOD_NOT_ALLOWED', 'POST only.');
+      if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) return fail(415, 'CONTENT_TYPE', 'JSON required.');
+      let raw = '';
+      try { for await (const chunk of req) { raw += chunk; if (Buffer.byteLength(raw) > 1024) { req.resume(); return fail(413, 'REQUEST_TOO_LARGE', 'Too large.'); } } }
+      catch { return fail(400, 'INVALID_JSON', 'Incomplete probe request.'); }
+      let secret = null; try { secret = JSON.parse(raw).secret; } catch { /* invalid */ }
+      const accepted = pool.serviceAck(probe[1], secret);
+      res.writeHead(accepted ? 204 : 404, { 'Cache-Control': 'no-store' });
+      return res.end();
+    }
     const authorization = req.headers.authorization || '';
     const manage = req.url === '/manage' && management;
     const expected = `Bearer ${manage ? management.token : token}`;
@@ -80,13 +116,14 @@ export function createServer(pool, token, port = pool.config.port, management) {
             ? await ui.operation(body)
             : body.operation === 'pair_ui'
               ? { status: 'listening', version, endpoint: `http://127.0.0.1:${actualPort}/mcp`, dashboard: ui?.launchURL(actualPort) }
-              : managementOperation(pool, management, body);
+              : await managementOperation(pool, management, body);
           res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
           res.end(JSON.stringify(value));
         } catch (error) { fail(error instanceof PoolError ? 409 : 400, error instanceof PoolError ? error.code : 'INVALID_CONFIG', error instanceof PoolError ? error.message : 'Ayarlar geçersiz. Girdiğiniz değerleri kontrol edin.'); }
         return;
       }
-      const mcp = mcpServer(pool);
+      const taskHeader = req.headers['x-pool-task'];
+      const mcp = mcpServer(pool, { worker: req.headers['x-pool-worker'] === '1', taskToken: typeof taskHeader === 'string' && /^[a-f0-9]{64}$/.test(taskHeader) ? taskHeader : null });
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
       res.once('close', () => { void mcp.close(); });
       await mcp.connect(transport);

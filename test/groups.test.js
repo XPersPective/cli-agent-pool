@@ -38,8 +38,10 @@ test('live group selection skips exhausted routes, respects pins and never retri
   await assert.rejects(pool.selectLive({ kind: 'text', group: 'medium', routeId: 'first' }), { code: 'NO_ROUTE' });
   const request = { prompt: 'change', kind: 'write', group: 'medium', workspace: directory, idempotencyKey: 'group-request-123' };
   const task = await pool.submitLive(request);
-  for (let i = 0; i < 20 && pool.get(task.id).state !== 'needs_review'; i++) await new Promise(resolve => setTimeout(resolve, 5));
-  assert.equal(pool.get(task.id).state, 'needs_review'); assert.equal(executions, 1);
+  for (let i = 0; i < 400 && !['needs_review', 'failed'].includes(pool.get(task.id).state); i++) await new Promise(resolve => setTimeout(resolve, 10));
+  // The worker changed nothing, so the failure does not keep a review lock.
+  assert.equal(pool.get(task.id).state, 'failed'); assert.equal(executions, 1);
+  assert.ok(pool.get(task.id).events.some(event => event.kind === 'no_workspace_changes'));
   assert.equal((await pool.submitLive(request)).id, task.id); assert.equal(executions, 1);
 });
 
