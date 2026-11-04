@@ -17,6 +17,8 @@ Caller instructions decide whether to use a category or the catalog.
   {view:"models"} returns model pages. Catalog access needs no category.
 - Pages default to 12; use nextOffset as offset only when more are needed.
   Entries include exact routeId/modelId, tool kinds, effort and cached quota.
+  Each CLI account is its own route; `account` names a non-default one. The
+  caller decides when to move to another account; pin it with routeId.
 
 If IDs/category are known, submit directly: pool_submit with prompt, absolute
 workspace, kind and a durable idempotencyKey. group selects a category;

@@ -53,8 +53,8 @@ export function runProcess({ argv, cwd, input = '', relay = false, extraEnv = {}
   return { done, cancel, send: input => child.stdin.write(JSON.stringify({ input }) + '\n') };
 }
 
-export async function capture(argv, cwd, python) {
-  const result = await runProcess({ argv, cwd, python, timeoutMs: 15_000 }).done;
+export async function capture(argv, cwd, python, extraEnv = {}, timeoutMs = 15_000) {
+  const result = await runProcess({ argv, cwd, python, extraEnv, timeoutMs }).done;
   if (result.stopReason) throw new PoolError(result.stopReason, 'CLI kontrolü tamamlanamadı. Kurulumu ve Python erişimini kontrol edin.');
   return result;
 }

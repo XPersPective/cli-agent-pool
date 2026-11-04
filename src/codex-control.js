@@ -1,11 +1,12 @@
 import { runProcess } from './process.js';
-import { executableArgv } from './adapters.js';
-import { PoolError } from './config.js';
+import { routeCommand } from './adapters.js';
+import { PoolError, dataDirectory } from './config.js';
 
-export async function codexControl(route, cwd, python, method) {
+export async function codexControl(route, cwd, python, method, directory = dataDirectory()) {
   let nextId = 1;
   const pending = new Map();
-  const handle = runProcess({ argv: [...executableArgv(route.executable), 'app-server', '--stdio', '-c', 'model_provider="openai"'], cwd, python, relay: true, timeoutMs: 20_000,
+  const command = routeCommand(route, directory);
+  const handle = runProcess({ extraEnv: command.env, argv: [...command.argv, 'app-server', '--stdio', '-c', 'model_provider="openai"'], cwd, python, relay: true, timeoutMs: 20_000,
     onLine(line) {
       const message = JSON.parse(line);
       if (message.method && message.id != null) {

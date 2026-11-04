@@ -25,7 +25,7 @@ export function mcpServer(pool) {
       return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: { code: known ? error.code : invalid ? 'INVALID_REQUEST' : 'INTERNAL_ERROR', message: (known ? error.message : invalid ? 'İstek alanları geçersiz.' : 'İşlem tamamlanamadı.').slice(0,240), help: {tool:'pool_help',arguments:{code:known ? error.code : invalid ? 'INVALID_REQUEST' : 'INTERNAL_ERROR'}} } }) }] };
     }
   });
-  register('pool_list_connections', 'Enabled connections only. Prefer pool_catalog for model discovery.', {}, () => pool.config.routes.filter(r => r.enabled).map(({id,adapter,billing}) => ({id,adapter,billing})));
+  register('pool_list_connections', 'Enabled connections only; each account is its own connection. Prefer pool_catalog for model discovery.', {}, () => pool.config.routes.filter(r => r.enabled).map(({id,adapter,billing,profile,runtime}) => ({id,adapter,billing,account:profile || 'default',...(runtime === 'wsl' ? {runtime} : {})})));
   register('pool_list_pools', 'Categories only by default; group selects a short model page. Cached quota; no CLI calls.', categoryQuerySchema.shape, input => pool.pools(input));
   register('pool_list_models', 'Compatibility paginated catalog. Prefer pool_catalog.', catalogSchema.shape, input => compactCatalog(pool, {...input, view:'models'}));
   register('pool_help', 'Short service map, or recovery guidance for one error code.', {code:z.string().max(100).optional()}, ({code}) => serviceHelp(code));

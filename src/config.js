@@ -29,6 +29,24 @@ const apiBlockSchema = z.object({
   secretRef: label.regex(/^[a-zA-Z0-9_-]{1,64}$/).optional(),
 }).strict();
 
+// Codex and Claude keep each login in their own config directory. Windows agy
+// keeps one Credential Manager login, so extra Antigravity accounts run in WSL,
+// where agy stores its login under the profile HOME.
+export function accountIssues(route) {
+  const issues = [];
+  if ((route.profile || route.runtime === 'wsl') && route.api) issues.push(`${route.id}: API bağlantısı hesap profili kullanmaz.`);
+  if (route.profile && !['codex', 'claude', 'agy'].includes(route.adapter)) issues.push(`${route.id}: hesap profili yalnızca Codex, Claude ve Antigravity için desteklenir.`);
+  if (route.runtime === 'wsl') {
+    if (route.adapter !== 'agy') issues.push(`${route.id}: WSL çalışma ortamı yalnızca Antigravity için desteklenir.`);
+    if (!route.wsl) issues.push(`${route.id}: WSL dağıtımı ve Linux ev klasörü tanımlanmalı.`);
+    if (!/^\/[A-Za-z0-9._/-]{1,255}$/.test(route.executable)) issues.push(`${route.id}: WSL CLI yolu mutlak Linux yolu olmalı.`);
+  } else {
+    if (route.wsl) issues.push(`${route.id}: WSL ayarı yalnızca runtime wsl ile kullanılır.`);
+    if (route.adapter === 'agy' && route.profile) issues.push(`${route.id}: Windows Antigravity tek hesap tutar; ek hesaplar için WSL çalışma ortamını seçin.`);
+  }
+  return issues;
+}
+
 export const configSchema = z.object({
   port: z.number().int().min(1024).max(65535).default(43127),
   python: z.string().min(1).default(process.platform === 'win32' ? 'python' : 'python3'),
@@ -52,6 +70,13 @@ export const configSchema = z.object({
     priority: z.number().int().min(0).max(1000).default(100),
     maxConcurrent: z.unknown().optional(),
     minRemainingPercent: z.number().min(0).max(100).default(0),
+    // One official CLI account per route: an isolated native profile directory.
+    profile: z.string().regex(/^[a-zA-Z0-9_-]{1,40}$/, 'Profil adı harf, rakam, - veya _ olmalı.').optional(),
+    runtime: z.enum(['native', 'wsl']).optional(),
+    wsl: z.object({
+      distro: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/),
+      home: z.string().regex(/^\/[A-Za-z0-9._/-]{0,255}$/),
+    }).strict().optional(),
     api: apiBlockSchema.optional(),
     argsTemplate: z.array(z.string().min(1).max(512).refine(v => !/[\u0000]/.test(v), 'NUL karakteri kullanılamaz.')).min(1).max(32).optional(),
     promptStdin: z.boolean().optional(),
@@ -73,7 +98,14 @@ export const configSchema = z.object({
     ctx.addIssue({ code: 'custom', message: 'Üyelikteki kategori tanımlı olmalı.' });
   if (new Set(config.routes.map(r => r.id)).size !== config.routes.length)
     ctx.addIssue({ code: 'custom', message: 'Bağlantı kimlikleri benzersiz olmalı.' });
+  const accounts = new Set();
   for (const route of config.routes) {
+    for (const issue of accountIssues(route)) ctx.addIssue({ code: 'custom', message: issue });
+    if (route.profile || route.runtime === 'wsl') {
+      const key = JSON.stringify([route.adapter, route.runtime || 'native', route.wsl?.distro || '', route.profile || 'default']);
+      if (accounts.has(key)) ctx.addIssue({ code: 'custom', message: `${route.id}: aynı hesap profili başka bir bağlantıda kullanılıyor.` });
+      accounts.add(key);
+    }
     if (new Set(route.models.map(m => m.id)).size !== route.models.length)
       ctx.addIssue({ code: 'custom', message: 'Bağlantıdaki model kimlikleri benzersiz olmalı.' });
     if (route.adapter === 'mmx' && route.models.some(m => m.kinds.some(k => k !== 'text')))

@@ -5,7 +5,8 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { configView, saveConfig, PoolError, dataDirectory } from './config.js';
-import { discover, routeCatalog, importDiscoveredRoutes, loginCommands, mergeCatalogModels, executableArgv } from './adapters.js';
+import { discover, routeCatalog, importDiscoveredRoutes, loginCommands, mergeCatalogModels, commandArgv, routeCommand } from './adapters.js';
+import { detectWslAgy, nextAccountRoute, prepareWslProfile } from './accounts.js';
 import { codexControl } from './codex-control.js';
 import { saveSecret, hasSecret } from './secrets-store.js';
 import { childEnvironment, runProcess } from './process.js';
@@ -44,17 +45,22 @@ export async function pickWindowsFolder(initialPath = '', { run = execPicker, pl
   return { path: actual };
 }
 
-export async function openCliLogin(route, { platform = process.platform, run = promisify(execFile) } = {}) {
+export async function openCliLogin(route, { platform = process.platform, run = promisify(execFile), directory = dataDirectory(), prepare = prepareWslProfile, python = 'python' } = {}) {
   const command = loginCommands[route.adapter];
   if (route.api || !command || ['custom','lmstudio','ollama'].includes(route.adapter)) throw new PoolError('LOGIN_UNAVAILABLE', 'Bu bağlantının anahtar veya yerel uygulama ayarlarını Ayarlar ekranından düzenleyin.');
-  const argv = [...executableArgv(route.executable), ...command.split(' ').slice(1)];
-  if (platform !== 'win32') return { opened: false, message: `Terminalde ${command} çalıştırın, girişten sonra Kontrol et düğmesine basın.` };
+  // Each account profile logs in through its own CLI process: profile env for
+  // Codex/Claude, the profile HOME inside WSL for Antigravity.
+  const { argv: base, env: profileEnv } = route.runtime === 'wsl' ? { argv: commandArgv(route), env: {} } : routeCommand(route, directory);
+  const argv = [...base, ...command.split(' ').slice(1)];
+  if (route.runtime === 'wsl' && platform === 'win32') await prepare(route, python, directory);
+  const prefix = Object.entries(profileEnv).map(([key, value]) => `${key}="${value}" `).join('');
+  if (platform !== 'win32') return { opened: false, message: `Terminalde ${prefix}${command} çalıştırın, girişten sonra Kontrol et düğmesine basın.` };
   if (argv.some(arg => /["\r\n]/.test(arg))) throw new PoolError('LOGIN_UNAVAILABLE', `Terminalde ${command} çalıştırın.`);
   // Fixed platform script only: arguments travel as JSON data, never executable PowerShell text.
   // Every forwarded argument is a file or fixed login word, without embedded quotes or trailing backslashes.
   const script = `$ErrorActionPreference = 'Stop'; $taskLoginRequest = ConvertFrom-Json $env:CLI_AGENT_POOL_LOGIN_ARGV; $taskLoginOptions = @{FilePath=$taskLoginRequest.file; WindowStyle='Normal'; PassThru=$true; ErrorAction='Stop'}; if ($taskLoginRequest.arguments.Count -gt 0) { $taskLoginOptions.ArgumentList = (($taskLoginRequest.arguments | ForEach-Object { '"' + $_ + '"' }) -join ' ') }; $taskLoginProcess = Start-Process @taskLoginOptions; @{opened=$true} | ConvertTo-Json -Compress`;
   try {
-    const result = await run(path.join(process.env.SystemRoot || 'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe'), ['-NoProfile','-NonInteractive','-Command',script], { env: childEnvironment({CLI_AGENT_POOL_LOGIN_ARGV: JSON.stringify({file:argv[0],arguments:argv.slice(1)})}), windowsHide: true, timeout: 15000, maxBuffer: 4096 });
+    const result = await run(path.join(process.env.SystemRoot || 'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe'), ['-NoProfile','-NonInteractive','-Command',script], { env: childEnvironment({...profileEnv, CLI_AGENT_POOL_LOGIN_ARGV: JSON.stringify({file:argv[0],arguments:argv.slice(1)})}), windowsHide: true, timeout: 15000, maxBuffer: 4096 });
     if (!JSON.parse(result.stdout).opened) throw new Error('Not opened');
   } catch { throw new PoolError('LOGIN_FAILED', `Giriş penceresi açılamadı. Terminalde ${command} çalıştırın.`); }
   return { opened: true, message: 'Resmî CLI giriş penceresi açıldı. Girişi orada tamamlayıp Kontrol et düğmesine basın.' };
@@ -91,10 +97,10 @@ export function browserUI(pool, management) {
   const catalogFor = async route => {
     const cwd = management.directory;
     if (route.adapter === 'codex' && !route.api) {
-      try { return await codexControl(route, cwd, pool.config.python, 'models'); }
-      catch { return routeCatalog(route, cwd, pool.config.python); }
+      try { return await codexControl(route, cwd, pool.config.python, 'models', management.directory); }
+      catch { return routeCatalog(route, cwd, pool.config.python, management.directory); }
     }
-    return routeCatalog(route, cwd, pool.config.python);
+    return routeCatalog(route, cwd, pool.config.python, management.directory);
   };
   let launchToken = randomBytes(32).toString('hex');
   const cookieSecret = createHmac('sha256', Buffer.from(management.token, 'hex')).update('cli-agent-pool-browser-cookie-v1').digest();
@@ -149,8 +155,8 @@ export function browserUI(pool, management) {
         return {
           version,
           revision: configView(management.directory).revision,
-          connections: pool.config.routes.map(({ id, adapter, enabled, billing, autoSelect, api }) => ({
-            id, adapter, enabled, billing,
+          connections: pool.config.routes.map(({ id, adapter, enabled, billing, autoSelect, api, profile, runtime }) => ({
+            id, adapter, enabled, billing, account: profile || 'default', runtime: runtime || 'native',
             autoSelect: autoSelect ?? (billing !== 'paid_api'),
             protocol: api?.protocol || null,
             baseUrl: api?.baseUrl || null,
@@ -177,7 +183,23 @@ export function browserUI(pool, management) {
       if (operation === 'login') {
         const route = pool.config.routes.find(route => route.id === payload.routeId);
         if (!route) throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı.');
-        return openCliLogin(route);
+        return openCliLogin(route, { directory: management.directory, python: pool.config.python });
+      }
+      if (operation === 'add_account') {
+        const view = configView(management.directory);
+        const base = view.config.routes.find(route => route.id === payload.routeId);
+        const wsl = base?.adapter === 'agy' && !base.api ? await detectWslAgy(pool.config.python, management.directory) : null;
+        const { config, route } = nextAccountRoute(view.config, payload.routeId, wsl);
+        if (route.runtime === 'wsl') await prepareWslProfile(route, pool.config.python, management.directory);
+        pool.config = saveConfig(management.directory, config, view.revision);
+        pool.schedule();
+        return { ...annotateView(configView(management.directory), management.directory), addedRoute: route.id };
+      }
+      if (operation === 'sync_permissions') {
+        const routes = pool.config.routes.filter(route => route.runtime === 'wsl' && (!payload.routeId || route.id === payload.routeId));
+        const results = {};
+        for (const route of routes) results[route.id] = await prepareWslProfile(route, pool.config.python, management.directory);
+        return { synced: results };
       }
       if (operation === 'skills') return workspaceSkills(payload.workspace || '', pool.config.workspaceRoots);
       if (operation === 'skill') return readWorkspaceSkill(payload.workspace || '', pool.config.workspaceRoots, payload.id);
@@ -216,6 +238,7 @@ export function browserUI(pool, management) {
       if (operation === 'catalog' || operation === 'refresh_catalog') {
         const route = pool.config.routes.find(r => r.id === payload.routeId);
         if (!route) throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı.');
+        if (route.runtime === 'wsl' && operation === 'refresh_catalog') await prepareWslProfile(route, pool.config.python, management.directory);
         const catalog = await catalogFor(route);
         if (operation === 'catalog') return catalog;
         const view = configView(management.directory);

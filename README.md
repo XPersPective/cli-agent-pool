@@ -131,6 +131,42 @@ dosyasında saklanır ve tarayıcıya veya MCP istemcilerine hiçbir zaman geri 
 | **LM Studio / Ollama** (`lmstudio`, `ollama`) | `free` (yerel) | `lms ls --json` ve `~/.ollama/models` yerel model keşfi | `lms status` / `ollama list` |
 | **Aider / Kilo / Hermes / Custom** (`aider`, `kilocode`, `hermes`, `custom`) | `subscription`, `token_plan`, `free` | Otomatik ikili keşfi ve şablon tabanlı (`argsTemplate`) güvenli yürütme | İlgili CLI komutu |
 
+### Çoklu hesap (Codex, Claude, Antigravity)
+
+Her hesap ayrı bir bağlantıdır (`route`): kendi girişi, kendi kotası, kendi model
+ve efor listesi vardır. Ayarlar ekranında bir Codex/Claude/Antigravity bağlantısının
+**Başka hesap ekle** düğmesi `codex-acc2`, `claude-acc2`, `agy-acc2` gibi yeni, kapalı
+bir bağlantı oluşturur ve modelleri havuz üyelikleriyle kopyalar. O bağlantıda
+**Giriş yap** ile diğer hesaba bir kez giriş yapılır; resmî CLI oturumu kendi yeniler.
+
+| CLI | Hesap izolasyonu | Profil yeri |
+|---|---|---|
+| Codex | `CODEX_HOME` | `<veri dizini>/profiles/codex/<profil>` |
+| Claude Code | `CLAUDE_CONFIG_DIR` | `<veri dizini>/profiles/claude/<profil>` |
+| Antigravity | WSL içinde profil başına `HOME` | `~/.cli-agent-pool/profiles/agy/<profil>` (Linux) |
+
+Windows `agy` girişi Credential Manager'daki tek `gemini:antigravity` kaydında
+tutar; aynı Windows kullanıcısında ikinci hesap birincinin üzerine yazar. Bu yüzden
+varsayılan Antigravity hesabı Windows'ta kalır, ek hesaplar WSL'deki resmî Linux
+`agy` ile çalışır (`agy` WSL'de girişi profil `HOME`'u altındaki dosyada tutar).
+WSL'de bir kez kurulum gerekir:
+
+```bash
+curl -fsSL https://antigravity.google/cli/install.sh | bash
+```
+
+Havuz `wsl.exe --exec` ile kabuksuz çağırır; Windows proje klasörleri `/mnt/<sürücü>/...`
+olarak görülür. Sahibin Windows'taki Antigravity proje izinleri, izinli dosya yolları
+ve güvenilir klasörleri giriş, katalog yenileme, servis açılışı ve **Antigravity
+izinlerini eşitle** düğmesiyle WSL profiline yol çevirisiyle kopyalanır; görev
+gönderimi izin oluşturmaz, kimlik bilgisi asla kopyalanmaz. WSL hesabındaki
+`execute` komutları Linux'ta çalışır; Windows'a özgü komutlar (PowerShell, `.cmd`)
+ve WSL'de kurulu olmayan araçlar orada çalışmaz.
+
+Hangi hesaba ne zaman geçileceği havuzun işi değildir: çağıran sistem
+`pool_get_quotas` ile her bağlantının kotasını okur, `pool_catalog` / `pool_list_connections`
+çıktısındaki `routeId` ve `account` alanıyla hesabı kendisi seçer.
+
 ### Büyük model sağlayıcıları ve token planları
 
 Havuz modellere her zaman bir CLI üzerinden bağlanır; böylece modelin kendi araçları ve izin

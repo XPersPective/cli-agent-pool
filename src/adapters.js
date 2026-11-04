@@ -9,6 +9,7 @@ import { capture, runProcess } from './process.js';
 import { PoolError, redact, activeBillings, dataDirectory } from './config.js';
 import { loadSecret, hasSecret } from './secrets-store.js';
 import { claudeQuota, zaiQuota, antigravityQuota, kimiQuota, minimaxQuota, minimaxWindows, openrouterQuota, apiRouteQuota } from './quotas.js';
+import { profileEnvironment, claudeConfigDirectory, wslPrefix, wslProfileHome, wslWindowsPath, wslUriToWindows } from './profiles.js';
 
 export const adapterSpecs = [
   { adapter: 'codex', label: 'OpenAI Codex CLI', binaries: ['codex'], pkg: '@openai/codex', defaultBilling: 'subscription', loginCommand: 'codex login' },
@@ -437,6 +438,17 @@ export function executableArgv(executable) {
   return /\.[cm]?js$/i.test(executable) ? [process.execPath, executable] : [executable];
 }
 
+// A WSL route runs the Linux CLI through wsl.exe --exec (no shell) with the
+// account's own HOME; native routes run the Windows executable directly.
+export function commandArgv(route) {
+  if (route.runtime === 'wsl' && !route.api) return [...wslPrefix(route), route.executable];
+  return executableArgv(route.executable);
+}
+
+export function routeCommand(route, directory = dataDirectory()) {
+  return { argv: commandArgv(route), env: profileEnvironment(route, directory) };
+}
+
 export function opencodeModelId(route, modelId) {
   if (!route.api) return modelId;
   const providerId = `pool_${route.id.replace(/[^a-zA-Z0-9_]/g, '_')}`;
@@ -495,7 +507,7 @@ export function zcodeEnvironment(executable, home = homedir()) {
 }
 
 export function buildArguments(route, model, task) {
-  const argv = executableArgv(route.executable);
+  const argv = commandArgv(route);
   const effort = task.effort;
   if (Array.isArray(route.argsTemplate) && route.argsTemplate.length > 0) {
     const values = { model: model.id, effort: effort || 'default', workspace: task.workspace, prompt: task.prompt, kind: task.kind };
@@ -520,7 +532,8 @@ export function buildArguments(route, model, task) {
     if (model.variants && !model.variants[selectedEffort]) throw new PoolError('INVALID_EFFORT', 'Bu model için desteklenen bir efor seçin.');
     const promptArg = route.promptStdin === false ? [`--print=${task.prompt}`] : ['--input-format', 'stream-json'];
     const modeArgs = task.kind === 'write' ? ['--mode', 'accept-edits'] : task.kind === 'text' ? ['--disable-slash-commands', '--settings', '{"agentMode":"plan"}'] : ['--mode', 'plan'];
-    return [...argv, ...agyProjectArguments(task.workspace), '--output-format', 'stream-json', ...promptArg, ...modeArgs, ...(task.mode === 'execute' ? ['--json-schema', JSON.stringify(executionReportJsonSchema)] : []), '--model', model.variants?.[selectedEffort] || model.id, ...(selectedEffort ? ['--effort', selectedEffort] : [])];
+    const project = route.runtime === 'wsl' ? agyProjectArguments(task.workspace, wslWindowsPath(route, wslProfileHome(route)), wslUriToWindows) : agyProjectArguments(task.workspace);
+    return [...argv, ...project, '--output-format', 'stream-json', ...promptArg, ...modeArgs, ...(task.mode === 'execute' ? ['--json-schema', JSON.stringify(executionReportJsonSchema)] : []), '--model', model.variants?.[selectedEffort] || model.id, ...(selectedEffort ? ['--effort', selectedEffort] : [])];
   }
   if (route.adapter === 'omniroute') return [...argv, 'chat', '--stdin', '--no-history', '-m', model.id, ...(effort ? ['--reasoning-effort', effort] : [])];
   if (route.adapter === 'mmx') return [...argv, 'text', 'chat', '--model', model.id, '--messages-file', '-', '--output', 'json'];
@@ -539,7 +552,7 @@ export function buildArguments(route, model, task) {
 
 export async function checkAuth(route, cwd, python, directory = dataDirectory(), model = null) {
   if (!activeBillings.has(route.billing)) throw new PoolError('BILLING_UNCONFIRMED', 'Ödeme türü yerel ayarlarda doğrulanmalı.');
-  const argv = executableArgv(route.executable);
+  const { argv, env } = routeCommand(route, directory);
   if (route.api) {
     if (route.api.secretRef && !hasSecret(directory, route.api.secretRef)) {
       throw new PoolError('SECRET_MISSING', `API bağlantısı (${route.id}) için anahtar kaydedilmemiş. Yönetim ekranından API anahtarını girin.`);
@@ -547,8 +560,8 @@ export async function checkAuth(route, cwd, python, directory = dataDirectory(),
     return;
   }
   if (route.adapter === 'codex') {
-    const result = await capture([...argv, 'login', 'status'], cwd, python);
-    if (result.code !== 0 || !/Logged in using ChatGPT/i.test(result.output + result.stderr)) throw new PoolError('AUTH_REQUIRED', `Codex CLI içinde hesabınızla giriş yapın (${loginCommands.codex}).`);
+    const result = await capture([...argv, 'login', 'status'], cwd, python, env);
+    if (result.code !== 0 || !/Logged in using ChatGPT/i.test(result.output + result.stderr)) throw new PoolError('AUTH_REQUIRED', `Codex CLI içinde hesabınızla giriş yapın (${route.profile ? `${route.id} bağlantısının Giriş yap düğmesi` : loginCommands.codex}).`);
   } else if (route.adapter === 'qoder') {
     const result = await capture([...argv, 'status', '-o', 'json'], cwd, python);
     let status;
@@ -557,10 +570,10 @@ export async function checkAuth(route, cwd, python, directory = dataDirectory(),
   } else if (route.adapter === 'claude') {
     if (!route.trustedSettings) throw new PoolError('SETTINGS_NOT_TRUSTED', 'Claude yerel ayarları ve hook’ları incelenerek trustedSettings etkinleştirilmeli.');
     // Inspect the same settings scope the run uses; a user-level token would otherwise mask the claude.ai login.
-    const result = await capture([...argv, ...claudeSettingSources(route), 'auth', 'status', '--json'], cwd, python);
+    const result = await capture([...argv, ...claudeSettingSources(route), 'auth', 'status', '--json'], cwd, python, env);
     let status;
     try { status = JSON.parse(result.output); } catch { /* Fail closed on CLI protocol drift. */ }
-    if (result.code !== 0 || !status?.loggedIn) throw new PoolError('AUTH_REQUIRED', `Claude Code içinde giriş yapın (${loginCommands.claude}).`);
+    if (result.code !== 0 || !status?.loggedIn) throw new PoolError('AUTH_REQUIRED', `Claude Code içinde giriş yapın (${route.profile ? `${route.id} bağlantısının Giriş yap düğmesi` : loginCommands.claude}).`);
     // Subscription runs skip user settings (claudeSettingSources), so a user-level endpoint redirect cannot bill elsewhere.
     if (route.billing === 'subscription' && status.authMethod !== 'claude.ai') throw new PoolError('AUTH_REQUIRED', `Claude aboneliği için claude.ai hesabıyla giriş yapın (${loginCommands.claude}) veya bağlantı ödeme türünü token_plan / paid_api olarak seçin.`);
   } else if (route.adapter === 'qwen') {
@@ -613,7 +626,7 @@ export function execute(route, model, task, python, progress, directory = dataDi
   let permissionDenied = false;
   let permissionDetail = '';
   const argv = buildArguments(route, model, task);
-  const extraEnv = { ...routeEnvironment(route, directory, task.kind), CLI_AGENT_POOL_WORKER: '1' };
+  const extraEnv = { ...profileEnvironment(route, directory), ...routeEnvironment(route, directory, task.kind), CLI_AGENT_POOL_WORKER: '1' };
   const usesStdin = route.promptStdin ?? !promptArgAdapters.has(route.adapter);
   const input = !usesStdin ? '' : route.adapter === 'mmx' ? JSON.stringify([{ role: 'user', content: task.prompt }]) : route.adapter === 'agy' ? `${JSON.stringify({ event: 'user', message: { content: task.prompt } })}\n` : task.prompt;
   const process = runProcess({ argv, cwd: task.workspace, input, extraEnv, python, timeoutMs: task.timeoutSeconds * 1000,
@@ -766,9 +779,10 @@ export async function opencodeCatalog(route, cwd, python) {
   return { connection: route.id, models: prioritized.slice(0, 100), nextCursor: null };
 }
 
-export async function claudeCatalog(route, cwd, python) {
+export async function claudeCatalog(route, cwd, python, directory = dataDirectory()) {
   let response;
-  const handle = runProcess({ argv: [...executableArgv(route.executable), '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--tools', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--settings', '{"disableAllHooks":true}', ...claudeSettingSources(route)], cwd, python, relay: true, timeoutMs: 20_000,
+  const command = routeCommand(route, directory);
+  const handle = runProcess({ extraEnv: command.env, argv: [...command.argv, '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--tools', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--settings', '{"disableAllHooks":true}', ...claudeSettingSources(route)], cwd, python, relay: true, timeoutMs: 20_000,
     onLine(line) {
       const message = JSON.parse(line);
       if (message.type === 'control_response' && message.response?.request_id === 'pool-catalog') {
@@ -877,15 +891,16 @@ function mergeCatalogModelsInto(route, catalog, filters) {
   return added;
 }
 
-export async function routeCatalog(route, cwd, python) {
+export async function routeCatalog(route, cwd, python, directory = dataDirectory()) {
   if (route.adapter === 'qoder') {
     const result = await capture([...executableArgv(route.executable), '--list-models'], cwd, python);
     if (result.code !== 0) throw new PoolError(classifyFailure(result.output + result.stderr), 'Qoder native model listesi alınamadı; CLI girişini kontrol edin.');
     return { connection: route.id, models: parseQoderModels(result.output), nextCursor: null };
   }
   if (route.adapter === 'agy' && !route.api) {
-    const result = await capture([...executableArgv(route.executable), 'models'], cwd, python);
-    if (result.code !== 0 || result.stopReason) throw new PoolError('DISCOVERY_FAILED', 'Antigravity model listesi alınamadı. CLI giriş durumunu kontrol edin.');
+    const command = routeCommand(route, directory);
+    const result = await capture([...command.argv, 'models'], cwd, python, command.env, route.runtime === 'wsl' ? 45_000 : 15_000);
+    if (result.code !== 0 || result.stopReason) throw new PoolError(/sign in/i.test(result.output + result.stderr) ? 'AUTH_REQUIRED' : 'DISCOVERY_FAILED', `Antigravity model listesi alınamadı. ${route.runtime === 'wsl' ? `${route.id} bağlantısında Giriş yap ile bu hesaba giriş yapın.` : 'CLI giriş durumunu kontrol edin.'}`);
     const models = result.output.split(/\r?\n/).flatMap(line => {
       const match = line.match(/^([a-zA-Z0-9][a-zA-Z0-9._:/-]{0,99})\t+(.+)$/);
       if (!match) return [];
@@ -902,7 +917,7 @@ export async function routeCatalog(route, cwd, python) {
     }
     return { connection: route.id, models: [...grouped.values()].slice(0,100), nextCursor: null };
   }
-  if (route.adapter === 'claude' && !route.api) return claudeCatalog(route, cwd, python);
+  if (route.adapter === 'claude' && !route.api) return claudeCatalog(route, cwd, python, directory);
   if (['lmstudio', 'ollama'].includes(route.adapter)) {
     const result = await capture([...executableArgv(route.executable), ...(route.adapter === 'lmstudio' ? ['ls', '--json'] : ['list'])], cwd, python);
     if (result.code !== 0) throw new PoolError('DISCOVERY_FAILED', `${route.adapter === 'lmstudio' ? 'LM Studio' : 'Ollama'} model kataloğu alınamadı. Yerel uygulamanın kurulu ve çalışıyor olduğunu kontrol edin.`);
@@ -951,7 +966,15 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
     const vendor = configured && route.api.secretRef ? await apiRouteQuota(route.api.baseUrl, loadSecret(directory, route.api.secretRef)) : null;
     return vendor ? { ...fallback, ...vendor, auth: 'api_key' } : fallback;
   }
-  const argv = executableArgv(route.executable);
+  const { argv, env } = routeCommand(route, directory);
+  if (route.adapter === 'agy' && route.runtime === 'wsl') {
+    // agy keeps a WSL login as a file under the profile HOME; read it in memory only.
+    const tokenFile = wslWindowsPath(route, `${wslProfileHome(route)}/.gemini/antigravity-cli/antigravity-oauth-token`);
+    return { ...base, account: route.profile || 'default', ...(await antigravityQuota(undefined, { tokenFile, credentialStore: false })) };
+  }
+  if (route.adapter === 'claude' && route.billing === 'subscription' && route.profile) {
+    return { ...base, account: route.profile, ...(await claudeQuota(undefined, claudeConfigDirectory(route, directory))) };
+  }
   if (route.adapter === 'qoder') {
     const result = await capture([...argv, 'status', '-o', 'json'], cwd, python);
     let status;
@@ -961,7 +984,7 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
   }
   if (route.adapter === 'claude' && route.billing !== 'subscription') {
     // Token-plan Claude routes use the user's configured endpoint; claude.ai usage does not apply.
-    const text = await capture([...argv, 'auth', 'status', '--text'], cwd, python);
+    const text = await capture([...argv, 'auth', 'status', '--text'], cwd, python, env);
     const endpoint = /base URL:\s*(\S+)/i.exec(text.output + text.stderr)?.[1] || 'https://api.anthropic.com';
     return { ...base, status: 'unknown', auth: 'token_plan', endpoint, windows: [], source: 'claude-settings', note: `Uç nokta: ${endpoint} · Bu sağlayıcı kota yüzdesi bildirmiyor.` };
   }

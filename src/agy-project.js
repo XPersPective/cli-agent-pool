@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url';
 
 // Reuse the owner's native project policy. Never create projects or grant trust
 // as a side effect of an agent submitting a task.
-export function agyProjectArguments(workspace, home = homedir()) {
+// `resolveUri` maps a native folder URI to a local path; WSL profiles store /mnt URIs.
+export function agyProjectArguments(workspace, home = homedir(), resolveUri = fileURLToPath) {
   let target, files;
   const directory = path.join(home, '.gemini', 'config', 'projects');
   try { target = realpathSync(workspace); files = readdirSync(directory).sort(); }
@@ -21,7 +22,9 @@ export function agyProjectArguments(workspace, home = homedir()) {
       for (const resource of resources) {
         const uri = resource?.gitFolder?.folderUri ?? resource?.folderUri;
         if (typeof uri !== 'string') continue;
-        const root = realpathSync(fileURLToPath(uri));
+        const local = resolveUri(uri);
+        if (!local) continue;
+        const root = realpathSync(local);
         const relative = path.relative(root, target);
         if (relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`))) {
           matches.push({ id: project.id, root });

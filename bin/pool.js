@@ -3,12 +3,13 @@ import { readFileSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { dataDirectory, initialize, loadConfig, configView, saveConfig, PoolError } from '../src/config.js';
-import { discover, executableArgv, routeCatalog, importDiscoveredRoutes, mergeCatalogModels } from '../src/adapters.js';
+import { discover, commandArgv, routeCatalog, importDiscoveredRoutes, mergeCatalogModels } from '../src/adapters.js';
 import { capture } from '../src/process.js';
 import { Store } from '../src/store.js';
 import { Pool } from '../src/pool.js';
 import { createServer } from '../src/server.js';
 import { codexControl } from '../src/codex-control.js';
+import { prepareWslProfile } from '../src/accounts.js';
 import { stdioBridge } from '../src/stdio.js';
 import { rpcRequest } from '../src/rpc.js';
 import { version } from '../src/version.js';
@@ -170,7 +171,7 @@ export async function main(args = process.argv.slice(2)) {
   const config = ensureInitialized(directory, false);
   if (command === 'stdio') { await stdioBridge(directory, config); return; }
   if (command === 'validate') {
-    for (const route of config.routes) executableArgv(route.executable);
+    for (const route of config.routes) commandArgv(route);
     const python = await capture([config.python, '--version'], directory, config.python);
     if (python.code !== 0 || !/Python 3\.(?:1[1-9]|[2-9]\d)/.test(python.output + python.stderr)) throw new PoolError('PYTHON_REQUIRED', 'Python 3.11 veya üstünü kurun.');
     print({ valid: true, connections: config.routes.length, enabled: config.routes.filter(r => r.enabled).length }); return;
@@ -181,10 +182,10 @@ export async function main(args = process.argv.slice(2)) {
     if (!route) throw new PoolError('NOT_FOUND', 'Bağlantı kimliği bulunamadı.');
     let catalog;
     if (route.adapter === 'codex' && !route.api) {
-      try { catalog = await codexControl(route, cwd, config.python, 'models'); }
-      catch { catalog = await routeCatalog(route, cwd, config.python); }
+      try { catalog = await codexControl(route, cwd, config.python, 'models', directory); }
+      catch { catalog = await routeCatalog(route, cwd, config.python, directory); }
     } else {
-      catalog = await routeCatalog(route, cwd, config.python);
+      catalog = await routeCatalog(route, cwd, config.python, directory);
     }
     if (command === 'refresh-models') {
       const view = configView(directory);
@@ -224,6 +225,8 @@ export async function main(args = process.argv.slice(2)) {
     const address = await app.listen();
     writeFileSync(pidFile, String(process.pid), 'utf8');
     print({ status: 'listening', endpoint: `http://127.0.0.1:${address.port}/mcp`, dashboard: app.uiURL(), authentication: 'Bearer token from private access-token file; dashboard uses a separate HttpOnly browser session' });
+    // Refresh the owner's native Antigravity permissions in WSL account profiles; failures only affect that route.
+    for (const route of config.routes.filter(route => route.runtime === 'wsl')) void prepareWslProfile(route, config.python, directory).catch(() => {});
     process.once('SIGINT', () => { void stop(); });
     process.once('SIGTERM', () => { void stop(); });
   } catch (error) { await stop(); throw error; }

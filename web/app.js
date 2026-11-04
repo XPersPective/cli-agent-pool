@@ -140,6 +140,17 @@ async function runScanImport(routeId) {
   notice(`Tarama: ${res.discoveredCount} araç, ${res.addedModels} yeni model. ${draft ? 'Kaydetmediğiniz seçimler korundu.' : 'Katalog güncellendi.'}${res.catalogErrors?.length ? ` ${res.catalogErrors.map(error => `${error.routeId}: ${error.message}`).join(' ')}` : ''}`, Boolean(res.catalogErrors?.length));
   void refreshQuotas();
 }
+// Each extra account becomes its own route with its own login, quota and models.
+async function addAccount(routeId) {
+  const draft = poolDirty ? structuredClone(settings.config) : null;
+  const before = baseConfig || settings?.config;
+  const res = await call('add_account', { routeId });
+  settings = { ...res, config: draft ? mergeScanDraft(res.config, before, draft) : res.config };
+  poolDirty = Boolean(draft);
+  baseConfig = structuredClone(res.config);
+  renderPool(); renderSettings(); await refresh();
+  notice(`${res.addedRoute} eklendi. Bu bağlantıda "Giriş yap" ile diğer hesabınıza bir kez giriş yapın, sonra bağlantıyı etkinleştirip kaydedin.`);
+}
 async function refresh(announce = false) {
   if (refreshing) return;
   refreshing = true;
@@ -212,7 +223,8 @@ function renderSettings() {
   const billingChoices = Object.entries(billingLabels).map(([k, v]) => [k, v]);
   $('settings-routes').replaceChildren(...settings.config.routes.map(route => {
     const section = element('details', null, 'route-settings'); section.dataset.routeId = route.id; section.open = expanded.has(route.id);
-    const summary = element('summary'); summary.append(element('strong', adapterLabels[route.adapter] || route.adapter), element('span', `${route.id} · ${route.enabled ? 'Etkin' : 'Kapalı'}`, 'hint')); section.append(summary);
+    const account = route.profile ? ` · Hesap: ${route.profile}${route.runtime === 'wsl' ? ` (WSL ${route.wsl?.distro || ''})` : ''}` : '';
+    const summary = element('summary'); summary.append(element('strong', adapterLabels[route.adapter] || route.adapter), element('span', `${route.id}${account} · ${route.enabled ? 'Etkin' : 'Kapalı'}`, 'hint')); section.append(summary);
     const body = element('div', null, 'settings-body');
     const header = element('label', null, 'route-header'); const enabled = document.createElement('input');
     enabled.type = 'checkbox'; enabled.checked = route.enabled; enabled.disabled = !activeBillings.has(route.billing);
@@ -273,6 +285,8 @@ function renderSettings() {
       routeActions.append(button('Model sürümlerini yenile', async () => { await refreshCatalog(route.id); }));
     }
     if (!route.api && !['custom','lmstudio','ollama'].includes(route.adapter)) routeActions.append(button('Giriş yap', async () => { const result = await call('login', { routeId: route.id }); notice(result.message); }));
+    if (!route.api && ['codex', 'claude', 'agy'].includes(route.adapter) && !route.profile) routeActions.append(button(route.adapter === 'agy' ? 'WSL ile başka Antigravity hesabı ekle' : 'Başka hesap ekle', () => addAccount(route.id)));
+    if (route.runtime === 'wsl') routeActions.append(button('Antigravity izinlerini eşitle', async () => { const result = await call('sync_permissions', { routeId: route.id }); const synced = result.synced[route.id]; notice(`${route.id}: ${synced.projects} proje, ${synced.grants} izin ve ${synced.trusted} güvenilir klasör WSL profiline eşitlendi.`); }));
     body.append(routeActions, loginNotice(route));
     section.append(body);
     return section;

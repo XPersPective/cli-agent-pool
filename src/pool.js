@@ -68,6 +68,7 @@ export class Pool {
       suggestedGroup: suggestGroup(`${model.id} ${model.alias}`),
       routeId: route.id,
       adapter: route.adapter,
+      account: route.profile || 'default',
       enabled: route.enabled && model.enabled,
       billing,
       autoSelect: route.autoSelect ?? (billing !== 'paid_api'),
@@ -119,7 +120,7 @@ export class Pool {
       const cwd = this.directory;
       let snapshot;
       if (route.adapter === 'codex' && !route.api) {
-        try { snapshot = { ...(await codexControl(route, cwd, this.config.python, 'quotas')), adapter: route.adapter, billing: route.billing, loginCommand: loginCommands.codex }; }
+        try { snapshot = { ...(await codexControl(route, cwd, this.config.python, 'quotas', this.directory)), adapter: route.adapter, billing: route.billing, loginCommand: loginCommands.codex }; }
         catch {
           try { await this.checkAuth(route, cwd, this.config.python, this.directory); }
           catch (error) {

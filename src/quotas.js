@@ -49,15 +49,16 @@ export function claudeWindows(usage) {
   });
 }
 
-export async function claudeQuota(home = homedir()) {
-  const oauth = readJson(path.join(home, '.claude', '.credentials.json')).claudeAiOauth;
+// `configDir` is CLAUDE_CONFIG_DIR for an account profile; it then also holds .claude.json.
+export async function claudeQuota(home = homedir(), configDir = null) {
+  const oauth = readJson(path.join(configDir || path.join(home, '.claude'), '.credentials.json')).claudeAiOauth;
   const live = oauth?.accessToken && (!oauth.expiresAt || oauth.expiresAt > Date.now() + 60_000);
   if (live) {
     const { status, data } = await request('https://api.anthropic.com/api/oauth/usage', { headers: { Authorization: `Bearer ${oauth.accessToken}`, 'anthropic-beta': 'oauth-2025-04-20' } });
     if (status === 200) return withStatus(claudeWindows(data), { auth: oauth.subscriptionType || 'claude.ai', source: 'anthropic-oauth-usage', ...(oauth.subscriptionType ? { note: `Plan: ${oauth.subscriptionType}` } : {}) });
   }
   // Claude Code stores the last server snapshot itself; use it only while fresh.
-  const cached = readJson(path.join(home, '.claude.json')).cachedUsageUtilization;
+  const cached = readJson(configDir ? path.join(configDir, '.claude.json') : path.join(home, '.claude.json')).cachedUsageUtilization;
   const age = Date.now() - Number(cached?.fetchedAtMs);
   if (cached?.utilization && age >= 0 && age < 30 * 60_000) {
     const windows = claudeWindows(cached.utilization);
@@ -115,12 +116,12 @@ function windowsCredential(target) {
   });
 }
 
-async function antigravityToken(home) {
-  let stored = readJson(path.join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'));
-  if (!stored.token && process.platform === 'win32') {
+async function antigravityToken(home, { tokenFile, credentialStore = true } = {}) {
+  let stored = readJson(tokenFile || path.join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'));
+  if (!stored.token && credentialStore && process.platform === 'win32') {
     try { stored = JSON.parse(await windowsCredential('gemini:antigravity') || '{}'); } catch { stored = {}; }
   }
-  const token = stored.token || {};
+  const token = stored.token || (stored.access_token || stored.refresh_token ? stored : {});
   if (token.access_token && Date.parse(token.expiry) > Date.now() + 60_000) return token.access_token;
   if (!token.refresh_token) return null;
   // Refresh in memory only; the CLI keeps owning its stored credential.
@@ -157,8 +158,10 @@ export function antigravityGroupWindows(body) {
   });
 }
 
-export async function antigravityQuota(home = homedir()) {
-  const token = await antigravityToken(home);
+// options.tokenFile points at a WSL profile login; credentialStore:false keeps the
+// Windows Credential Manager login from standing in for a missing profile login.
+export async function antigravityQuota(home = homedir(), options = {}) {
+  const token = await antigravityToken(home, options);
   if (!token) return authRequired('antigravity-cloudcode', 'Antigravity oturumu bulunamadı; agy çalıştırıp giriş yapın.');
   const headers = agent => ({ Authorization: `Bearer ${token}`, 'User-Agent': agent });
   for (const base of ANTIGRAVITY_ENDPOINTS) {

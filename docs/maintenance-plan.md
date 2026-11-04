@@ -978,3 +978,58 @@ Antigravity 1.4.12 metin modu oturumluk agentMode:plan düzeltmesi korundu;
 önceki başarılı canlı yanıt kaydı ve izin/regresyon testleri yeniden incelendi.
 Freebuff/WorkBuddy'nin kendi UI login'i ve uygulama içinden görev çalıştırması
 bu MCP transport kontrolüyle tamamlandı sayılmaz. Commit/push yapılmadı.
+
+## 1 Kasım 2026 — dış çalışma kopyalarının Antigravity izin onarımı
+
+Kullanıcı PERMISSION_REQUIRED / RunCommand engelinin yerel olarak düzeltilmesini istedi.
+Dört güncel izin hatası, aynı deponun kullanıcı dizinindeki Git worktree
+klasörlerinde oluştu. Native proje resolver bu klasörler için boş dönüyor;
+varsayılan proje komut izni sunmuyor. Mimari değişikliği gerekmiyor.
+
+- [x] Yalnız ilgili depo ve ona ait dış workspaces kökü için native proje kaydı
+  ve komut/dosya izinleri oluştur; global politikayı değiştirme.
+- [x] Dört klasörün native proje eşlemesini ve bir yeni canlı komut probunu doğrula.
+- [x] Eski needs_review işlerini tekrar çalıştırmadan koru; kanıtı kaydet.
+
+Kanıt: Dört mevcut dış worktree yeni native proje ile eşleşti. İlgili depo
+ve yalnız ona ait dış workspaces kökü proje kaynakları olarak kaydedildi;
+komut ve dosya izinleri yerel native projede tutuldu. Genel CLI ayarları
+değişmedi; skip-permissions kullanılmadı. Kurulu resolver kaynakla aynı;
+yeni CLI süreçleri yerel kaydı okuyabildiği için daemon yeniden başlatılmadı.
+Aynı başarısız çalışma dizininde yeni native komut probu başarılı; izin
+hatası dönmedi. İlgili node:test kontrolleri 4/4 geçti. Eski needs_review
+işleri ve çalışma kopyaları korundu; otomatik tekrar/merge yapılmadı.
+Bu kapsamda ürün kodu değişmedi; makineye özgü izin kaydı Git dışında.
+
+## 4 Kasım 2026 — Codex, Claude ve Antigravity çoklu hesap profilleri
+
+Kullanıcı Codex, Claude ve Antigravity'de birden fazla hesabı bir kez girişle
+havuzda aynı anda hazır tutmak istedi. Hesap seçimi ve kota eşiğinde devretme
+çağıran sistemin işidir; havuz her hesabı ayrı bağlantı olarak kotası, modeli ve
+eforuyla sunar. Windows agy tek Credential Manager kaydı (`gemini:antigravity`)
+kullandığından ek Antigravity hesapları WSL'deki resmî Linux agy ile çalışır.
+
+- [x] agy davranışı doğrulandı: Windows'ta sabit tek kayıt; WSL'de 1.5.0 logu
+  "Using file-based token storage because WSL environment detected", giriş HOME'a bağlı.
+- [x] Route alanları: `profile`, `runtime: wsl`, `wsl {distro, home}`; şema doğrulaması
+  ve aynı profilin iki bağlantıda kullanılmasının reddi.
+- [x] Codex/Claude: `CODEX_HOME` / `CLAUDE_CONFIG_DIR` ile çalıştırma, giriş kontrolü,
+  katalog, kota ve giriş penceresi; varsayılan hesap davranışı değişmedi.
+- [x] Antigravity WSL: kabuksuz `wsl.exe --exec env HOME=...`, profil token dosyasından
+  bellek içi kota (Windows girişine geri düşmez), WSL proje eşleştirmesi.
+- [x] Sahip eylemlerinde izin eşitleme (giriş, katalog yenileme, servis açılışı, düğme);
+  görev gönderimi izin oluşturmaz, kimlik bilgisi kopyalanmaz.
+- [x] UI: "Başka hesap ekle", "WSL ile başka Antigravity hesabı ekle", "Antigravity
+  izinlerini eşitle"; MCP çıktısında `account`.
+- [x] 133/133 node:test (10 yeni), check, secrets (77 dosya), audit 0 açık.
+- [ ] Kullanıcı ek hesaplara giriş yaptıktan sonra her yeni bağlantıda kota readback
+  ve kısa gerçek text çağrısı; WSL agy OAuth akışının tarayıcıda tamamlandığını doğrula.
+
+Kanıt: Gerçek WSL'de geçici `pooltest` profili tespit edildi, 25 proje / 17 izin /
+8 güvenilir klasör eşitlendi; izole agy "Please sign in" döndürdü ve kota
+`auth_required` oldu (Windows hesabı sızmadı). Codex ve Claude için varsayılan
+hesap giriş yapılmış kalırken profil `AUTH_REQUIRED` döndü. Test profilleri silindi.
+WSL Ubuntu'ya resmî kurulum betiği (SHA512 doğrulamalı) ile agy 1.5.0 kuruldu.
+`npm run setup` global kurulumu ve 42 skill dağıtımını tamamladı; aktif iş yokken
+servis yeniden başlatıldı, kurulu `src` repo ile aynı, canlı MCP `account` alanını
+döndürüyor. Commit/push yapılmadı.
