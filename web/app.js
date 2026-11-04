@@ -141,15 +141,34 @@ async function runScanImport(routeId) {
   void refreshQuotas();
 }
 // Each extra account becomes its own route with its own login, quota and models.
+// The sign-in terminal opens first; the route is added only once the login is detected.
+const accountWaits = new Set();
+const accountAdapters = new Set(['codex', 'claude', 'agy', 'zcode', 'qwen', 'kimi', 'mcode', 'mmx', 'qoder', 'mimo']);
 async function addAccount(routeId) {
-  const draft = poolDirty ? structuredClone(settings.config) : null;
-  const before = baseConfig || settings?.config;
-  const res = await call('add_account', { routeId });
-  settings = { ...res, config: draft ? mergeScanDraft(res.config, before, draft) : res.config };
-  poolDirty = Boolean(draft);
-  baseConfig = structuredClone(res.config);
-  renderPool(); renderSettings(); await refresh();
-  notice(`${res.addedRoute} eklendi. Bu bağlantıda "Giriş yap" ile diğer hesabınıza bir kez giriş yapın, sonra bağlantıyı etkinleştirip kaydedin.`);
+  const started = await call('add_account', { routeId });
+  notice(`${started.message} Diğer hesabınızla giriş yapın; giriş algılanınca ${started.pending} otomatik eklenecek (10 dakika beklenir).`);
+  if (accountWaits.has(routeId)) return;
+  accountWaits.add(routeId);
+  void (async () => {
+    try {
+      for (let attempt = 0; attempt < 150; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 4000));
+        const res = await call('finish_account', { routeId });
+        if (res.pending) continue;
+        const draft = poolDirty ? structuredClone(settings.config) : null;
+        const before = baseConfig || settings?.config;
+        settings = { ...res, config: draft ? mergeScanDraft(res.config, before, draft) : res.config };
+        poolDirty = Boolean(draft);
+        baseConfig = structuredClone(res.config);
+        renderPool(); if (!$('settings').hidden) renderSettings(); await refresh();
+        notice(`Giriş başarılı: ${res.addedRoute} havuza eklendi.`);
+        void refreshQuotas();
+        return;
+      }
+      notice('Giriş 10 dakika içinde algılanmadı; hesap eklenmedi. Yeniden deneyebilirsiniz.', true);
+    } catch (error) { notice(error.message, true); }
+    finally { accountWaits.delete(routeId); }
+  })();
 }
 async function refresh(announce = false) {
   if (refreshing) return;
@@ -285,7 +304,7 @@ function renderSettings() {
       routeActions.append(button('Model sürümlerini yenile', async () => { await refreshCatalog(route.id); }));
     }
     if (!route.api && !['custom','lmstudio','ollama'].includes(route.adapter)) routeActions.append(button('Giriş yap', async () => { const result = await call('login', { routeId: route.id }); notice(result.message); }));
-    if (!route.api && ['codex', 'claude', 'agy'].includes(route.adapter) && !route.profile) routeActions.append(button(route.adapter === 'agy' ? 'WSL ile başka Antigravity hesabı ekle' : 'Başka hesap ekle', () => addAccount(route.id)));
+    if (!route.api && accountAdapters.has(route.adapter) && !route.profile) routeActions.append(button(route.adapter === 'agy' ? 'Başka Antigravity hesabıyla giriş yap (WSL)' : 'Başka hesapla giriş yap', () => addAccount(route.id)));
     if (route.runtime === 'wsl') routeActions.append(button('Antigravity izinlerini eşitle', async () => { const result = await call('sync_permissions', { routeId: route.id }); const synced = result.synced[route.id]; notice(`${route.id}: ${synced.projects} proje, ${synced.grants} izin ve ${synced.trusted} güvenilir klasör WSL profiline eşitlendi.`); }));
     body.append(routeActions, loginNotice(route));
     section.append(body);

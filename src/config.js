@@ -35,7 +35,7 @@ const apiBlockSchema = z.object({
 export function accountIssues(route) {
   const issues = [];
   if ((route.profile || route.runtime === 'wsl') && route.api) issues.push(`${route.id}: API bağlantısı hesap profili kullanmaz.`);
-  if (route.profile && !['codex', 'claude', 'agy'].includes(route.adapter)) issues.push(`${route.id}: hesap profili yalnızca Codex, Claude ve Antigravity için desteklenir.`);
+  if (route.profile && !['codex', 'claude', 'agy', 'zcode', 'qwen', 'kimi', 'mcode', 'mmx', 'qoder', 'mimo'].includes(route.adapter)) issues.push(`${route.id}: bu CLI için hesap profili desteklenmez.`);
   if (route.runtime === 'wsl') {
     if (route.adapter !== 'agy') issues.push(`${route.id}: WSL çalışma ortamı yalnızca Antigravity için desteklenir.`);
     if (!route.wsl) issues.push(`${route.id}: WSL dağıtımı ve Linux ev klasörü tanımlanmalı.`);

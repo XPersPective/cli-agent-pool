@@ -5,8 +5,8 @@ import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { configSchema } from '../src/config.js';
-import { routeCommand, commandArgv, buildArguments } from '../src/adapters.js';
-import { mirrorAgyPermissions, windowsToWsl, wslToWindows, wslUriToWindows, wslExecutable, profileEnvironment } from '../src/profiles.js';
+import { routeCommand, commandArgv, buildArguments, accountLoggedIn } from '../src/adapters.js';
+import { mirrorAgyPermissions, windowsToWsl, wslToWindows, wslUriToWindows, wslExecutable, profileEnvironment, profileHome } from '../src/profiles.js';
 import { agyProjectArguments } from '../src/agy-project.js';
 import { nextAccountRoute, detectWslAgy, prepareWslProfile } from '../src/accounts.js';
 import { antigravityQuota, claudeQuota } from '../src/quotas.js';
@@ -24,7 +24,8 @@ test('account profiles are accepted only where the official CLI can keep separat
   assert.equal(parse([native('claude', { profile: 'work' })]).success, true);
   assert.equal(parse([native('agy'), wslRoute()]).success, true);
   assert.match(messages(parse([native('agy', { profile: 'acc2' })])), /WSL çalışma ortamını seçin/);
-  assert.match(messages(parse([native('opencode', { profile: 'acc2' })])), /yalnızca Codex, Claude ve Antigravity/);
+  assert.match(messages(parse([native('opencode', { profile: 'acc2' })])), /hesap profili desteklenmez/);
+  assert.equal(parse([native('zcode', { profile: 'acc2', billing: 'token_plan' })]).success, true);
   assert.match(messages(parse([native('codex', { runtime: 'wsl', wsl: { distro: 'Ubuntu', home: '/home/u' } })])), /yalnızca Antigravity/);
   assert.match(messages(parse([wslRoute({ wsl: undefined })])), /dağıtımı ve Linux ev klasörü/);
   assert.match(messages(parse([wslRoute({ executable: 'C:\\agy.exe' })])), /mutlak Linux yolu/);
@@ -133,9 +134,18 @@ test('WSL detection and profile preparation use fixed shell-free commands', asyn
   await assert.rejects(detectWslAgy('python', '.', async () => ({ code: 1, output: '' })), { code: 'WSL_UNAVAILABLE' });
   let mirrored;
   const prepared = [];
-  await prepareWslProfile(wslRoute(), 'python', '.', async argv => { prepared.push(argv); return { code: 0 }; }, target => { mirrored = target; return {}; });
-  assert.deepEqual(prepared[0], [wslExecutable(), '-d', 'Ubuntu', '--exec', '/usr/bin/mkdir', '-p', '/home/u/.cli-agent-pool/profiles/agy/acc2']);
+  const written = [];
+  await prepareWslProfile(wslRoute(), 'python', '.', async argv => { prepared.push(argv); return { code: 0 }; }, target => { mirrored = target; return {}; }, (file, content) => written.push([file, content]));
+  assert.deepEqual(prepared[0], [wslExecutable(), '-d', 'Ubuntu', '--exec', '/usr/bin/mkdir', '-p', '/home/u/.cli-agent-pool/profiles/agy/acc2', '/home/u/.cli-agent-pool/bin']);
+  assert.deepEqual(prepared[1], [wslExecutable(), '-d', 'Ubuntu', '--exec', '/usr/bin/chmod', '755', '/home/u/.cli-agent-pool/bin/xdg-open']);
+  assert.equal(written[0][0], '\\\\wsl.localhost\\Ubuntu\\home\\u\\.cli-agent-pool\\bin\\xdg-open');
+  assert.match(written[0][1], /^#!\/bin\/sh\n/);
+  assert.match(written[0][1], /https:\/\/\*\)/, 'the browser helper opens only https URLs');
+  assert.doesNotMatch(written[0][1], /\r/);
   assert.equal(mirrored, '\\\\wsl.localhost\\Ubuntu\\home\\u\\.cli-agent-pool\\profiles\\agy\\acc2\\.gemini');
+  let mirroredAfterFailure = false;
+  await prepareWslProfile(wslRoute(), 'python', '.', async () => ({ code: 0 }), () => { mirroredAfterFailure = true; }, () => { throw new Error('read-only'); });
+  assert.equal(mirroredAfterFailure, true, 'a missing browser helper does not block permission sync');
 });
 
 test('profile quotas read only that profile login and never fall back to the default account', async t => {
@@ -151,7 +161,7 @@ test('profile quotas read only that profile login and never fall back to the def
 test('login opens the official CLI with the account profile, never with credentials', async t => {
   const directory = temp(t);
   const seen = [];
-  const run = async (file, args, options) => { seen.push(JSON.parse(options.env.CLI_AGENT_POOL_LOGIN_ARGV)); seen.at(-1).env = options.env; return { stdout: '{"opened":true}' }; };
+  const run = async (file, args, options) => { seen.push(JSON.parse(options.env.CLI_AGENT_POOL_LOGIN_ARGV)); seen.at(-1).env = options.env; seen.at(-1).script = args.at(-1); return { stdout: '{"opened":true}' }; };
   await openCliLogin(native('codex', { profile: 'acc2' }), { platform: 'win32', run, directory });
   assert.deepEqual(seen[0].arguments, ['login']);
   assert.equal(seen[0].env.CODEX_HOME, path.join(directory, 'profiles', 'codex', 'acc2'));
@@ -159,7 +169,53 @@ test('login opens the official CLI with the account profile, never with credenti
   await openCliLogin(wslRoute(), { platform: 'win32', run, directory, prepare: async () => { prepared = true; } });
   assert.equal(prepared, true);
   assert.equal(seen[1].file, wslExecutable());
-  assert.deepEqual(seen[1].arguments, ['-d', 'Ubuntu', '--exec', '/usr/bin/env', 'HOME=/home/u/.cli-agent-pool/profiles/agy/acc2', '/home/u/.local/bin/agy']);
+  assert.deepEqual(seen[1].arguments, ['-d', 'Ubuntu', '--exec', '/usr/bin/env', 'HOME=/home/u/.cli-agent-pool/profiles/agy/acc2', 'PATH=/home/u/.cli-agent-pool/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', '/home/u/.local/bin/agy']);
+  // wsl.exe rejects quoted options ("--exec"), which closed the login window at once.
+  assert.match(seen[1].script, /if \(\$_ -eq '' -or \$_ -match '\\s'\) \{ '"' \+ \$_ \+ '"' \} else \{ \$_ \}/);
   const manual = await openCliLogin(native('claude', { profile: 'acc2' }), { platform: 'linux', run, directory });
   assert.match(manual.message, /CLAUDE_CONFIG_DIR=".*acc2" claude auth login/);
+});
+
+test('file-based CLIs get their own home per account profile', t => {
+  const directory = temp(t);
+  for (const adapter of ['zcode', 'qwen', 'kimi', 'mcode', 'mmx', 'qoder', 'mimo']) {
+    const target = path.join(directory, 'profiles', adapter, 'acc2');
+    assert.deepEqual(routeCommand(native(adapter, { profile: 'acc2' }), directory).env, { USERPROFILE: target, HOME: target });
+    assert.equal(profileHome(native(adapter, { profile: 'acc2' }), directory, 'C:/real'), target);
+  }
+  assert.equal(profileHome(native('zcode'), directory, 'C:/real'), 'C:/real');
+  assert.equal(profileHome(native('codex', { profile: 'acc2' }), directory, 'C:/real'), 'C:/real', 'Codex uses CODEX_HOME, not a home override');
+});
+
+test('an account route is added only after that profile reports a login', async t => {
+  const directory = temp(t);
+  const agy = wslRoute();
+  const tokenPath = ['', '', 'wsl.localhost', 'Ubuntu', 'home', 'u', '.cli-agent-pool', 'profiles', 'agy', 'acc2', '.gemini', 'antigravity-cli', 'antigravity-oauth-token'].join('\\');
+  const seen = [];
+  assert.equal(await accountLoggedIn(agy, '.', 'python', directory, file => { seen.push(file); return {}; }), false);
+  assert.equal(seen[0], tokenPath);
+  assert.equal(await accountLoggedIn(agy, '.', 'python', directory, () => ({ token: { refresh_token: 'r' } })), true);
+  const zcode = native('zcode', { profile: 'acc2' });
+  assert.equal(await accountLoggedIn(zcode, '.', 'python', directory), false);
+  mkdirSync(path.join(directory, 'profiles', 'zcode', 'acc2', '.zcode', 'v2'), { recursive: true });
+  writeFileSync(path.join(directory, 'profiles', 'zcode', 'acc2', '.zcode', 'v2', 'credentials.json'), '{}');
+  assert.equal(await accountLoggedIn(zcode, '.', 'python', directory), true);
+  const mcode = native('mcode', { profile: 'acc2' });
+  assert.equal(await accountLoggedIn(mcode, '.', 'python', directory), false);
+  mkdirSync(path.join(directory, 'profiles', 'mcode', 'acc2', '.minimax'), { recursive: true });
+  writeFileSync(path.join(directory, 'profiles', 'mcode', 'acc2', '.minimax', 'local-runtime.auth.json'), JSON.stringify({ auth: { accessToken: 'x' } }));
+  assert.equal(await accountLoggedIn(mcode, '.', 'python', directory), true);
+  const kimiHome = path.join(directory, 'profiles', 'kimi', 'acc2', '.kimi-code');
+  assert.equal(await accountLoggedIn(native('kimi', { profile: 'acc2' }), '.', 'python', directory), false);
+  mkdirSync(path.join(kimiHome, 'credentials'), { recursive: true });
+  writeFileSync(path.join(kimiHome, 'config.toml'), '[providers."managed:kimi-code".oauth]\nkey = "oauth/k1"\n');
+  writeFileSync(path.join(kimiHome, 'credentials', 'k1.json'), JSON.stringify({ access_token: 'a' }));
+  assert.equal(await accountLoggedIn(native('kimi', { profile: 'acc2' }), '.', 'python', directory), true);
+});
+
+test('a retried sign-in reuses the same pending profile instead of adding routes', () => {
+  const config = { routes: [native('zcode', { billing: 'token_plan' })] };
+  assert.equal(nextAccountRoute(config, 'zcode-local').route.profile, 'acc2');
+  assert.equal(nextAccountRoute(config, 'zcode-local').route.profile, 'acc2');
+  assert.equal(config.routes.length, 1);
 });

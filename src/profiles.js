@@ -7,16 +7,27 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const profileAdapters = new Set(['codex', 'claude']);
+// These CLIs keep their login in files under the user home (~/.zcode, ~/.qwen,
+// ~/.kimi-code, ~/.minimax, ~/.mmx, ~/.qoder, ~/.mimocode); a profile gives them
+// their own home. Verified: an empty home reports logged out for each.
+export const homeProfileAdapters = new Set(['zcode', 'qwen', 'kimi', 'mcode', 'mmx', 'qoder', 'mimo']);
+export const accountProfileAdapters = new Set([...profileAdapters, ...homeProfileAdapters, 'agy']);
 
 export function profileDirectory(route, directory) {
   return path.join(directory, 'profiles', route.adapter, route.profile);
 }
 
 export function profileEnvironment(route, directory, create = true) {
-  if (!route.profile || route.api || !profileAdapters.has(route.adapter)) return {};
+  if (!route.profile || route.api || !(profileAdapters.has(route.adapter) || homeProfileAdapters.has(route.adapter))) return {};
   const target = profileDirectory(route, directory);
   if (create) mkdirSync(target, { recursive: true, mode: 0o700 });
+  if (homeProfileAdapters.has(route.adapter)) return { USERPROFILE: target, HOME: target };
   return route.adapter === 'codex' ? { CODEX_HOME: target } : { CLAUDE_CONFIG_DIR: target };
+}
+
+// The home whose CLI files belong to this route (profile home or the real home).
+export function profileHome(route, directory, home = homedir()) {
+  return route.profile && !route.api && homeProfileAdapters.has(route.adapter) ? profileDirectory(route, directory) : home;
 }
 
 export function claudeConfigDirectory(route, directory, home = homedir()) {
@@ -37,6 +48,12 @@ export function wslWindowsPath(route, linuxPath) {
 export function wslPrefix(route) {
   return [wslExecutable(), '-d', route.wsl.distro, '--exec', '/usr/bin/env', `HOME=${wslProfileHome(route)}`];
 }
+
+// WSL has no xdg-open, so agy cannot open its sign-in page. The login window puts
+// this Pool-owned helper first on PATH; it opens only https URLs in the Windows browser.
+export const wslHelperDirectory = route => `${route.wsl.home}/.cli-agent-pool/bin`;
+export const wslLoginPath = route => `${wslHelperDirectory(route)}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`;
+export const wslBrowserHelper = '#!/bin/sh\n# CLI Agent Pool: open an https sign-in URL in the Windows default browser.\ncase "$1" in\n  https://*) exec /mnt/c/Windows/System32/rundll32.exe url.dll,FileProtocolHandler "$1" ;;\nesac\nexit 1\n';
 
 // D:\repo\x -> /mnt/d/repo/x. Other path forms have no WSL equivalent here.
 export function windowsToWsl(value) {

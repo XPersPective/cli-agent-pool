@@ -3,9 +3,10 @@
 // through its own CLI; the Pool never handles the credentials themselves.
 import { PoolError } from './config.js';
 import { capture } from './process.js';
-import { mirrorAgyPermissions, wslExecutable, wslProfileHome, wslWindowsPath } from './profiles.js';
+import { writeFileSync } from 'node:fs';
+import { accountProfileAdapters, mirrorAgyPermissions, wslExecutable, wslProfileHome, wslWindowsPath, wslHelperDirectory, wslBrowserHelper } from './profiles.js';
 
-const accountAdapters = new Set(['codex', 'claude', 'agy']);
+const accountAdapters = accountProfileAdapters;
 export const wslInstallCommand = 'curl -fsSL https://antigravity.google/cli/install.sh | bash';
 
 export async function detectWslAgy(python, cwd, run = capture) {
@@ -25,17 +26,24 @@ export async function detectWslAgy(python, cwd, run = capture) {
 
 // Creates the profile HOME and mirrors the owner's native project permissions,
 // so tasks in this account do not stop on permission prompts the owner already answered.
-export async function prepareWslProfile(route, python, cwd, run = capture, mirror = mirrorAgyPermissions) {
-  const home = wslProfileHome(route);
-  const result = await run([wslExecutable(), '-d', route.wsl.distro, '--exec', '/usr/bin/mkdir', '-p', home], cwd, python);
+export async function prepareWslProfile(route, python, cwd, run = capture, mirror = mirrorAgyPermissions, write = writeHelper) {
+  const home = wslProfileHome(route), helpers = wslHelperDirectory(route);
+  const wsl = argv => run([wslExecutable(), '-d', route.wsl.distro, '--exec', ...argv], cwd, python);
+  const result = await wsl(['/usr/bin/mkdir', '-p', home, helpers]);
   if (result.code !== 0) throw new PoolError('WSL_UNAVAILABLE', `WSL (${route.wsl.distro}) profil klasörü hazırlanamadı.`);
+  // The sign-in page can still be copied from the terminal if the helper cannot be written.
+  try { write(wslWindowsPath(route, `${helpers}/xdg-open`), wslBrowserHelper); await wsl(['/usr/bin/chmod', '755', `${helpers}/xdg-open`]); } catch { /* optional convenience */ }
   return mirror(wslWindowsPath(route, `${home}/.gemini`));
+}
+
+function writeHelper(file, content) {
+  writeFileSync(file, content, { encoding: 'utf8' });
 }
 
 export function nextAccountRoute(config, baseRouteId, wsl = null) {
   const base = config.routes.find(route => route.id === baseRouteId);
   if (!base) throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı.');
-  if (base.api || !accountAdapters.has(base.adapter)) throw new PoolError('ACCOUNT_UNSUPPORTED', 'Ek hesap yalnızca Codex, Claude ve Antigravity CLI bağlantılarına eklenebilir.');
+  if (base.api || !accountAdapters.has(base.adapter)) throw new PoolError('ACCOUNT_UNSUPPORTED', 'Bu CLI bağlantısına ek hesap eklenemez.');
   if (base.adapter === 'agy' && !wsl) throw new PoolError('WSL_UNAVAILABLE', 'Ek Antigravity hesabı için WSL içinde agy gerekir.');
   const used = new Set(config.routes.filter(route => route.adapter === base.adapter).map(route => route.profile).filter(Boolean));
   let number = 2;

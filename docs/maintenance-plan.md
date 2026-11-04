@@ -1033,3 +1033,21 @@ WSL Ubuntu'ya resmî kurulum betiği (SHA512 doğrulamalı) ile agy 1.5.0 kuruld
 `npm run setup` global kurulumu ve 42 skill dağıtımını tamamladı; aktif iş yokken
 servis yeniden başlatıldı, kurulu `src` repo ile aynı, canlı MCP `account` alanını
 döndürüyor. Commit/push yapılmadı.
+
+### 4 Kasım 2026 (devam) — giriş önce, bağlantı sonra; ek CLI profilleri
+
+Kullanıcı WSL giriş penceresinin anında kapandığını ve "hesap ekle"nin girişsiz
+boş bağlantılar biriktirdiğini bildirdi; ZCode ve diğer CLI'lar için de hesap istedi.
+
+- [x] Kök neden: giriş betiği her argümanı tırnaklıyordu; `wsl.exe` tırnaklı
+  `"--exec"` seçeneğini tanımayıp 127 ile çıkıyordu. Artık yalnız boşluklu argüman tırnaklanır.
+- [x] WSL'de `xdg-open` yok; profil hazırlığı Pool'a ait, yalnız https açan bir
+  yardımcıyı kurar ve giriş penceresi PATH'e ekler (Windows varsayılan tarayıcısı).
+- [x] "Başka hesapla giriş yap": önce resmî giriş terminali açılır, bağlantı yalnız
+  CLI girişi algılayınca eklenir; tekrar denemeler aynı bekleyen profili kullanır.
+  Girişsiz dört boş `agy-acc*` bağlantısı kaldırıldı.
+- [x] Ev klasörü profilleri: ZCode, Qwen, Kimi, MiniMax Code, mmx, Qoder, MiMo
+  (`USERPROFILE`/`HOME`). Her biri için boş profilde girişsiz, varsayılanda girişli
+  canlı doğrulandı; kota/katalog/giriş kontrolü profil evini kullanır.
+- [x] 136/136 node:test, check, secrets, audit 0 açık; kurulum ve servis yenilendi.
+- [ ] Kullanıcının gerçek ek hesap girişleri sonrası kota readback ve kısa text çağrısı.

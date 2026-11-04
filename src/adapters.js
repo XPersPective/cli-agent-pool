@@ -8,8 +8,8 @@ import path from 'node:path';
 import { capture, runProcess } from './process.js';
 import { PoolError, redact, activeBillings, dataDirectory } from './config.js';
 import { loadSecret, hasSecret } from './secrets-store.js';
-import { claudeQuota, zaiQuota, antigravityQuota, kimiQuota, minimaxQuota, minimaxWindows, openrouterQuota, apiRouteQuota } from './quotas.js';
-import { profileEnvironment, claudeConfigDirectory, wslPrefix, wslProfileHome, wslWindowsPath, wslUriToWindows } from './profiles.js';
+import { claudeQuota, zaiQuota, zaiKeys, kimiLoggedIn, antigravityQuota, kimiQuota, minimaxQuota, minimaxWindows, openrouterQuota, apiRouteQuota } from './quotas.js';
+import { profileEnvironment, profileHome, claudeConfigDirectory, wslPrefix, wslProfileHome, wslWindowsPath, wslUriToWindows } from './profiles.js';
 
 export const adapterSpecs = [
   { adapter: 'codex', label: 'OpenAI Codex CLI', binaries: ['codex'], pkg: '@openai/codex', defaultBilling: 'subscription', loginCommand: 'codex login' },
@@ -261,8 +261,7 @@ export function assertZcodePlanSelection(route, selection) {
   zcodePlanConfig(selection);
 }
 
-export function localModelsFor(adapter) {
-  const home = homedir();
+export function localModelsFor(adapter, home = homedir()) {
   const models = [];
   const add = (id, alias, group = 'default', efforts = [], kinds = ['text', 'read', 'write'], free = false) => {
     if (!id || typeof id !== 'string' || id.length > 100 || /[\u0000-\u001f\u007f]/.test(id)) return;
@@ -484,8 +483,9 @@ export function routeEnvironment(route, directory = dataDirectory(), taskKind = 
       });
     }
   } else if (route.adapter === 'zcode') {
-    Object.assign(extra, zcodeEnvironment(route.executable));
-    if (['token_plan', 'subscription'].includes(route.billing)) extra.ZCODE_PERSONAL_PROVIDER_CONFIG_FILE = zcodePlanFile(directory, zcodeSelection());
+    const home = profileHome(route, directory);
+    Object.assign(extra, zcodeEnvironment(route.executable, home));
+    if (['token_plan', 'subscription'].includes(route.billing)) extra.ZCODE_PERSONAL_PROVIDER_CONFIG_FILE = zcodePlanFile(directory, zcodeSelection(home));
   } else if (route.adapter === 'opencode' || route.adapter === 'mimo') {
     const permission = taskKind === 'write'
       ? { question: 'deny', external_directory: 'deny' }
@@ -563,7 +563,7 @@ export async function checkAuth(route, cwd, python, directory = dataDirectory(),
     const result = await capture([...argv, 'login', 'status'], cwd, python, env);
     if (result.code !== 0 || !/Logged in using ChatGPT/i.test(result.output + result.stderr)) throw new PoolError('AUTH_REQUIRED', `Codex CLI içinde hesabınızla giriş yapın (${route.profile ? `${route.id} bağlantısının Giriş yap düğmesi` : loginCommands.codex}).`);
   } else if (route.adapter === 'qoder') {
-    const result = await capture([...argv, 'status', '-o', 'json'], cwd, python);
+    const result = await capture([...argv, 'status', '-o', 'json'], cwd, python, env);
     let status;
     try { status = JSON.parse(result.output); } catch { /* Native status must be verified. */ }
     if (result.code !== 0 || status?.logged_in !== true) throw new PoolError('AUTH_REQUIRED', 'Qoder CLI içinde qodercli login ile giriş yapın; masaüstü girişi CLI oturumu sayılmaz.');
@@ -577,13 +577,13 @@ export async function checkAuth(route, cwd, python, directory = dataDirectory(),
     // Subscription runs skip user settings (claudeSettingSources), so a user-level endpoint redirect cannot bill elsewhere.
     if (route.billing === 'subscription' && status.authMethod !== 'claude.ai') throw new PoolError('AUTH_REQUIRED', `Claude aboneliği için claude.ai hesabıyla giriş yapın (${loginCommands.claude}) veya bağlantı ödeme türünü token_plan / paid_api olarak seçin.`);
   } else if (route.adapter === 'qwen') {
-    const status = await qwenLiveAuth(homedir(), process.env, model?.id, cwd);
+    const status = await qwenLiveAuth(profileHome(route, directory), route.profile ? {} : process.env, model?.id, cwd);
     if (status.status === 'auth_required') throw new PoolError('AUTH_REQUIRED', status.note);
   } else if (route.adapter === 'opencode' || route.adapter === 'mimo' || route.adapter === 'lmstudio' || route.adapter === 'ollama') {
     if (route.billing !== 'free' && !route.trustedSettings) throw new PoolError('SETTINGS_NOT_TRUSTED', 'Yerel CLI ayarları incelenerek trustedSettings etkinleştirilmeli.');
   } else {
     if (!route.trustedSettings) throw new PoolError('SETTINGS_NOT_TRUSTED', 'Bu bağlantının abonelik/plan ve CLI ayarları yerel olarak doğrulanmalı.');
-    if (route.adapter === 'zcode') assertZcodePlanSelection(route, zcodeSelection());
+    if (route.adapter === 'zcode') assertZcodePlanSelection(route, zcodeSelection(profileHome(route, directory)));
     if (route.adapter === 'mmx') {
       const snapshot = await quota(route, cwd, python, directory);
       if (snapshot.subscription !== 'active') {
@@ -592,6 +592,44 @@ export async function checkAuth(route, cwd, python, directory = dataDirectory(),
       if (snapshot.auth === 'missing') throw new PoolError('AUTH_REQUIRED', `mmx içinde giriş yapın (${loginCommands.mmx}).`);
     }
   }
+}
+
+// True once the official CLI reports a login for this account profile. Used to
+// add an account route only after its sign-in succeeded. Never returns identity.
+export async function accountLoggedIn(route, cwd, python, directory = dataDirectory(), read = readJsonSafe) {
+  if (route.adapter === 'agy' && route.runtime === 'wsl') {
+    const stored = read(wslWindowsPath(route, `${wslProfileHome(route)}/.gemini/antigravity-cli/antigravity-oauth-token`));
+    const token = stored.token || stored;
+    return Boolean(token?.refresh_token || token?.access_token);
+  }
+  const { argv, env } = routeCommand(route, directory);
+  if (route.adapter === 'codex') {
+    const result = await capture([...argv, 'login', 'status'], cwd, python, env);
+    return result.code === 0 && /Logged in using ChatGPT/i.test(result.output + result.stderr);
+  }
+  if (route.adapter === 'claude') {
+    const result = await capture([...argv, ...claudeSettingSources(route), 'auth', 'status', '--json'], cwd, python, env);
+    try { return result.code === 0 && JSON.parse(result.output).loggedIn === true; } catch { return false; }
+  }
+  if (route.adapter === 'qoder') {
+    const result = await capture([...argv, 'status', '-o', 'json'], cwd, python, env);
+    try { return result.code === 0 && JSON.parse(result.output).logged_in === true; } catch { return false; }
+  }
+  if (route.adapter === 'mmx') {
+    const result = await capture([...argv, 'auth', 'status', '--output', 'json'], cwd, python, env);
+    try { return result.code === 0 && Boolean(JSON.parse(result.output).method); } catch { return false; }
+  }
+  if (route.adapter === 'mimo') {
+    const result = await capture([...argv, 'providers', 'list', '--pure'], cwd, python, env);
+    return result.code === 0 && Number(/(\d+)\s+credentials?/i.exec(result.output)?.[1]) > 0;
+  }
+  // File-based logins: only presence is checked; values are never returned.
+  const home = profileHome(route, directory);
+  if (route.adapter === 'zcode') return existsSync(path.join(home, '.zcode', 'v2', 'credentials.json')) || zaiKeys(home).length > 0;
+  if (route.adapter === 'mcode') return Boolean(read(path.join(home, '.minimax', 'local-runtime.auth.json')).auth?.accessToken);
+  if (route.adapter === 'kimi') return kimiLoggedIn(home);
+  if (route.adapter === 'qwen') return qwenAuthStatus(home, {}, undefined, home).auth === 'credentials_present';
+  throw new PoolError('ACCOUNT_UNSUPPORTED', 'Bu CLI için hesap girişi doğrulanamıyor.');
 }
 
 export function classifyFailure(message) {
@@ -746,9 +784,10 @@ export function execute(route, model, task, python, progress, directory = dataDi
   };
 }
 
-export async function opencodeCatalog(route, cwd, python) {
-  const argv = [...executableArgv(route.executable), 'models', '--verbose', '--pure'];
-  const result = await runProcess({ argv, cwd, python, timeoutMs: 25_000, maxBytes: 16_777_216 }).done;
+export async function opencodeCatalog(route, cwd, python, directory = dataDirectory()) {
+  const command = routeCommand(route, directory);
+  const argv = [...command.argv, 'models', '--verbose', '--pure'];
+  const result = await runProcess({ argv, cwd, python, extraEnv: command.env, timeoutMs: 25_000, maxBytes: 16_777_216 }).done;
   if (result.stopReason || result.code !== 0) throw new PoolError('DISCOVERY_FAILED', 'OpenCode model listesi alınamadı.');
   const blocks = result.output.split(/\r?\n(?=[a-zA-Z0-9_.-]+\/)/);
   const models = [];
@@ -893,7 +932,8 @@ function mergeCatalogModelsInto(route, catalog, filters) {
 
 export async function routeCatalog(route, cwd, python, directory = dataDirectory()) {
   if (route.adapter === 'qoder') {
-    const result = await capture([...executableArgv(route.executable), '--list-models'], cwd, python);
+    const command = routeCommand(route, directory);
+    const result = await capture([...command.argv, '--list-models'], cwd, python, command.env);
     if (result.code !== 0) throw new PoolError(classifyFailure(result.output + result.stderr), 'Qoder native model listesi alınamadı; CLI girişini kontrol edin.');
     return { connection: route.id, models: parseQoderModels(result.output), nextCursor: null };
   }
@@ -933,8 +973,8 @@ export async function routeCatalog(route, cwd, python, directory = dataDirectory
   }
   if (route.adapter === 'opencode' || route.adapter === 'mimo') {
     try {
-      const live = await opencodeCatalog(route, cwd, python);
-      const local = localModelsFor(route.adapter).filter(m => route.billing !== 'free' || m.free);
+      const live = await opencodeCatalog(route, cwd, python, directory);
+      const local = localModelsFor(route.adapter, profileHome(route, directory)).filter(m => route.billing !== 'free' || m.free);
       const merged = [...live.models];
       for (const item of local) {
         if (!merged.some(m => m.id === item.id)) {
@@ -943,11 +983,11 @@ export async function routeCatalog(route, cwd, python, directory = dataDirectory
       }
       return { connection: route.id, models: merged.slice(0, 100), nextCursor: null };
     } catch {
-      const fallback = localModelsFor(route.adapter);
+      const fallback = localModelsFor(route.adapter, profileHome(route, directory));
       return { connection: route.id, models: fallback.map(m => ({ id: m.id, name: m.alias, free: Boolean(m.free), efforts: m.efforts || [], defaultEffort: null })), nextCursor: null };
     }
   }
-  const discovered = localModelsFor(route.adapter);
+  const discovered = localModelsFor(route.adapter, profileHome(route, directory));
   return {
     connection: route.id,
     models: discovered.map(m => ({ id: m.id, name: m.alias, free: Boolean(m.free), efforts: m.efforts || [], defaultEffort: null })),
@@ -976,7 +1016,7 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
     return { ...base, account: route.profile, ...(await claudeQuota(undefined, claudeConfigDirectory(route, directory))) };
   }
   if (route.adapter === 'qoder') {
-    const result = await capture([...argv, 'status', '-o', 'json'], cwd, python);
+    const result = await capture([...argv, 'status', '-o', 'json'], cwd, python, env);
     let status;
     try { status = JSON.parse(result.output); } catch { /* Never persist account identifiers. */ }
     const loggedIn = result.code === 0 && status?.logged_in === true;
@@ -989,14 +1029,14 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
     return { ...base, status: 'unknown', auth: 'token_plan', endpoint, windows: [], source: 'claude-settings', note: `Uç nokta: ${endpoint} · Bu sağlayıcı kota yüzdesi bildirmiyor.` };
   }
   if (route.adapter === 'qwen') {
-    const auth = await qwenLiveAuth(homedir(), process.env, undefined, cwd);
+    const auth = await qwenLiveAuth(profileHome(route, directory), route.profile ? {} : process.env, undefined, cwd);
     // A route contains multiple model/provider credentials. Only checkAuth for
     // the selected model may reject a task; the default model cannot log out
     // every other provider in the route.
     return { ...base, ...auth, status: auth.status === 'auth_required' ? 'unknown' : auth.status, windows: [], source: 'qwen-model-list' };
   }
   if (nativeQuota[route.adapter]) {
-    const snapshot = await nativeQuota[route.adapter]();
+    const snapshot = await nativeQuota[route.adapter](profileHome(route, directory));
     if (route.adapter === 'mcode' && route.billing === 'free_credits' && snapshot.subscription === 'none') {
       return { ...base, ...snapshot, note: 'MiniMax Coding Plan kotası yok. Bu sorgu MiniMax Credits bakiyesini göstermez; MiniMax Code CLI mevcut hesap kredileriyle yine de çalışabilir.' };
     }
@@ -1005,7 +1045,7 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
   if (route.adapter === 'opencode' || route.adapter === 'mimo') {
     let snapshot = { status: 'unknown', auth: 'unverified', windows: [], source: route.adapter };
     try {
-      const result = await capture([...argv, 'providers', 'list', '--pure'], cwd, python);
+      const result = await capture([...argv, 'providers', 'list', '--pure'], cwd, python, env);
       const count = /(\d+)\s+credentials?/i.exec(result.output)?.[1];
       if (result.code === 0 && count !== undefined) snapshot = { status: Number(count) === 0 && route.billing !== 'free' ? 'auth_required' : 'unknown', auth: Number(count) > 0 ? 'credentials_present' : 'unverified', windows: [], source: 'native-provider-list' };
     } catch { /* A failed inspection is not proof that the user is logged out. */ }
@@ -1019,11 +1059,11 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
     return { ...base, status: 'available', auth: route.billing === 'free' ? 'builtin_free' : 'configured', windows: [], source: route.adapter };
   }
   if (route.adapter !== 'mmx') return { ...base, status: 'unknown', auth: 'unverified', windows: [], source: route.adapter, note: 'Bu CLI kota sorgusu sunmuyor.' };
-  const authRes = await capture([...argv, 'auth', 'status', '--output', 'json'], cwd, python);
+  const authRes = await capture([...argv, 'auth', 'status', '--output', 'json'], cwd, python, env);
   let authJson = {};
   try { authJson = JSON.parse(authRes.output); } catch {}
   const loggedIn = authRes.code === 0 && Boolean(authJson?.method);
-  const result = await capture([...argv, 'quota', 'show', '--output', 'json'], cwd, python);
+  const result = await capture([...argv, 'quota', 'show', '--output', 'json'], cwd, python, env);
   let body;
   try { body = JSON.parse(result.output); } catch { /* Unknown output never proves an active plan. */ }
   const failure = result.code !== 0 || !body || body.error || body.base_resp?.status_code;

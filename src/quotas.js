@@ -198,12 +198,17 @@ export function kimiWindows(body) {
   });
 }
 
-export async function kimiQuota(home = homedir()) {
+function kimiCredentials(home) {
   let toml = '';
   try { toml = readFileSync(path.join(home, '.kimi-code', 'config.toml'), 'utf8'); } catch { /* not configured */ }
   const section = /^\[providers\."managed:kimi-code"\.oauth\]\s*\n([^[]*)/m.exec(toml)?.[1] || '';
   const key = /^\s*key\s*=\s*"oauth\/([A-Za-z0-9_-]+)"\s*$/m.exec(section)?.[1];
-  const creds = key ? readJson(path.join(home, '.kimi-code', 'credentials', `${key}.json`)) : {};
+  return key ? readJson(path.join(home, '.kimi-code', 'credentials', `${key}.json`)) : {};
+}
+export const kimiLoggedIn = (home = homedir()) => typeof kimiCredentials(home).access_token === 'string';
+
+export async function kimiQuota(home = homedir()) {
+  const creds = kimiCredentials(home);
   if (typeof creds.access_token !== 'string') return authRequired('kimi-code-usage');
   if (Number(creds.expires_at) && Number(creds.expires_at) * 1000 <= Date.now()) return unknown('kimi-code-usage', 'Kimi oturum jetonu süresi dolmuş; CLI yenileyemezse kimi login --region global çalıştırın.', { auth: 'credentials_present' });
   const { status, data } = await request('https://api.kimi.ai/coding/v1/usages', { headers: { Authorization: `Bearer ${creds.access_token}` } });

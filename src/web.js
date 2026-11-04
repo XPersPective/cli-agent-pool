@@ -5,8 +5,9 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { configView, saveConfig, PoolError, dataDirectory } from './config.js';
-import { discover, routeCatalog, importDiscoveredRoutes, loginCommands, mergeCatalogModels, commandArgv, routeCommand } from './adapters.js';
+import { discover, routeCatalog, importDiscoveredRoutes, loginCommands, mergeCatalogModels, routeCommand, accountLoggedIn } from './adapters.js';
 import { detectWslAgy, nextAccountRoute, prepareWslProfile } from './accounts.js';
+import { wslPrefix, wslLoginPath } from './profiles.js';
 import { codexControl } from './codex-control.js';
 import { saveSecret, hasSecret } from './secrets-store.js';
 import { childEnvironment, runProcess } from './process.js';
@@ -50,7 +51,7 @@ export async function openCliLogin(route, { platform = process.platform, run = p
   if (route.api || !command || ['custom','lmstudio','ollama'].includes(route.adapter)) throw new PoolError('LOGIN_UNAVAILABLE', 'Bu bağlantının anahtar veya yerel uygulama ayarlarını Ayarlar ekranından düzenleyin.');
   // Each account profile logs in through its own CLI process: profile env for
   // Codex/Claude, the profile HOME inside WSL for Antigravity.
-  const { argv: base, env: profileEnv } = route.runtime === 'wsl' ? { argv: commandArgv(route), env: {} } : routeCommand(route, directory);
+  const { argv: base, env: profileEnv } = route.runtime === 'wsl' ? { argv: [...wslPrefix(route), `PATH=${wslLoginPath(route)}`, route.executable], env: {} } : routeCommand(route, directory);
   const argv = [...base, ...command.split(' ').slice(1)];
   if (route.runtime === 'wsl' && platform === 'win32') await prepare(route, python, directory);
   const prefix = Object.entries(profileEnv).map(([key, value]) => `${key}="${value}" `).join('');
@@ -58,7 +59,8 @@ export async function openCliLogin(route, { platform = process.platform, run = p
   if (argv.some(arg => /["\r\n]/.test(arg))) throw new PoolError('LOGIN_UNAVAILABLE', `Terminalde ${command} çalıştırın.`);
   // Fixed platform script only: arguments travel as JSON data, never executable PowerShell text.
   // Every forwarded argument is a file or fixed login word, without embedded quotes or trailing backslashes.
-  const script = `$ErrorActionPreference = 'Stop'; $taskLoginRequest = ConvertFrom-Json $env:CLI_AGENT_POOL_LOGIN_ARGV; $taskLoginOptions = @{FilePath=$taskLoginRequest.file; WindowStyle='Normal'; PassThru=$true; ErrorAction='Stop'}; if ($taskLoginRequest.arguments.Count -gt 0) { $taskLoginOptions.ArgumentList = (($taskLoginRequest.arguments | ForEach-Object { '"' + $_ + '"' }) -join ' ') }; $taskLoginProcess = Start-Process @taskLoginOptions; @{opened=$true} | ConvertTo-Json -Compress`;
+  // Only arguments with whitespace are quoted: wsl.exe does not accept quoted options such as "--exec".
+  const script = `$ErrorActionPreference = 'Stop'; $taskLoginRequest = ConvertFrom-Json $env:CLI_AGENT_POOL_LOGIN_ARGV; $taskLoginOptions = @{FilePath=$taskLoginRequest.file; WindowStyle='Normal'; PassThru=$true; ErrorAction='Stop'}; if ($taskLoginRequest.arguments.Count -gt 0) { $taskLoginOptions.ArgumentList = (($taskLoginRequest.arguments | ForEach-Object { if ($_ -eq '' -or $_ -match '\\s') { '"' + $_ + '"' } else { $_ } }) -join ' ') }; $taskLoginProcess = Start-Process @taskLoginOptions; @{opened=$true} | ConvertTo-Json -Compress`;
   try {
     const result = await run(path.join(process.env.SystemRoot || 'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe'), ['-NoProfile','-NonInteractive','-Command',script], { env: childEnvironment({...profileEnv, CLI_AGENT_POOL_LOGIN_ARGV: JSON.stringify({file:argv[0],arguments:argv.slice(1)})}), windowsHide: true, timeout: 15000, maxBuffer: 4096 });
     if (!JSON.parse(result.stdout).opened) throw new Error('Not opened');
@@ -94,6 +96,7 @@ export function managementOperation(pool, management, body) {
 
 export function browserUI(pool, management) {
   let folderPicker = null;
+  const pendingAccounts = new Map();
   const catalogFor = async route => {
     const cwd = management.directory;
     if (route.adapter === 'codex' && !route.api) {
@@ -189,10 +192,28 @@ export function browserUI(pool, management) {
         const view = configView(management.directory);
         const base = view.config.routes.find(route => route.id === payload.routeId);
         const wsl = base?.adapter === 'agy' && !base.api ? await detectWslAgy(pool.config.python, management.directory) : null;
-        const { config, route } = nextAccountRoute(view.config, payload.routeId, wsl);
+        // Step 1: open the official sign-in for a new profile. Nothing is saved yet.
+        const { route } = nextAccountRoute(view.config, payload.routeId, wsl);
         if (route.runtime === 'wsl') await prepareWslProfile(route, pool.config.python, management.directory);
-        pool.config = saveConfig(management.directory, config, view.revision);
+        const opened = await openCliLogin(route, { directory: management.directory, python: pool.config.python, prepare: async () => {} });
+        pendingAccounts.set(payload.routeId, route);
+        return { pending: route.id, profile: route.profile, opened: opened.opened, message: opened.message };
+      }
+      if (operation === 'finish_account') {
+        // Step 2: add the route only after the CLI reports a login for that profile.
+        const candidate = pendingAccounts.get(payload.routeId);
+        if (!candidate) throw new PoolError('NO_PENDING_ACCOUNT', 'Bekleyen hesap girişi yok. Önce Başka hesap ekle düğmesine basın.');
+        if (!await accountLoggedIn(candidate, management.directory, pool.config.python, management.directory)) return { pending: candidate.id };
+        const view = configView(management.directory);
+        const base = view.config.routes.find(route => route.id === payload.routeId);
+        if (view.config.routes.some(route => route.id === candidate.id || (route.adapter === candidate.adapter && route.profile === candidate.profile && (route.runtime || 'native') === (candidate.runtime || 'native')))) {
+          pendingAccounts.delete(payload.routeId);
+          throw new PoolError('ACCOUNT_EXISTS', `${candidate.id} zaten ekli.`);
+        }
+        const route = { ...candidate, enabled: Boolean(base?.enabled) };
+        pool.config = saveConfig(management.directory, { ...view.config, routes: [...view.config.routes, route] }, view.revision);
         pool.schedule();
+        pendingAccounts.delete(payload.routeId);
         return { ...annotateView(configView(management.directory), management.directory), addedRoute: route.id };
       }
       if (operation === 'sync_permissions') {
