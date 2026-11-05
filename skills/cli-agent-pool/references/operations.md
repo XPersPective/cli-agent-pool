@@ -17,6 +17,7 @@ returns a structured report. Native/model support is reported as kinds. A text
 reply alone does not certify tools. Native permission denial, unsupported model,
 missing login and exhausted credit are different errors. pool_help {code} and
 pool_get_quotas {routeId} distinguish the next action. Unknown quota means unknown,
+Antigravity quota is read from the CLI's own /usage report: Gemini and Claude/GPT weekly and 5h windows with reset times plus a separate Gemini 4 Argon weekly window (model gemini-4-argon); each agy-accN route reports its own account email.
 not zero or unlimited. Never automatically replay a started write.
 
 Qoder uses native login and exact --list-models names. Desktop login alone does
@@ -65,8 +66,8 @@ alone never prove permission readiness. readOutside requires a native Read tool
 event and exact random line; shell-only readers cannot certify that capability.
 
 Submit profile:director, kind:write, mode:execute, pinned route/model and the same
-readPaths/capabilities/effort. Native Claude/Codex/Antigravity are supported;
-WSL, custom/API and paid_api routes are refused. Codex stays workspace-write;
+readPaths/capabilities/effort. Native Claude/Codex/Antigravity (including native Antigravity account profiles agy-accN) are supported;
+legacy WSL, custom/API and paid_api routes are refused. Codex stays workspace-write;
 shell network needs explicit route sandboxNetwork:true. Pool does not broaden
 native shell grants. Antigravity duplicate deepest project mappings fail
 PROJECT_AMBIGUOUS with the files to repair. Workers in sibling worktrees need a

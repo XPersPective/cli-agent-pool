@@ -199,6 +199,37 @@ export async function antigravityQuota(home = homedir(), options = {}) {
   return unknown('antigravity-cloudcode', 'Antigravity kota servisi yanıt vermedi.', { ...(email ? { email } : {}) });
 }
 
+// Windows from the CLI's own `/usage` report (agy -p /usage --output-format json).
+// This is the source the CLI shows the user, and the only one that includes the
+// separate Gemini 4 Argon bucket; the Cloud Code API below is the fallback.
+const AGY_GROUP_MODELS = [
+  [/argon/i, ['gemini-4-argon']],
+  [/gemini/i, ['gemini-flash', 'gemini-pro']],
+  [/claude|gpt/i, ['claude', 'gpt', 'opus', 'sonnet']],
+];
+export function agyUsageWindows(report) {
+  const groups = report?.command?.data?.groups;
+  if (!Array.isArray(groups)) return [];
+  const windows = [];
+  for (const group of groups) {
+    const models = AGY_GROUP_MODELS.find(([pattern]) => pattern.test(group?.name || ''))?.[1];
+    for (const bucket of group?.buckets || []) {
+      const fraction = Number(bucket?.remaining_fraction);
+      if (!Number.isFinite(fraction)) continue;
+      const kind = bucket.window === '5h' || bucket.window === 'weekly' ? bucket.window : null;
+      const isArgon = /argon/i.test(group.name || '');
+      windows.push({
+        name: isArgon ? `${group.name}:${kind || bucket.window || 'limit'}` : `${group.name}:${kind || bucket.name}`,
+        remainingPercent: Math.round(Math.min(1, Math.max(0, fraction)) * 1e6) / 1e4,
+        ...(bucket.reset_time ? { resetsAt: bucket.reset_time } : {}),
+        ...(kind ? { windowMinutes: kind === '5h' ? 300 : 10080 } : {}),
+        ...(models ? { models } : {}),
+      });
+    }
+  }
+  return windows;
+}
+
 // ---- Kimi Code -----------------------------------------------------------
 export function kimiWindows(body) {
   const windows = Object.entries(body?.usages || {}).flatMap(([name, entry]) => {

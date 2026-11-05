@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { capture, runProcess } from './process.js';
 import { PoolError, redact, activeBillings, dataDirectory } from './config.js';
 import { loadSecret, hasSecret } from './secrets-store.js';
-import { claudeQuota, zaiQuota, zaiKeys, kimiLoggedIn, antigravityQuota, kimiQuota, minimaxQuota, minimaxWindows, openrouterQuota, apiRouteQuota } from './quotas.js';
+import { claudeQuota, zaiQuota, zaiKeys, kimiLoggedIn, antigravityQuota, agyUsageWindows, kimiQuota, minimaxQuota, minimaxWindows, openrouterQuota, apiRouteQuota } from './quotas.js';
 import { profileEnvironment, profileHome, claudeConfigDirectory, wslPrefix, wslProfileHome, wslWindowsPath, wslUriToWindows } from './profiles.js';
 
 export const adapterSpecs = [
@@ -1089,6 +1089,16 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
       ? wslWindowsPath(route, `${wslProfileHome(route)}/.gemini/antigravity-cli/antigravity-oauth-token`)
       : (route.profile ? path.join(agyHome, '.gemini', 'antigravity-cli', 'antigravity-oauth-token') : undefined);
     const result = await antigravityQuota(agyHome, { tokenFile, credentialStore: !route.profile && !isWsl });
+    // Prefer the CLI's own /usage report (what the user sees, including Argon and reset times).
+    let windows = [];
+    try {
+      const usage = await capture([...argv, '-p', '/usage', '--output-format', 'json'], cwd, python, env, 30_000);
+      windows = agyUsageWindows(JSON.parse(usage.output));
+    } catch { /* fall back to the Cloud Code API snapshot */ }
+    if (windows.length) {
+      const status = windows.every(window => window.remainingPercent <= 0) ? 'rate_limited' : 'available';
+      return { ...base, account: route.profile || 'default', ...result, status, scope: 'model', windows, source: 'agy-usage' };
+    }
     return { ...base, account: route.profile || 'default', ...result };
   }
   if (route.adapter === 'claude' && route.billing === 'subscription' && route.profile) {
