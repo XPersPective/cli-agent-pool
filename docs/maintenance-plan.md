@@ -1080,10 +1080,8 @@ SKILL.md plus operations.md match every deployed target by SHA-256. Desktop
 and Start Menu shortcuts refreshed. Source rerun of the cross-repo integration
 also PASS. No live vendor readiness is claimed by this synthetic-executor test.
 
-## Antigravity çoklu hesap: WSL'siz yerel profiller ve /usage kotası
+## Antigravity: /usage kotası ve Windows izolasyon sınırı
 
-- [x] Ek Antigravity hesapları Windows'ta profil başına `USERPROFILE`/`HOME` ile çalışır; WSL gerekmez, rota doğrulaması yerel `agy` + `profile` kabul eder.
-- [x] Direktör görevleri yerel agy-accN rotalarında kabul edilir (`runtime: wsl` hâlâ reddedilir).
-- [x] Hesap e-postası profil token'ından okunur; `pool_get_quotas` `email` döndürür.
-- [x] Kota kaynağı: `agy -p /usage --output-format json` (haftalık/5 saatlik, yenilenme saati, Gemini 4 Argon); Cloud Code servisi yedek.
-- [x] Testler: 158/158 geçti (yeni: test/agy-usage.test.js).
+- [x] Varsayılan hesap kotası `agy -p /usage --output-format json` ile okunur (haftalık/5 saatlik, yenilenme saati, Gemini 4 Argon); Cloud Code yedek.
+- [x] Doğrulandı: Windows `agy` profil HOME'una, `ANTIGRAVITY_GEMINI_DIR`/`APP_DATA_DIR`/`EXECUTABLE_DATA_DIR`/`CREDENTIAL_SCOPE` ve `AGY_ACCOUNT` değişkenlerine bakmadan Credential Manager'daki tek girişi kullanır.
+- [ ] Ek hesapların kimlik izolasyonu için WSL (dosya tabanlı token) yolu geri kazanılmalı.

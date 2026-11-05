@@ -259,18 +259,15 @@ not a one-hour product ceiling. Waiting expiry still returns a durable task ID.
 Account profiles let one official CLI account live in each route. Codex and
 Claude routes with `profile` run with their own `CODEX_HOME` / `CLAUDE_CONFIG_DIR`
 under the private data directory; quota, login check, catalog and login window
-use the same profile. Native Windows `agy` routes with `profile` run with their
-own `USERPROFILE` / `HOME` under `<data dir>/profiles/agy/<profile>`; agy keeps its
-login as the file `.gemini/antigravity-cli/antigravity-oauth-token` there, so any
-number of Antigravity accounts run in parallel without WSL. Legacy
-`runtime: 'wsl'` routes remain readable but are no longer created. Quota comes from
-the CLI's own `agy -p /usage --output-format json` (Gemini and Claude/GPT weekly and
-5-hour windows with reset times, plus the separate Gemini 4 Argon weekly limit) and
-falls back to the Cloud Code quota service; the account email is read from the
-profile token in memory. Owner actions (login, catalog refresh, service start,
-explicit sync) mirror native project records, file grants and trusted folders into
-the profile; task submission never creates grants and credentials are never
-copied. Account choice and switching thresholds
+use the same profile. Windows `agy` stores its only login in the fixed Credential
+Manager entry `gemini:antigravity`, so extra Antigravity accounts use
+`runtime: 'wsl'`: the official Linux `agy` runs through `wsl.exe --exec env HOME=...`
+without a shell, and agy keeps that login as a file under the profile HOME.
+Quota reads that profile's token file in memory only and never falls back to the
+Windows login. Owner actions (login, catalog refresh, service start, explicit
+sync) mirror native project records, file grants and trusted folders into the
+profile with Windows→/mnt path translation; task submission never creates
+grants and credentials are never copied. Account choice and switching thresholds
 belong to the caller; routes expose `account` and per-route quota.
 
 

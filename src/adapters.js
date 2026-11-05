@@ -1090,8 +1090,11 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
       : (route.profile ? path.join(agyHome, '.gemini', 'antigravity-cli', 'antigravity-oauth-token') : undefined);
     const result = await antigravityQuota(agyHome, { tokenFile, credentialStore: !route.profile && !isWsl });
     // Prefer the CLI's own /usage report (what the user sees, including Argon and reset times).
+    // Windows agy always authenticates with the single Credential Manager login, even under a
+    // profile HOME, so its /usage describes the default account only; profile routes keep the
+    // per-account Cloud Code snapshot read from their own token file.
     let windows = [];
-    try {
+    if (!route.profile && !isWsl) try {
       const usage = await capture([...argv, '-p', '/usage', '--output-format', 'json'], cwd, python, env, 30_000);
       windows = agyUsageWindows(JSON.parse(usage.output));
     } catch { /* fall back to the Cloud Code API snapshot */ }

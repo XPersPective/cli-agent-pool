@@ -143,25 +143,33 @@ bir bağlantı oluşturur ve modelleri havuz üyelikleriyle kopyalar. O bağlant
 |---|---|---|
 | Codex | `CODEX_HOME` | `<veri dizini>/profiles/codex/<profil>` |
 | Claude Code | `CLAUDE_CONFIG_DIR` | `<veri dizini>/profiles/claude/<profil>` |
-| Antigravity | Windows'ta profil başına `USERPROFILE`/`HOME` | `<veri dizini>/profiles/agy/<profil>` |
+| Antigravity | WSL içinde profil başına `HOME` | `~/.cli-agent-pool/profiles/agy/<profil>` (Linux) |
 
-Windows `agy` girişi `%USERPROFILE%\.gemini\antigravity-cli\antigravity-oauth-token`
-dosyasında tutar. Havuz her ek hesap için ayrı bir profil klasörü açar ve `agy`yi o
-klasör `USERPROFILE`/`HOME` olarak verilmiş hâlde çalıştırır; böylece birden çok
-Antigravity hesabı **WSL olmadan**, aynı anda ve birbirinin oturumunu bozmadan
-çalışır. Sahibin Antigravity proje izinleri ve güvenilir klasörleri giriş, katalog
-yenileme, servis açılışı ve **Antigravity izinlerini eşitle** düğmesiyle profile
-kopyalanır; görev gönderimi izin oluşturmaz, kimlik bilgisi asla kopyalanmaz. Eski
-WSL profilli rotalar (`runtime: wsl`) geriye dönük uyumluluk için hâlâ okunur, ancak
-yeni hesaplar yerel profille eklenir ve direktör görevleri yalnızca yerel rotalarda
-çalışır.
+Windows `agy` girişi Credential Manager'daki tek `gemini:antigravity` kaydında
+tutar; aynı Windows kullanıcısında ikinci hesap birincinin üzerine yazar. Bu yüzden
+varsayılan Antigravity hesabı Windows'ta kalır, ek hesaplar WSL'deki resmî Linux
+`agy` ile çalışır (`agy` WSL'de girişi profil `HOME`'u altındaki dosyada tutar).
+WSL'de bir kez kurulum gerekir:
 
-**Antigravity kotası.** Havuz, kotayı `agy -p /usage --output-format json` ile
-CLI'nin kendi `/usage` raporundan okur: Gemini (Flash/Pro) ve Claude/GPT grupları için
-haftalık ve 5 saatlik kalan yüzde ile yenilenme saati, ayrıca ayrı kotalı
-**Gemini 4 Argon** haftalık limiti. `/usage` okunamazsa Cloud Code kota servisine
-düşer. Hesap e-postası `pool_get_quotas` çıktısında `email` alanında ve `note`
-içinde görünür.
+```bash
+curl -fsSL https://antigravity.google/cli/install.sh | bash
+```
+
+Havuz `wsl.exe --exec` ile kabuksuz çağırır; Windows proje klasörleri `/mnt/<sürücü>/...`
+olarak görülür. Sahibin Windows'taki Antigravity proje izinleri, izinli dosya yolları
+ve güvenilir klasörleri giriş, katalog yenileme, servis açılışı ve **Antigravity
+izinlerini eşitle** düğmesiyle WSL profiline yol çevirisiyle kopyalanır; görev
+gönderimi izin oluşturmaz, kimlik bilgisi asla kopyalanmaz. WSL hesabındaki
+`execute` komutları Linux'ta çalışır; Windows'a özgü komutlar (PowerShell, `.cmd`)
+ve WSL'de kurulu olmayan araçlar orada çalışmaz.
+
+**Antigravity kotası ve sınır.** Varsayılan (profilsiz) hesabın kotası `agy -p /usage --output-format json`
+ile okunur: Gemini ve Claude/GPT grupları için haftalık/5 saatlik kalan yüzde, yenilenme saati ve
+ayrı kotalı **Gemini 4 Argon** limiti. Ek hesaplar (`agy-accN`) için kota, profilin kendi token
+dosyasından Cloud Code servisiyle okunur ve Argon limitini içermez. Windows `agy` girişi tek
+Credential Manager kaydında tuttuğundan `USERPROFILE`/`HOME`, `ANTIGRAVITY_*` ve `AGY_ACCOUNT`
+değişkenleri hesabı **izole etmez** (boş profilde bile varsayılan hesap kullanılır); bu yüzden ek
+Antigravity hesapları dosya tabanlı token depolamanın devreye girdiği WSL'de çalıştırılmalıdır.
 
 Hangi hesaba ne zaman geçileceği havuzun işi değildir: çağıran sistem
 `pool_get_quotas` ile her bağlantının kotasını okur, `pool_catalog` / `pool_list_connections`
