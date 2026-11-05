@@ -23,7 +23,7 @@ test('account profiles are accepted only where the official CLI can keep separat
   assert.equal(parse([native('codex'), native('codex', { id: 'codex-acc2', profile: 'acc2' })]).success, true);
   assert.equal(parse([native('claude', { profile: 'work' })]).success, true);
   assert.equal(parse([native('agy'), wslRoute()]).success, true);
-  assert.match(messages(parse([native('agy', { profile: 'acc2' })])), /WSL çalışma ortamını seçin/);
+  assert.equal(parse([native('agy', { profile: 'acc2' })]).success, true);
   assert.match(messages(parse([native('opencode', { profile: 'acc2' })])), /hesap profili desteklenmez/);
   assert.equal(parse([native('zcode', { profile: 'acc2', billing: 'token_plan' })]).success, true);
   assert.match(messages(parse([native('codex', { runtime: 'wsl', wsl: { distro: 'Ubuntu', home: '/home/u' } })])), /yalnızca Antigravity/);

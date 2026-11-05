@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { configView, saveConfig, PoolError, dataDirectory } from './config.js';
 import { discover, routeCatalog, importDiscoveredRoutes, loginCommands, mergeCatalogModels, routeCommand, accountLoggedIn } from './adapters.js';
-import { detectWslAgy, nextAccountRoute, prepareWslProfile } from './accounts.js';
+import { detectWslAgy, nextAccountRoute, prepareWslProfile, prepareNativeAgyProfile } from './accounts.js';
 import { wslPrefix, wslLoginPath } from './profiles.js';
 import { codexControl } from './codex-control.js';
 import { saveSecret, hasSecret } from './secrets-store.js';

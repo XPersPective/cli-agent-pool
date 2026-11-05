@@ -4,7 +4,9 @@
 import { PoolError } from './config.js';
 import { capture } from './process.js';
 import { writeFileSync } from 'node:fs';
-import { accountProfileAdapters, mirrorAgyPermissions, wslExecutable, wslProfileHome, wslWindowsPath, wslHelperDirectory, wslBrowserHelper } from './profiles.js';
+import { accountProfileAdapters, mirrorAgyPermissions, profileDirectory, wslExecutable, wslProfileHome, wslWindowsPath, wslHelperDirectory, wslBrowserHelper } from './profiles.js';
+import path from 'node:path';
+import { homedir } from 'node:os';
 
 const accountAdapters = accountProfileAdapters;
 export const wslInstallCommand = 'curl -fsSL https://antigravity.google/cli/install.sh | bash';
@@ -44,13 +46,30 @@ export function nextAccountRoute(config, baseRouteId, wsl = null) {
   const base = config.routes.find(route => route.id === baseRouteId);
   if (!base) throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı.');
   if (base.api || !accountAdapters.has(base.adapter)) throw new PoolError('ACCOUNT_UNSUPPORTED', 'Bu CLI bağlantısına ek hesap eklenemez.');
-  if (base.adapter === 'agy' && !wsl) throw new PoolError('WSL_UNAVAILABLE', 'Ek Antigravity hesabı için WSL içinde agy gerekir.');
   const used = new Set(config.routes.filter(route => route.adapter === base.adapter).map(route => route.profile).filter(Boolean));
   let number = 2;
   while (used.has(`acc${number}`) || config.routes.some(route => route.id === `${base.adapter}-acc${number}`)) number++;
   const route = structuredClone(base);
   Object.assign(route, { id: `${base.adapter}-acc${number}`, profile: `acc${number}`, enabled: false });
-  if (base.adapter === 'agy') Object.assign(route, { runtime: 'wsl', executable: wsl.executable, wsl: { distro: wsl.distro, home: wsl.home } });
-  else { delete route.runtime; delete route.wsl; }
+  if (base.adapter === 'agy') {
+    if (wsl && typeof wsl === 'object') {
+      Object.assign(route, { runtime: 'wsl', executable: wsl.executable, wsl: { distro: wsl.distro, home: wsl.home } });
+    } else if (wsl === 'native' || wsl === false) {
+      delete route.runtime;
+      delete route.wsl;
+      route.executable = base.executable;
+    } else {
+      throw new PoolError('WSL_UNAVAILABLE', 'Ek Antigravity hesabı için WSL içinde agy gerekir.');
+    }
+  } else {
+    delete route.runtime;
+    delete route.wsl;
+  }
   return { config: { ...config, routes: [...config.routes, route] }, route };
+}
+
+export function prepareNativeAgyProfile(route, directory) {
+  const home = profileDirectory(route, directory);
+  const targetGemini = path.join(home, '.gemini');
+  return mirrorAgyPermissions(targetGemini, homedir(), false);
 }

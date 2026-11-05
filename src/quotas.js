@@ -161,12 +161,24 @@ export function antigravityGroupWindows(body) {
 // options.tokenFile points at a WSL profile login; credentialStore:false keeps the
 // Windows Credential Manager login from standing in for a missing profile login.
 export async function antigravityQuota(home = homedir(), options = {}) {
+  const tokenFile = options.tokenFile || path.join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token');
+  let email = null;
+  try {
+    const stored = readJson(tokenFile);
+    email = stored?.id_token_email || null;
+  } catch {}
+  if (!email) {
+    try {
+      const accounts = readJson(path.join(home, '.gemini', 'google_accounts.json'));
+      email = accounts?.active || null;
+    } catch {}
+  }
   const token = await antigravityToken(home, options);
-  if (!token) return authRequired('antigravity-cloudcode', 'Antigravity oturumu bulunamadı; agy çalıştırıp giriş yapın.');
+  if (!token) return authRequired('antigravity-cloudcode', 'Antigravity oturumu bulunamadı; agy çalıştırıp giriş yapın.', { ...(email ? { email } : {}) });
   const headers = agent => ({ Authorization: `Bearer ${token}`, 'User-Agent': agent });
   for (const base of ANTIGRAVITY_ENDPOINTS) {
     const load = await request(`${base}/v1internal:loadCodeAssist`, { method: 'POST', headers: headers('antigravity/windows/amd64'), body: { metadata: { ideType: 'ANTIGRAVITY' } } });
-    if (load.status === 401) return unknown('antigravity-cloudcode', 'Antigravity oturumu yenilenemedi; agy ile tekrar giriş gerekebilir.');
+    if (load.status === 401) return unknown('antigravity-cloudcode', 'Antigravity oturumu yenilenemedi; agy ile tekrar giriş gerekebilir.', { ...(email ? { email } : {}) });
     const project = typeof load.data?.cloudaicompanionProject === 'string' ? load.data.cloudaicompanionProject : load.data?.cloudaicompanionProject?.id;
     if (load.status !== 200 || !project) continue;
     const tier = load.data.currentTier?.id || load.data.paidTier?.id || 'free';
@@ -179,9 +191,12 @@ export async function antigravityQuota(home = homedir(), options = {}) {
     // Group windows are the provider's routing limits; per-model rows fill only uncovered models.
     const covered = id => groups.some(window => window.models?.some(scope => scope.startsWith('gemini-') ? id.includes('gemini') && id.includes(scope.slice(7)) : id.includes(scope)));
     const windows = [...groups, ...perModel.filter(window => !covered(window.name))];
-    if (windows.length) return { ...withStatus(windows, { auth: tier, source: 'antigravity-cloudcode', note: `Plan: ${tier}` }), scope: 'model' };
+    if (windows.length) {
+      const note = `Plan: ${tier}${email ? ` (${email})` : ''}`;
+      return { ...withStatus(windows, { auth: tier, source: 'antigravity-cloudcode', note }), scope: 'model', ...(email ? { email } : {}) };
+    }
   }
-  return unknown('antigravity-cloudcode', 'Antigravity kota servisi yanıt vermedi.');
+  return unknown('antigravity-cloudcode', 'Antigravity kota servisi yanıt vermedi.', { ...(email ? { email } : {}) });
 }
 
 // ---- Kimi Code -----------------------------------------------------------

@@ -664,9 +664,15 @@ export async function checkAuth(route, cwd, python, directory = dataDirectory(),
 // True once the official CLI reports a login for this account profile. Used to
 // add an account route only after its sign-in succeeded. Never returns identity.
 export async function accountLoggedIn(route, cwd, python, directory = dataDirectory(), read = readJsonSafe) {
-  if (route.adapter === 'agy' && route.runtime === 'wsl') {
-    const stored = read(wslWindowsPath(route, `${wslProfileHome(route)}/.gemini/antigravity-cli/antigravity-oauth-token`));
-    const token = stored.token || stored;
+  if (route.adapter === 'agy') {
+    if (route.runtime === 'wsl') {
+      const stored = read(wslWindowsPath(route, `${wslProfileHome(route)}/.gemini/antigravity-cli/antigravity-oauth-token`));
+      const token = stored?.token || stored;
+      return Boolean(token?.refresh_token || token?.access_token);
+    }
+    const home = profileHome(route, directory);
+    const stored = read(path.join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'));
+    const token = stored?.token || stored;
     return Boolean(token?.refresh_token || token?.access_token);
   }
   const { argv, env } = routeCommand(route, directory);
@@ -1076,10 +1082,14 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
     return vendor ? { ...fallback, ...vendor, auth: 'api_key' } : fallback;
   }
   const { argv, env } = routeCommand(route, directory);
-  if (route.adapter === 'agy' && route.runtime === 'wsl') {
-    // agy keeps a WSL login as a file under the profile HOME; read it in memory only.
-    const tokenFile = wslWindowsPath(route, `${wslProfileHome(route)}/.gemini/antigravity-cli/antigravity-oauth-token`);
-    return { ...base, account: route.profile || 'default', ...(await antigravityQuota(undefined, { tokenFile, credentialStore: false })) };
+  if (route.adapter === 'agy') {
+    const isWsl = route.runtime === 'wsl';
+    const agyHome = profileHome(route, directory);
+    const tokenFile = isWsl
+      ? wslWindowsPath(route, `${wslProfileHome(route)}/.gemini/antigravity-cli/antigravity-oauth-token`)
+      : (route.profile ? path.join(agyHome, '.gemini', 'antigravity-cli', 'antigravity-oauth-token') : undefined);
+    const result = await antigravityQuota(agyHome, { tokenFile, credentialStore: !route.profile && !isWsl });
+    return { ...base, account: route.profile || 'default', ...result };
   }
   if (route.adapter === 'claude' && route.billing === 'subscription' && route.profile) {
     return { ...base, account: route.profile, ...(await claudeQuota(undefined, claudeConfigDirectory(route, directory))) };

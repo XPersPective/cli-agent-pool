@@ -42,7 +42,6 @@ export function accountIssues(route) {
     if (!/^\/[A-Za-z0-9._/-]{1,255}$/.test(route.executable)) issues.push(`${route.id}: WSL CLI yolu mutlak Linux yolu olmalı.`);
   } else {
     if (route.wsl) issues.push(`${route.id}: WSL ayarı yalnızca runtime wsl ile kullanılır.`);
-    if (route.adapter === 'agy' && route.profile) issues.push(`${route.id}: Windows Antigravity tek hesap tutar; ek hesaplar için WSL çalışma ortamını seçin.`);
   }
   return issues;
 }

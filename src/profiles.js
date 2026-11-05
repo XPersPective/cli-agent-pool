@@ -10,15 +10,15 @@ export const profileAdapters = new Set(['codex', 'claude']);
 // These CLIs keep their login in files under the user home (~/.zcode, ~/.qwen,
 // ~/.kimi-code, ~/.minimax, ~/.mmx, ~/.qoder, ~/.mimocode); a profile gives them
 // their own home. Verified: an empty home reports logged out for each.
-export const homeProfileAdapters = new Set(['zcode', 'qwen', 'kimi', 'mcode', 'mmx', 'qoder', 'mimo']);
-export const accountProfileAdapters = new Set([...profileAdapters, ...homeProfileAdapters, 'agy']);
+export const homeProfileAdapters = new Set(['zcode', 'qwen', 'kimi', 'mcode', 'mmx', 'qoder', 'mimo', 'agy']);
+export const accountProfileAdapters = new Set([...profileAdapters, ...homeProfileAdapters]);
 
 export function profileDirectory(route, directory) {
   return path.join(directory, 'profiles', route.adapter, route.profile);
 }
 
 export function profileEnvironment(route, directory, create = true) {
-  if (!route.profile || route.api || !(profileAdapters.has(route.adapter) || homeProfileAdapters.has(route.adapter))) return {};
+  if (!route.profile || route.api || route.runtime === 'wsl' || !(profileAdapters.has(route.adapter) || homeProfileAdapters.has(route.adapter))) return {};
   const target = profileDirectory(route, directory);
   if (create) mkdirSync(target, { recursive: true, mode: 0o700 });
   if (homeProfileAdapters.has(route.adapter)) return { USERPROFILE: target, HOME: target };
@@ -27,7 +27,7 @@ export function profileEnvironment(route, directory, create = true) {
 
 // The home whose CLI files belong to this route (profile home or the real home).
 export function profileHome(route, directory, home = homedir()) {
-  return route.profile && !route.api && homeProfileAdapters.has(route.adapter) ? profileDirectory(route, directory) : home;
+  return route.profile && !route.api && route.runtime !== 'wsl' && homeProfileAdapters.has(route.adapter) ? profileDirectory(route, directory) : home;
 }
 
 export function claudeConfigDirectory(route, directory, home = homedir()) {
@@ -105,7 +105,8 @@ const mapGrant = grant => {
 // into a WSL profile, translating Windows paths to /mnt paths. Owner actions call
 // this (login, catalog refresh, service start); task submission never does.
 // Credentials and conversations are not part of these files.
-export function mirrorAgyPermissions(targetGeminiDir, sourceHome = homedir()) {
+export function mirrorAgyPermissions(targetGeminiDir, sourceHome = homedir(), isWsl = true) {
+  const isWslProfile = Boolean(isWsl);
   const sourceGemini = path.join(sourceHome, '.gemini');
   let projects = 0;
   const sourceProjects = path.join(sourceGemini, 'config', 'projects');
@@ -115,12 +116,17 @@ export function mirrorAgyPermissions(targetGeminiDir, sourceHome = homedir()) {
     const project = readJson(path.join(sourceProjects, file));
     const resources = project?.projectResources?.resources;
     if (!project || typeof project.id !== 'string' || !Array.isArray(resources)) continue;
-    const mapped = resources.flatMap(resource => {
-      const linuxPath = windowsUriToWsl(resource?.gitFolder?.folderUri ?? resource?.folderUri);
-      if (!linuxPath) return [];
-      const folderUri = encodeWslUri(linuxPath);
-      return [resource.gitFolder ? { ...resource, gitFolder: { ...resource.gitFolder, folderUri } } : { ...resource, folderUri }];
-    });
+    let mapped;
+    if (isWslProfile) {
+      mapped = resources.flatMap(resource => {
+        const linuxPath = windowsUriToWsl(resource?.gitFolder?.folderUri ?? resource?.folderUri);
+        if (!linuxPath) return [];
+        const folderUri = encodeWslUri(linuxPath);
+        return [resource.gitFolder ? { ...resource, gitFolder: { ...resource.gitFolder, folderUri } } : { ...resource, folderUri }];
+      });
+    } else {
+      mapped = resources;
+    }
     if (!mapped.length) continue;
     writeJsonAtomic(path.join(targetGeminiDir, 'config', 'projects', file), { ...project, projectResources: { ...project.projectResources, resources: mapped } });
     projects++;
@@ -129,10 +135,17 @@ export function mirrorAgyPermissions(targetGeminiDir, sourceHome = homedir()) {
   const targetFile = path.join(targetGeminiDir, 'antigravity-cli', 'settings.json');
   const target = readJson(targetFile) || {};
   const union = (a, b) => [...new Set([...(Array.isArray(a) ? a : []), ...b])];
-  const allow = (source.permissions?.allow || []).filter(item => typeof item === 'string').map(mapGrant).filter(Boolean);
-  const deny = (source.permissions?.deny || []).filter(item => typeof item === 'string').map(mapGrant).filter(Boolean);
-  const trusted = (source.trustedWorkspaces || []).map(item => windowsToWsl(item)).filter(Boolean);
+  const allow = (source.permissions?.allow || []).filter(item => typeof item === 'string').map(grant => isWslProfile ? mapGrant(grant) : grant).filter(Boolean);
+  const deny = (source.permissions?.deny || []).filter(item => typeof item === 'string').map(grant => isWslProfile ? mapGrant(grant) : grant).filter(Boolean);
+  const trusted = (source.trustedWorkspaces || []).map(item => isWslProfile ? windowsToWsl(item) : item).filter(Boolean);
   const next = { ...target, permissions: { ...(target.permissions || {}), allow: union(target.permissions?.allow, allow), ...(deny.length || target.permissions?.deny ? { deny: union(target.permissions?.deny, deny) } : {}) }, trustedWorkspaces: union(target.trustedWorkspaces, trusted) };
   if (JSON.stringify(next) !== JSON.stringify(target) || !existsSync(targetFile)) writeJsonAtomic(targetFile, next);
+  if (!isWslProfile) {
+    const trustedFoldersSource = path.join(sourceGemini, 'trustedFolders.json');
+    const trustedFoldersTarget = path.join(targetGeminiDir, 'trustedFolders.json');
+    if (existsSync(trustedFoldersSource) && !existsSync(trustedFoldersTarget)) {
+      try { writeJsonAtomic(trustedFoldersTarget, readJson(trustedFoldersSource)); } catch {}
+    }
+  }
   return { projects, grants: allow.length, trusted: trusted.length };
 }
