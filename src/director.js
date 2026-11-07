@@ -5,6 +5,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { PoolError, allowedWorkspace, overlaps } from './config.js';
 import { agyProjectMatches } from './agy-project.js';
+import { profileHome } from './profiles.js';
 import { serviceHelp } from './service-help.js';
 import {
   CAPABILITIES, PREFLIGHT_RETRY_MS, PREFLIGHT_TIMEOUT_SECONDS, assertDirectorRoute, validateReadPaths, normalizeCapabilities,
@@ -26,12 +27,12 @@ export const preflightSchema = z.object({
 }).strict();
 
 // Resolves everything a preflight result is keyed on, without running a model.
-export async function preflightScope(pool, input) {
+export async function preflightScope(pool, input, options = {}) {
   const request = preflightSchema.parse(input);
   const route = pool.config.routes.find(item => item.id === request.routeId);
   assertDirectorRoute(route);
   const workspace = allowedWorkspace(request.workspace);
-  const model = pool.select({ kind: 'write', mode: 'execute', routeId: route.id, ...(request.modelId ? { modelId: request.modelId } : {}), effort: request.effort }).selected;
+  const model = pool.select({ kind: 'write', mode: 'execute', routeId: route.id, ...(request.modelId ? { modelId: request.modelId } : {}), effort: request.effort }, options).selected;
   const capabilities = normalizeCapabilities(request.capabilities);
   const readPaths = validateReadPaths(request.readPaths || [], pool.config.directorReadRoots || defaultReadRoots());
   const effort = request.effort || model.defaultEffort || null;
@@ -81,7 +82,7 @@ export async function preflight(pool, input) {
 }
 
 export async function preflightStatus(pool, input) {
-  const scope = await preflightScope(pool, { ...input, force: undefined });
+  const scope = await preflightScope(pool, { ...input, force: undefined }, { ignoreQuota: true });
   const entry = pool.store.preflight(scope.scope);
   const decision = admission(pool, scope);
   return { ...(summarize(entry) || {}), current: Boolean(cachedUsable(entry, scope.key)), ready: decision.ready, ...(decision.ready ? {} : { code: decision.code, message: decision.message }) };
@@ -131,8 +132,11 @@ export function checkLinkedWorker(pool, parent, request, model) {
   if (parent.workspace && overlaps(parent.workspace, request.workspace))
     throw new PoolError('WORKSPACE_HELD_BY_PARENT', 'The director holds this workspace. Start workers in a worktree outside it (for example a sibling folder created with git worktree add).');
   const route = pool.config.routes.find(item => item.id === model.routeId);
-  if (route?.adapter === 'agy' && route.runtime !== 'wsl' && agyProjectMatches(request.workspace).length === 0)
-    throw new PoolError('PROJECT_REQUIRED', `No Antigravity project maps ${request.workspace}; a worker would run without the owner's grants. Add the worktrees' parent folder to an Antigravity project first.`);
+  if (route?.adapter === 'agy' && route.runtime !== 'wsl') {
+    const agyHome = pool.directory ? profileHome(route, pool.directory) : undefined;
+    if (agyProjectMatches(request.workspace, agyHome).length === 0 && agyProjectMatches(request.workspace).length === 0)
+      throw new PoolError('PROJECT_REQUIRED', `No Antigravity project maps ${request.workspace}; a worker would run without the owner's grants. Add the worktrees' parent folder to an Antigravity project first.`);
+  }
 }
 
 // Runs inside Pool.run after the workspace snapshot, before the CLI starts.
@@ -184,7 +188,7 @@ export async function settlePreflight(pool, taskId, outcome) {
 }
 
 export function savePreflight(pool, probe, verdict) {
-  const projectFile = projectFileFor(probe.route, probe.workspace);
+  const projectFile = projectFileFor(probe.route, probe.workspace, pool.directory);
   const capabilities = Object.fromEntries(Object.entries(verdict.capabilities).map(([name, value]) => [name,
     value.status === 'failed' ? { ...value, fix: verdict.runError ? (verdict.runMessage || serviceHelp(verdict.runError).action) : fixFor(probe.route, name, { workspace: probe.workspace, projectFile }) } : value]));
   const failed = Boolean(verdict.runError) || Object.values(capabilities).some(value => value.status === 'failed');

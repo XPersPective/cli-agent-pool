@@ -2,7 +2,7 @@ import { activeBillings } from './config.js';
 import { quotaApplies } from '../web/pool-state.js';
 import { supportsExecution } from './task-protocol.js';
 
-export function rejectionReason(model, route, snapshot, request) {
+export function rejectionReason(model, route, snapshot, request, inFlightCount = 0) {
   if (!model.enabled) return 'DISABLED';
   if (!activeBillings.has(model.billing)) return 'BILLING_UNCONFIRMED';
   if (model.billing === 'paid_api' && !request.routeId && !model.autoSelect) return 'PAID_ROUTE_REQUIRED';
@@ -12,8 +12,10 @@ export function rejectionReason(model, route, snapshot, request) {
   if (snapshot && Date.now() - Date.parse(snapshot.observedAt) < 60_000) {
     if (snapshot.status === 'auth_required') return 'AUTH_REQUIRED';
     if (snapshot.subscription === 'none' && ['subscription', 'token_plan'].includes(route.billing)) return 'SUBSCRIPTION_REQUIRED';
+    const baseReserve = Math.max(route.minRemainingPercent, request.minRemainingPercent ?? 0);
+    const effectiveReserve = baseReserve > 0 && inFlightCount > 0 ? Math.min(95, baseReserve + inFlightCount * 2) : baseReserve;
     const accountLimited = snapshot.status === 'rate_limited' && snapshot.scope !== 'model';
-    const modelWindowLimited = snapshot.windows?.some(window => quotaApplies(window, model.id) && window.remainingPercent != null && window.remainingPercent <= Math.max(route.minRemainingPercent, request.minRemainingPercent ?? 0));
+    const modelWindowLimited = snapshot.windows?.some(window => quotaApplies(window, model.id) && window.remainingPercent != null && window.remainingPercent <= effectiveReserve);
     if (accountLimited || modelWindowLimited) return 'QUOTA_RESERVE';
   }
   return null;

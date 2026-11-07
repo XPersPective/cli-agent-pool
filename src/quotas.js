@@ -36,7 +36,7 @@ const isoTime = value => {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 };
 const unknown = (source, note, extra = {}) => ({ status: 'unknown', windows: [], source, ...(note ? { note } : {}), ...extra });
-const authRequired = (source, note) => ({ status: 'auth_required', auth: 'missing', windows: [], source, ...(note ? { note } : {}) });
+const authRequired = (source, note, extra = {}) => ({ status: 'auth_required', auth: 'missing', windows: [], source, ...(note ? { note } : {}), ...extra });
 // Only a missing credential is proof of logout; expired tokens are refreshed by the CLI itself on its next run.
 const withStatus = (windows, extra) => ({ status: !windows.length ? 'unknown' : windows.some(window => window.remainingPercent <= 0) ? 'rate_limited' : 'available', scope: 'account', windows, ...extra });
 
@@ -49,22 +49,58 @@ export function claudeWindows(usage) {
   });
 }
 
+export function codexAccountEmail(codexHome = process.env.CODEX_HOME || path.join(homedir(), '.codex')) {
+  try {
+    const idToken = readJson(path.join(codexHome, 'auth.json'))?.tokens?.id_token;
+    if (typeof idToken !== 'string') return null;
+    const payload = idToken.split('.')[1];
+    if (!payload) return null;
+    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    return typeof parsed?.email === 'string' && parsed.email.includes('@') ? parsed.email : null;
+  } catch { return null; }
+}
+
+export function claudeAccountEmail(home = homedir(), configDir = null) {
+  try {
+    const first = configDir ? readJson(path.join(configDir, '.claude.json'))?.oauthAccount?.emailAddress : null;
+    const email = first || (!configDir ? readJson(path.join(home, '.claude.json'))?.oauthAccount?.emailAddress : null);
+    return typeof email === 'string' && email.includes('@') ? email : null;
+  } catch { return null; }
+}
+
+export function antigravityAccountEmail(home = homedir(), tokenFile = null) {
+  try {
+    const stored = readJson(tokenFile || path.join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'));
+    if (typeof stored?.id_token_email === 'string' && stored.id_token_email.includes('@')) return stored.id_token_email;
+  } catch {}
+  try {
+    const active = readJson(path.join(home, '.gemini', 'google_accounts.json'))?.active;
+    if (typeof active === 'string' && active.includes('@')) return active;
+  } catch {}
+  return null;
+}
+
 // `configDir` is CLAUDE_CONFIG_DIR for an account profile; it then also holds .claude.json.
 export async function claudeQuota(home = homedir(), configDir = null) {
+  const email = claudeAccountEmail(home, configDir);
+  const emailExtra = email ? { email } : {};
   const oauth = readJson(path.join(configDir || path.join(home, '.claude'), '.credentials.json')).claudeAiOauth;
   const live = oauth?.accessToken && (!oauth.expiresAt || oauth.expiresAt > Date.now() + 60_000);
+  let sawNetworkError = false;
   if (live) {
     const { status, data } = await request('https://api.anthropic.com/api/oauth/usage', { headers: { Authorization: `Bearer ${oauth.accessToken}`, 'anthropic-beta': 'oauth-2025-04-20' } });
-    if (status === 200) return withStatus(claudeWindows(data), { auth: oauth.subscriptionType || 'claude.ai', source: 'anthropic-oauth-usage', ...(oauth.subscriptionType ? { note: `Plan: ${oauth.subscriptionType}` } : {}) });
+    if (status === 200) return withStatus(claudeWindows(data), { auth: oauth.subscriptionType || 'claude.ai', source: 'anthropic-oauth-usage', ...(oauth.subscriptionType ? { note: `Plan: ${oauth.subscriptionType}${email ? ` (${email})` : ''}` } : {}), ...emailExtra });
+    if (status === 401 || status === 403) return authRequired('anthropic-oauth-usage', 'Claude oturumu geçersiz veya reddedildi; claude auth login çalıştırın.', emailExtra);
+    if (status === 0 || status >= 500) sawNetworkError = true;
   }
   // Claude Code stores the last server snapshot itself; use it only while fresh.
   const cached = readJson(configDir ? path.join(configDir, '.claude.json') : path.join(home, '.claude.json')).cachedUsageUtilization;
   const age = Date.now() - Number(cached?.fetchedAtMs);
   if (cached?.utilization && age >= 0 && age < 30 * 60_000) {
     const windows = claudeWindows(cached.utilization);
-    if (windows.length) return withStatus(windows, { source: 'claude-code-cache', observedAt: new Date(cached.fetchedAtMs).toISOString() });
+    if (windows.length) return withStatus(windows, { source: 'claude-code-cache', observedAt: new Date(cached.fetchedAtMs).toISOString(), ...emailExtra });
   }
-  return oauth?.accessToken ? unknown('anthropic-oauth-usage', live ? 'Claude kota servisi şu an yanıt vermedi (oran sınırı olabilir).' : 'Claude oturum jetonu yenilenmeyi bekliyor; CLI bir sonraki çalıştırmada yeniler.', { auth: 'credentials_present' }) : authRequired('anthropic-oauth-usage');
+  return oauth?.accessToken ? unknown('anthropic-oauth-usage', live ? 'Claude kota servisi şu an yanıt vermedi (oran sınırı olabilir).' : 'Claude oturum jetonu yenilenmeyi bekliyor; CLI bir sonraki çalıştırmada yeniler.', { auth: 'credentials_present', ...(sawNetworkError ? { networkError: true } : {}), ...emailExtra }) : authRequired('anthropic-oauth-usage', undefined, emailExtra);
 }
 
 // ---- Z.AI GLM Coding Plan (ZCode) ----------------------------------------
@@ -116,19 +152,24 @@ function windowsCredential(target) {
   });
 }
 
-async function antigravityToken(home, { tokenFile, credentialStore = true } = {}) {
+async function antigravityToken(home, { tokenFile, credentialStore = true, fetchImpl = fetch } = {}) {
   let stored = readJson(tokenFile || path.join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'));
   if (!stored.token && credentialStore && process.platform === 'win32') {
     try { stored = JSON.parse(await windowsCredential('gemini:antigravity') || '{}'); } catch { stored = {}; }
   }
   const token = stored.token || (stored.access_token || stored.refresh_token ? stored : {});
-  if (token.access_token && Date.parse(token.expiry) > Date.now() + 60_000) return token.access_token;
-  if (!token.refresh_token) return null;
+  if (token.access_token && Date.parse(token.expiry) > Date.now() + 60_000) return { token: token.access_token, reason: 'ok' };
+  if (!token.refresh_token) return { token: null, reason: 'auth_required' };
   // Refresh in memory only; the CLI keeps owning its stored credential.
   try {
-    const response = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', body: new URLSearchParams({ client_id: ANTIGRAVITY_CLIENT.id, client_secret: ANTIGRAVITY_CLIENT.secret, refresh_token: token.refresh_token, grant_type: 'refresh_token' }), signal: AbortSignal.timeout(TIMEOUT_MS) });
-    return response.ok ? (await response.json()).access_token || null : null;
-  } catch { return null; }
+    const response = await fetchImpl('https://oauth2.googleapis.com/token', { method: 'POST', body: new URLSearchParams({ client_id: ANTIGRAVITY_CLIENT.id, client_secret: ANTIGRAVITY_CLIENT.secret, refresh_token: token.refresh_token, grant_type: 'refresh_token' }), signal: AbortSignal.timeout(TIMEOUT_MS) });
+    if (response.ok) {
+      const accessToken = (await response.json()).access_token || null;
+      return accessToken ? { token: accessToken, reason: 'ok' } : { token: null, reason: 'auth_required' };
+    }
+    if (response.status === 400 || response.status === 401) return { token: null, reason: 'auth_required' };
+    return { token: null, reason: 'network_error' };
+  } catch { return { token: null, reason: 'network_error' }; }
 }
 
 export function antigravityModelWindows(body) {
@@ -173,12 +214,20 @@ export async function antigravityQuota(home = homedir(), options = {}) {
       email = accounts?.active || null;
     } catch {}
   }
-  const token = await antigravityToken(home, options);
-  if (!token) return authRequired('antigravity-cloudcode', 'Antigravity oturumu bulunamadı; agy çalıştırıp giriş yapın.', { ...(email ? { email } : {}) });
+  const tokenRes = await antigravityToken(home, options);
+  if (!tokenRes.token) {
+    if (tokenRes.reason === 'network_error') {
+      return unknown('antigravity-cloudcode', 'Antigravity oturum yenileme servisine ulaşılamadı (ağ hatası olabilir).', { auth: 'credentials_present', networkError: true, ...(email ? { email } : {}) });
+    }
+    return authRequired('antigravity-cloudcode', 'Antigravity oturumu bulunamadı; agy çalıştırıp giriş yapın.', { ...(email ? { email } : {}) });
+  }
+  const token = tokenRes.token;
   const headers = agent => ({ Authorization: `Bearer ${token}`, 'User-Agent': agent });
+  let sawNetworkError = false;
   for (const base of ANTIGRAVITY_ENDPOINTS) {
     const load = await request(`${base}/v1internal:loadCodeAssist`, { method: 'POST', headers: headers('antigravity/windows/amd64'), body: { metadata: { ideType: 'ANTIGRAVITY' } } });
     if (load.status === 401) return unknown('antigravity-cloudcode', 'Antigravity oturumu yenilenemedi; agy ile tekrar giriş gerekebilir.', { ...(email ? { email } : {}) });
+    if (load.status === 0 || load.status >= 500) sawNetworkError = true;
     const project = typeof load.data?.cloudaicompanionProject === 'string' ? load.data.cloudaicompanionProject : load.data?.cloudaicompanionProject?.id;
     if (load.status !== 200 || !project) continue;
     const tier = load.data.currentTier?.id || load.data.paidTier?.id || 'free';
@@ -189,14 +238,14 @@ export async function antigravityQuota(home = homedir(), options = {}) {
     const groups = summary.status === 200 ? antigravityGroupWindows(summary.data) : [];
     const perModel = models.status === 200 ? antigravityModelWindows(models.data) : [];
     // Group windows are the provider's routing limits; per-model rows fill only uncovered models.
-    const covered = id => groups.some(window => window.models?.some(scope => scope.startsWith('gemini-') ? id.includes('gemini') && id.includes(scope.slice(7)) : id.includes(scope)));
+    const covered = id => groups.some(window => window.models?.some(scope => scope.startsWith('gemini-') ? id.includes('gemini') && id.includes(scope.slice(7)) : scope === 'gemini' ? id.includes('gemini') && !id.includes('argon') : id.includes(scope)));
     const windows = [...groups, ...perModel.filter(window => !covered(window.name))];
     if (windows.length) {
       const note = `Plan: ${tier}${email ? ` (${email})` : ''}`;
       return { ...withStatus(windows, { auth: tier, source: 'antigravity-cloudcode', note }), scope: 'model', ...(email ? { email } : {}) };
     }
   }
-  return unknown('antigravity-cloudcode', 'Antigravity kota servisi yanıt vermedi.', { ...(email ? { email } : {}) });
+  return unknown('antigravity-cloudcode', 'Antigravity kota servisi yanıt vermedi.', { auth: 'credentials_present', ...(sawNetworkError ? { networkError: true } : {}), ...(email ? { email } : {}) });
 }
 
 // Windows from the CLI's own `/usage` report (agy -p /usage --output-format json).

@@ -58,24 +58,26 @@ export async function workspaceFingerprint(workspace, python, settingsFiles = []
     try { inside = (await git(['rev-parse', '--is-inside-work-tree'], workspace, python)).trim() === 'true'; } catch { inside = false; }
     if (inside) {
       // Independent reads run in parallel; HEAD may not exist in a fresh repository (a state, not an error).
-      const [head, branch, refs, stash, status, flags, staged, top, commonDir, hooksPath] = await Promise.all([
+      // Omit shared global refs/stash so commits in a sibling git worktree never falsely lock this worktree.
+      const [head, branch, status, flags, staged, top, commonDir, worktreeGitDir, hooksPath] = await Promise.all([
         git(['rev-parse', '--verify', '-q', 'HEAD'], workspace, python).catch(() => 'none'),
         git(['symbolic-ref', '-q', 'HEAD'], workspace, python).catch(() => 'detached'),
-        git(['for-each-ref', '--format=%(refname) %(objectname)'], workspace, python),
-        git(['stash', 'list', '--format=%H'], workspace, python).catch(() => ''),
         git(['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=none', '--', '.'], workspace, python),
         git(['ls-files', '--full-name', '-v', '-z', '--', '.'], workspace, python),
         git(['ls-files', '--full-name', '--stage', '-z', '--', '.'], workspace, python),
         git(['rev-parse', '--show-toplevel'], workspace, python).then(value => value.trim()),
         git(['rev-parse', '--git-common-dir'], workspace, python),
+        git(['rev-parse', '--git-dir'], workspace, python),
         git(['rev-parse', '--git-path', 'hooks'], workspace, python),
       ]);
       const gitDir = path.resolve(workspace, commonDir.trim());
+      const localGitDir = path.resolve(workspace, worktreeGitDir.trim());
       if (staged.split('\0').some(entry => entry.startsWith('120000 '))) return 'unknown';
       // Hidden tracked files need content hashes too: their status remains clean
       // after edits under assume-unchanged or skip-worktree.
       const hidden = flags.split('\0').filter(line => line && !line.startsWith('H '));
-      hash.update(`git\0${head.trim()}\0${branch.trim()}\0${refs}\0${stash}\0${status}\0${flags}\0${staged}\0${gitMetadata(gitDir, path.resolve(workspace, hooksPath.trim()))}\0`);
+      const localMeta = localGitDir !== gitDir ? gitMetadata(localGitDir, path.resolve(workspace, hooksPath.trim())) : '';
+      hash.update(`git\0${head.trim()}\0${branch.trim()}\0${status}\0${flags}\0${staged}\0${gitMetadata(gitDir, path.resolve(workspace, hooksPath.trim()))}\0${localMeta}\0`);
       const entries = status.split('\0').filter(Boolean);
       if (entries.length > STATUS_LIMIT) return 'unknown';
       let bytes = 0;

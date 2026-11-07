@@ -69,6 +69,14 @@ export function modelSaveConfig(base, draft, routeId, modelId, enableRoute = fal
   return config;
 }
 
+export function batchModelSaveConfig(base, draft, targets, enableRoutes = false) {
+  let config = structuredClone(base);
+  for (const { routeId, modelId } of targets) {
+    config = modelSaveConfig(config, draft, routeId, modelId, enableRoutes);
+  }
+  return config;
+}
+
 export function preferenceSaveConfig(base, draft, key) {
   if (!['categories', 'modelFilters'].includes(key)) throw new Error('Geçersiz havuz ayarı.');
   const next = { ...structuredClone(base), [key]: structuredClone(draft[key]) };
@@ -89,8 +97,8 @@ export function quotaMatches(snapshot, modelId, mode = 'all') {
 }
 
 export function quotaApplies(window, modelId = '') {
-  const id=modelId.toLowerCase();
-  return !id || !window.models?.length || window.models.some(scope => ['gemini-flash','gemini-pro'].includes(scope) ? id.includes('gemini') && id.includes(scope.slice(7)) : id.includes(scope.toLowerCase()));
+  const id = modelId.toLowerCase();
+  return !id || !window.models?.length || window.models.some(scope => ['gemini-flash', 'gemini-pro'].includes(scope) ? id.includes('gemini') && id.includes(scope.slice(7)) : id.includes(scope.toLowerCase()));
 }
 
 export function effortLabel(value) {

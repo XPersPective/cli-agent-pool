@@ -74,7 +74,8 @@ native project mapping the worktrees' parent folder; submission creates no grant
 
 Optional director fields: onExit:{argv:[absolute executable,args...],
 timeoutSeconds:300}, ackDeadlineSeconds:60..3600, startDeadlineSeconds:60..86400,
-idleTimeoutSeconds:300..86400, secretEnv:{PB_RELAY_TOKEN:value}. Values are memory
+idleTimeoutSeconds:300..86400, stopOnQuotaBarrierPercent:1..50,
+supersedesTaskId:uuid, secretEnv:{PB_RELAY_TOKEN:value}. Values are memory
 only, never stored or included in idempotency content. Queued secret-bearing tasks
 fail SECRET_LOST after restart. Do not place secrets in prompts or hook argv.
 CLI_AGENT_POOL_TASK_ID and the per-run TASK_TOKEN reach native tasks; CLI/stdin
@@ -87,14 +88,19 @@ under the same OS user remains owner-equivalent; this is no multi-user sandbox.
 pool_ack_task {taskId} is idempotent while running. Linked workers keep idle
 liveness and expose parentTaskId; they cannot overlap the parent workspace or use
 paid_api. Start and ack expiry return START_TIMEOUT/ACK_TIMEOUT; idle returns
-IDLE_TIMEOUT only after process-tree teardown. A failed write releases its lock
+IDLE_TIMEOUT only after process-tree teardown. stopOnQuotaBarrierPercent cancels a
+running director with QUOTA_BARRIER when live remaining quota reaches the barrier;
+supersedesTaskId cancels a predecessor still running 90s after successor admission
+with SUPERSEDED_BY_HANDOFF. A failed write releases its lock
 only if conservative before/after fingerprints match. Unknown or changed state
 and WSL keep needs_review. Owner pool_resolve_task {taskId,reviewed:true,note}
-acknowledges inspection without reverting files. Never resolve unrelated tasks.
+acknowledges inspection without reverting files and preserves originalError. Never resolve unrelated tasks.
 
 onExit runs from the service environment after the final lock decision, with
 CAP_TASK_ID/STATE/ERROR, closed stdin and no worker/token/secret env. It may call
-Pool. Only code 75 retries (three retries, 30s apart). Last 2KB output is retained;
+Pool. Bare code 75 retries three times (30s apart); code 75 with CAP_WAKE_AT <ISO>
+or CAP_RETRY_AFTER <seconds> schedules extended wakeups (5s..3600s, up to 200 cycles)
+for quota-reset or network-outage recovery. Last 2KB output is retained;
 CAP_NOTIFY lines appear in task notifications. Pending hooks recover at restart;
 a launch interrupted at an uncertain point is not replayed blindly. Relay recover
 should be idempotent and also callable manually. Watchdog works only while the

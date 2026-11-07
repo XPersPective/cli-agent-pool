@@ -21,6 +21,7 @@ export function profileEnvironment(route, directory, create = true) {
   if (!route.profile || route.api || route.runtime === 'wsl' || !(profileAdapters.has(route.adapter) || homeProfileAdapters.has(route.adapter))) return {};
   const target = profileDirectory(route, directory);
   if (create) mkdirSync(target, { recursive: true, mode: 0o700 });
+  if (route.adapter === 'agy') return { USERPROFILE: target, HOME: target, WSL_DISTRO_NAME: 'cli-agent-pool' };
   if (homeProfileAdapters.has(route.adapter)) return { USERPROFILE: target, HOME: target };
   return route.adapter === 'codex' ? { CODEX_HOME: target } : { CLAUDE_CONFIG_DIR: target };
 }
@@ -101,12 +102,27 @@ const mapGrant = grant => {
   return translated ? `${match[1]}(${translated})` : null;
 };
 
+const expandProfileHomeGrants = (items, sourceHome, targetHome) => {
+  if (!Array.isArray(items) || !sourceHome || !targetHome) return Array.isArray(items) ? items : [];
+  const srcFwd = sourceHome.replace(/\\/g, '/').replace(/\/+$/, '');
+  const tgtFwd = targetHome.replace(/\\/g, '/').replace(/\/+$/, '');
+  const out = [...items];
+  for (const item of items) {
+    if (typeof item !== 'string') continue;
+    const norm = item.replace(/\\/g, '/');
+    if (norm.includes(srcFwd)) out.push(norm.split(srcFwd).join(tgtFwd));
+  }
+  return [...new Set(out)];
+};
+
 // Mirror the owner's native Antigravity project permissions and trusted folders
-// into a WSL profile, translating Windows paths to /mnt paths. Owner actions call
-// this (login, catalog refresh, service start); task submission never does.
+// into a WSL or native profile. Owner actions call this (login, catalog refresh,
+// service start); task submission never does.
 // Credentials and conversations are not part of these files.
 export function mirrorAgyPermissions(targetGeminiDir, sourceHome = homedir(), isWsl = true) {
   const isWslProfile = Boolean(isWsl);
+  const targetHome = path.dirname(targetGeminiDir);
+  const targetHomeFwd = targetHome.replace(/\\/g, '/').replace(/\/+$/, '');
   const sourceGemini = path.join(sourceHome, '.gemini');
   let projects = 0;
   const sourceProjects = path.join(sourceGemini, 'config', 'projects');
@@ -128,23 +144,57 @@ export function mirrorAgyPermissions(targetGeminiDir, sourceHome = homedir(), is
       mapped = resources;
     }
     if (!mapped.length) continue;
-    writeJsonAtomic(path.join(targetGeminiDir, 'config', 'projects', file), { ...project, projectResources: { ...project.projectResources, resources: mapped } });
+    const mirroredProject = { ...project, projectResources: { ...project.projectResources, resources: mapped } };
+    if (!isWslProfile && Array.isArray(project.permissionGrants?.allow)) {
+      const expanded = expandProfileHomeGrants(project.permissionGrants.allow, sourceHome, targetHome);
+      if (expanded.length) expanded.push(`read_file(${targetHomeFwd}/.project-brain/*)`, `read_file(${targetHomeFwd}/.project-brain/**)`, `write_file(${targetHomeFwd}/.project-brain/*)`, `write_file(${targetHomeFwd}/.project-brain/**)`);
+      mirroredProject.permissionGrants = { ...project.permissionGrants, allow: [...new Set(expanded)] };
+    }
+    writeJsonAtomic(path.join(targetGeminiDir, 'config', 'projects', file), mirroredProject);
     projects++;
   }
   const source = readJson(path.join(sourceGemini, 'antigravity-cli', 'settings.json')) || {};
   const targetFile = path.join(targetGeminiDir, 'antigravity-cli', 'settings.json');
   const target = readJson(targetFile) || {};
   const union = (a, b) => [...new Set([...(Array.isArray(a) ? a : []), ...b])];
-  const allow = (source.permissions?.allow || []).filter(item => typeof item === 'string').map(grant => isWslProfile ? mapGrant(grant) : grant).filter(Boolean);
+  const rawAllow = (source.permissions?.allow || []).filter(item => typeof item === 'string');
+  const allow = rawAllow.map(grant => isWslProfile ? mapGrant(grant) : grant).filter(Boolean);
+  const effectiveAllow = isWslProfile ? allow : expandProfileHomeGrants(allow, sourceHome, targetHome);
   const deny = (source.permissions?.deny || []).filter(item => typeof item === 'string').map(grant => isWslProfile ? mapGrant(grant) : grant).filter(Boolean);
   const trusted = (source.trustedWorkspaces || []).map(item => isWslProfile ? windowsToWsl(item) : item).filter(Boolean);
-  const next = { ...target, permissions: { ...(target.permissions || {}), allow: union(target.permissions?.allow, allow), ...(deny.length || target.permissions?.deny ? { deny: union(target.permissions?.deny, deny) } : {}) }, trustedWorkspaces: union(target.trustedWorkspaces, trusted) };
+  const next = { ...target, permissions: { ...(target.permissions || {}), allow: union(target.permissions?.allow, effectiveAllow), ...(deny.length || target.permissions?.deny ? { deny: union(target.permissions?.deny, deny) } : {}) }, trustedWorkspaces: union(target.trustedWorkspaces, trusted) };
   if (JSON.stringify(next) !== JSON.stringify(target) || !existsSync(targetFile)) writeJsonAtomic(targetFile, next);
   if (!isWslProfile) {
     const trustedFoldersSource = path.join(sourceGemini, 'trustedFolders.json');
     const trustedFoldersTarget = path.join(targetGeminiDir, 'trustedFolders.json');
-    if (existsSync(trustedFoldersSource) && !existsSync(trustedFoldersTarget)) {
-      try { writeJsonAtomic(trustedFoldersTarget, readJson(trustedFoldersSource)); } catch {}
+    if (existsSync(trustedFoldersSource)) {
+      try {
+        const mergedTrusted = { ...(readJson(trustedFoldersTarget) || {}), ...(readJson(trustedFoldersSource) || {}) };
+        writeJsonAtomic(trustedFoldersTarget, mergedTrusted);
+      } catch {}
+    }
+    const configSource = path.join(sourceGemini, 'config', 'config.json');
+    const configTarget = path.join(targetGeminiDir, 'config', 'config.json');
+    if (existsSync(configSource)) {
+      try {
+        const srcCfg = readJson(configSource) || {};
+        const tgtCfg = readJson(configTarget) || {};
+        writeJsonAtomic(configTarget, { ...tgtCfg, ...srcCfg, userSettings: { ...(tgtCfg.userSettings || {}), ...(srcCfg.userSettings || {}) } });
+      } catch {}
+    }
+    const mcpSource = path.join(sourceGemini, 'config', 'mcp_config.json');
+    const mcpTarget = path.join(targetGeminiDir, 'config', 'mcp_config.json');
+    if (existsSync(mcpSource)) {
+      try {
+        const srcMcp = readJson(mcpSource) || {};
+        const tgtMcp = readJson(mcpTarget) || {};
+        writeJsonAtomic(mcpTarget, { ...tgtMcp, ...srcMcp, mcpServers: { ...(tgtMcp.mcpServers || {}), ...(srcMcp.mcpServers || {}) } });
+      } catch {}
+    }
+    const migratedSource = path.join(sourceGemini, 'config', '.migrated');
+    const migratedTarget = path.join(targetGeminiDir, 'config', '.migrated');
+    if (existsSync(migratedSource) && !existsSync(migratedTarget)) {
+      try { mkdirSync(path.dirname(migratedTarget), { recursive: true }); writeFileSync(migratedTarget, ''); } catch {}
     }
   }
   return { projects, grants: allow.length, trusted: trusted.length };

@@ -42,7 +42,7 @@ function writeHelper(file, content) {
   writeFileSync(file, content, { encoding: 'utf8' });
 }
 
-export function nextAccountRoute(config, baseRouteId, wsl = null) {
+export function nextAccountRoute(config, baseRouteId, wsl = 'native') {
   const base = config.routes.find(route => route.id === baseRouteId);
   if (!base) throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı.');
   if (base.api || !accountAdapters.has(base.adapter)) throw new PoolError('ACCOUNT_UNSUPPORTED', 'Bu CLI bağlantısına ek hesap eklenemez.');

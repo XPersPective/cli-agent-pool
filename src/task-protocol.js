@@ -3,20 +3,69 @@ import { z } from 'zod';
 
 export const executionReportSchema = z.object({
   status: z.enum(['completed', 'partial', 'blocked']),
-  summary: z.string().min(1).max(800),
-  files: z.array(z.object({ path: z.string().min(1).max(300), change: z.string().min(1).max(200) }).strict()).max(50),
-  checks: z.array(z.object({ command: z.string().min(1).max(200), outcome: z.enum(['passed', 'failed', 'not_run']) }).strict()).max(20),
-  research: z.array(z.object({ source: z.string().min(1).max(500), finding: z.string().min(1).max(200) }).strict()).max(10),
-  blockers: z.array(z.string().min(1).max(300)).max(10),
-}).strict().refine(report => JSON.stringify(report).length <= 6000, 'Report must fit 6000 characters');
+  summary: z.string().min(1).max(4000),
+  files: z.array(z.object({ path: z.string().min(1).max(500), change: z.string().min(1).max(1000) }).strict()).max(250),
+  checks: z.array(z.object({ command: z.string().min(1).max(1000), outcome: z.enum(['passed', 'failed', 'not_run']) }).strict()).max(100),
+  research: z.array(z.object({ source: z.string().min(1).max(1000), finding: z.string().min(1).max(1000) }).strict()).max(100),
+  blockers: z.array(z.string().min(1).max(1000)).max(100),
+}).strict().refine(report => JSON.stringify(report).length <= 32_768, 'Report must fit 32768 characters');
 
 export const executionReportJsonSchema = z.toJSONSchema(executionReportSchema);
 
+function extractTrailingJsonObject(text) {
+  const end = text.lastIndexOf('}');
+  if (end < 0 || text.slice(end + 1).trim()) return null;
+  let depth = 0;
+  let inString = false;
+  for (let i = end; i >= 0; i--) {
+    const ch = text[i];
+    if (ch === '"') {
+      let backslashes = 0;
+      for (let j = i - 1; j >= 0 && text[j] === '\\'; j--) backslashes++;
+      if (backslashes % 2 === 0) inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === '}') depth++;
+    else if (ch === '{') {
+      depth--;
+      if (depth === 0) return text.slice(i, end + 1);
+    }
+  }
+  return null;
+}
+
+function normalizeReportCandidate(raw) {
+  const parsed = JSON.parse(raw);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  return executionReportSchema.parse({
+    status: parsed.status,
+    summary: parsed.summary,
+    files: parsed.files ?? [],
+    checks: parsed.checks ?? [],
+    research: parsed.research ?? [],
+    blockers: parsed.blockers ?? [],
+  });
+}
+
 export function parseExecutionReport(result) {
-  try {
-    const json = JSON.parse(result.trim().replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```$/, ''));
-    return executionReportSchema.parse(json);
-  } catch { return null; }
+  if (typeof result !== 'string') return null;
+  const trimmed = result.trim();
+  if (!trimmed) return null;
+  const candidates = [trimmed.replace(/^```(?:json)?\s*\r?\n?/, '').replace(/\r?\n?```$/, '')];
+  const lines = trimmed.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  if (lines.length > 1) candidates.push(lines.at(-1));
+  const trailingFence = trimmed.match(/```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]*$/);
+  if (trailingFence) candidates.push(trailingFence[1].trim());
+  const trailingObject = extractTrailingJsonObject(trimmed);
+  if (trailingObject) candidates.push(trailingObject);
+  for (const candidate of candidates) {
+    try {
+      const valid = normalizeReportCandidate(candidate);
+      if (valid) return valid;
+    } catch { /* try next candidate */ }
+  }
+  return null;
 }
 
 const executionAdapters = new Set(['codex', 'claude', 'opencode', 'mimo', 'zcode', 'qoder', 'qwen', 'mcode', 'kimi', 'agy']);
@@ -55,8 +104,9 @@ export function workspaceConflict(held, task) {
 export function compactTask(task) {
   const limit = 6000;
   const truncated = !task.report && typeof task.result === 'string' && task.result.length > limit;
+  const compactResult = !truncated ? task.result : `${task.result.slice(0, 2900)}\n[... ${task.result.length - 5800} chars omitted; retrieve full task if needed ...]\n${task.result.slice(-2900)}`;
   return Object.fromEntries(Object.entries({ ...task,
-    result: task.report ? undefined : truncated ? task.result.slice(0, limit) + '\n[Report truncated; retrieve full task for remaining details.]' : task.result,
+    result: task.report ? undefined : compactResult,
     reportTruncated: truncated,
   }).filter(([key, value]) => !['prompt', 'events'].includes(key) && value !== undefined));
 }

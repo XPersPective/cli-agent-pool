@@ -135,45 +135,38 @@ dosyasında saklanır ve tarayıcıya veya MCP istemcilerine hiçbir zaman geri 
 
 Her hesap ayrı bir bağlantıdır (`route`): kendi girişi, kendi kotası, kendi model
 ve efor listesi vardır. Ayarlar ekranında bir Codex/Claude/Antigravity bağlantısının
-**Başka hesap ekle** düğmesi `codex-acc2`, `claude-acc2`, `agy-acc2` gibi yeni, kapalı
-bir bağlantı oluşturur ve modelleri havuz üyelikleriyle kopyalar. O bağlantıda
-**Giriş yap** ile diğer hesaba bir kez giriş yapılır; resmî CLI oturumu kendi yeniler.
+**Yeni Antigravity hesabı ekle / Yeni hesap ekle** düğmesi `codex-acc2`, `claude-acc2`, `agy-acc2` gibi yeni
+bir profil açar. Açılan resmî CLI penceresinde hesaba bir kez giriş yapılır ve **Girişi tamamladım, ekle**
+düğmesine basılır; aynı e-posta ile eklenmiş bir bağlantı zaten varsa (`DUPLICATE_ACCOUNT`) kopya bağlantı
+eklenmez. Bağlantı kartlarında ve model kartlarında her hesabın e-posta adresi (`email`) gösterilir ve
+istenmeyen bağlantılar **Bağlantıyı kaldır** düğmesiyle silinebilir.
 
 | CLI | Hesap izolasyonu | Profil yeri |
 |---|---|---|
 | Codex | `CODEX_HOME` | `<veri dizini>/profiles/codex/<profil>` |
 | Claude Code | `CLAUDE_CONFIG_DIR` | `<veri dizini>/profiles/claude/<profil>` |
-| Antigravity | WSL içinde profil başına `HOME` | `~/.cli-agent-pool/profiles/agy/<profil>` (Linux) |
+| Antigravity | Native Windows dosya tabanlı token (`USERPROFILE`/`HOME` + `WSL_DISTRO_NAME=cli-agent-pool`) | `<veri dizini>/profiles/agy/<profil>` |
 
-Windows `agy` girişi Credential Manager'daki tek `gemini:antigravity` kaydında
-tutar; aynı Windows kullanıcısında ikinci hesap birincinin üzerine yazar. Bu yüzden
-varsayılan Antigravity hesabı Windows'ta kalır, ek hesaplar WSL'deki resmî Linux
-`agy` ile çalışır (`agy` WSL'de girişi profil `HOME`'u altındaki dosyada tutar).
-WSL'de bir kez kurulum gerekir:
+Windows `agy` varsayılan olarak girişi Credential Manager'daki tek `gemini:antigravity` kaydında
+tutar; ancak `WSL_DISTRO_NAME=cli-agent-pool` ortam değişkeni verildiğinde resmî Windows `agy.exe`
+Credential Manager'ı atlayarak profil `HOME` altındaki `.gemini/antigravity-cli/antigravity-oauth-token`
+dosyasını kullanır ve tarayıcı OAuth girişini açık tutar. Böylece WSL veya ikinci Windows kullanıcısı
+gerekmeden tüm Antigravity hesapları doğrudan Windows üzerinde, aynı anda paralel çalışır ve
+Windows dosya sistemine tam hızda erişir.
 
-```bash
-curl -fsSL https://antigravity.google/cli/install.sh | bash
-```
+Sahibin Windows'taki Antigravity proje izinleri, izinli dosya yolları, `trustedFolders.json`,
+`config.json` ve `mcp_config.json` ayarları giriş, katalog yenileme, servis açılışı ve **İzinleri eşitle**
+düğmesiyle tüm native profillere otomatik kopyalanır; görev gönderimi izin oluşturmaz, kimlik bilgisi
+asla kopyalanmaz.
 
-Havuz `wsl.exe --exec` ile kabuksuz çağırır; Windows proje klasörleri `/mnt/<sürücü>/...`
-olarak görülür. Sahibin Windows'taki Antigravity proje izinleri, izinli dosya yolları
-ve güvenilir klasörleri giriş, katalog yenileme, servis açılışı ve **Antigravity
-izinlerini eşitle** düğmesiyle WSL profiline yol çevirisiyle kopyalanır; görev
-gönderimi izin oluşturmaz, kimlik bilgisi asla kopyalanmaz. WSL hesabındaki
-`execute` komutları Linux'ta çalışır; Windows'a özgü komutlar (PowerShell, `.cmd`)
-ve WSL'de kurulu olmayan araçlar orada çalışmaz.
-
-**Antigravity kotası ve sınır.** Varsayılan (profilsiz) hesabın kotası `agy -p /usage --output-format json`
-ile okunur: Gemini ve Claude/GPT grupları için haftalık/5 saatlik kalan yüzde, yenilenme saati ve
-ayrı kotalı **Gemini 4 Argon** limiti. Ek hesaplar (`agy-accN`) için kota, profilin kendi token
-dosyasından Cloud Code servisiyle okunur ve Argon limitini içermez. Windows `agy` girişi tek
-Credential Manager kaydında tuttuğundan `USERPROFILE`/`HOME`, `ANTIGRAVITY_*` ve `AGY_ACCOUNT`
-değişkenleri hesabı **izole etmez** (boş profilde bile varsayılan hesap kullanılır); bu yüzden ek
-Antigravity hesapları dosya tabanlı token depolamanın devreye girdiği WSL'de çalıştırılmalıdır.
+**Antigravity kotası ve Argon.** Tüm native Windows Antigravity hesaplarının (`agy-local` ve `agy-accN`)
+kotası hem Cloud Code (`fetchAvailableModels`) hem de `agy -p /usage --output-format json` ile paralel
+okunur: Gemini (Pro ve Flash), Claude/GPT ve ayrı kotalı **Gemini 4 Argon** (`gemini-4-argon`) için
+5 saatlik ve haftalık kalan yüzde, yenilenme saati ve hesap e-postası (`email`) eksiksiz raporlanır.
 
 Hangi hesaba ne zaman geçileceği havuzun işi değildir: çağıran sistem
 `pool_get_quotas` ile her bağlantının kotasını okur, `pool_catalog` / `pool_list_connections`
-çıktısındaki `routeId` ve `account` alanıyla hesabı kendisi seçer.
+çıktısındaki `routeId`, `account` ve `email` alanıyla hesabı kendisi seçer.
 
 ### Büyük model sağlayıcıları ve token planları
 

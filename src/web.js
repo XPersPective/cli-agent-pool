@@ -5,8 +5,8 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { configView, saveConfig, PoolError, dataDirectory } from './config.js';
-import { discover, routeCatalog, importDiscoveredRoutes, loginCommands, mergeCatalogModels, routeCommand, accountLoggedIn } from './adapters.js';
-import { detectWslAgy, nextAccountRoute, prepareWslProfile, prepareNativeAgyProfile } from './accounts.js';
+import { discover, routeCatalog, importDiscoveredRoutes, loginCommands, mergeCatalogModels, routeCommand, accountLoggedIn, routeAccountEmail, quota } from './adapters.js';
+import { nextAccountRoute, prepareWslProfile, prepareNativeAgyProfile } from './accounts.js';
 import { wslPrefix, wslLoginPath } from './profiles.js';
 import { codexControl } from './codex-control.js';
 import { saveSecret, hasSecret } from './secrets-store.js';
@@ -54,6 +54,9 @@ export async function openCliLogin(route, { platform = process.platform, run = p
   const { argv: base, env: profileEnv } = route.runtime === 'wsl' ? { argv: [...wslPrefix(route), `PATH=${wslLoginPath(route)}`, route.executable], env: {} } : routeCommand(route, directory);
   const argv = [...base, ...command.split(' ').slice(1)];
   if (route.runtime === 'wsl' && platform === 'win32') await prepare(route, python, directory);
+  else if (route.adapter === 'agy' && route.profile && platform === 'win32') {
+    try { prepareNativeAgyProfile(route, directory); } catch {}
+  }
   const prefix = Object.entries(profileEnv).map(([key, value]) => `${key}="${value}" `).join('');
   if (platform !== 'win32') return { opened: false, message: `Terminalde ${prefix}${command} çalıştırın, girişten sonra Kontrol et düğmesine basın.` };
   if (argv.some(arg => /["\r\n]/.test(arg))) throw new PoolError('LOGIN_UNAVAILABLE', `Terminalde ${command} çalıştırın.`);
@@ -161,18 +164,27 @@ export function browserUI(pool, management) {
     async operation(body) {
       const { operation, payload = {} } = body;
       if (operation === 'snapshot') {
-        const quotas = Object.fromEntries(pool.config.routes.map(route => [route.id, pool.store.quota(route.id)]).filter(([, q]) => q));
+        const quotas = Object.fromEntries(pool.config.routes.map(route => {
+          const cached = pool.store.quota(route.id);
+          const email = cached?.email || routeAccountEmail(route, management.directory);
+          return [route.id, cached ? (email && !cached.email ? { ...cached, email } : cached) : null];
+        }).filter(([, q]) => q));
         return {
           version,
           revision: configView(management.directory).revision,
-          connections: pool.config.routes.map(({ id, adapter, enabled, billing, autoSelect, api, profile, runtime }) => ({
-            id, adapter, enabled, billing, account: profile || 'default', runtime: runtime || 'native',
-            autoSelect: autoSelect ?? (billing !== 'paid_api'),
-            protocol: api?.protocol || null,
-            baseUrl: api?.baseUrl || null,
-            hasSecret: api?.secretRef ? hasSecret(management.directory, api.secretRef) : false,
-            loginCommand: loginCommands[adapter],
-          })),
+          connections: pool.config.routes.map(route => {
+            const { id, adapter, enabled, billing, autoSelect, api, profile, runtime } = route;
+            const email = quotas[id]?.email || routeAccountEmail(route, management.directory);
+            return {
+              id, adapter, enabled, billing, account: profile || 'default', runtime: runtime || 'native',
+              ...(email ? { email } : {}),
+              autoSelect: autoSelect ?? (billing !== 'paid_api'),
+              protocol: api?.protocol || null,
+              baseUrl: api?.baseUrl || null,
+              hasSecret: api?.secretRef ? hasSecret(management.directory, api.secretRef) : false,
+              loginCommand: loginCommands[adapter],
+            };
+          }),
           quotas,
           models: pool.models(),
           tasks: pool.list(160,0,true),
@@ -181,7 +193,47 @@ export function browserUI(pool, management) {
           categories: pool.config.categories,
         };
       }
-      if (operation === 'clear_history') return managementOperation(pool, management, { operation });
+      if (operation === 'clear_history') {
+        if (payload.includeReview === true && pool.store.held) {
+          for (const held of pool.store.held().filter(t => t.state === 'needs_review' && !pool.active?.has(t.id))) {
+            try {
+              if (pool.resolveInspected) pool.resolveInspected({ taskId: held.id, reviewed: true, note: 'Yönetim panelinden toplu temizleme ile kapatıldı.' });
+              else pool.store.update(held.id, 'cancelled', held.result || 'İnceleme yönetim panelinden kapatıldı.', held.error ?? null);
+            } catch {}
+          }
+        }
+        return managementOperation(pool, management, { operation });
+      }
+      if (operation === 'resolve') {
+        return managementOperation(pool, management, { operation: 'resolve', taskId: payload.taskId, reviewed: true, note: payload.note || 'Yönetim panelinden incelenerek kapatıldı.' });
+      }
+      if (operation === 'delete_task') {
+        const hook = pool.store.hook?.(payload.taskId);
+        if (hook && hook.state !== 'done') return { removed: 0 };
+        if (payload.resolveFirst === true && pool.store.get?.(payload.taskId)?.state === 'needs_review' && !pool.active?.has(payload.taskId)) {
+          try {
+            if (pool.resolveInspected) pool.resolveInspected({ taskId: payload.taskId, reviewed: true, note: 'Yönetim panelinden incelenerek silindi.' });
+            else pool.store.update(payload.taskId, 'cancelled', 'İnceleme yönetim panelinden kapatıldı.', null);
+          } catch {}
+        }
+        return pool.store.deleteTask(payload.taskId);
+      }
+      if (operation === 'delete_route') {
+        const routeId = payload.routeId;
+        if (typeof routeId !== 'string' || !routeId) throw new PoolError('INVALID_REQUEST', 'Silinecek bağlantıyı seçin.');
+        const view = configView(management.directory);
+        if (!view.config.routes.some(route => route.id === routeId)) throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı.');
+        const active = (pool.list?.(500, 0, true) || []).some(task => task.routeId === routeId && ['queued', 'starting', 'running', 'cancelling', 'needs_review'].includes(task.state)) ||
+          (pool.store.held?.() || []).some(held => { try { return JSON.parse(pool.store.get(held.id)?.request || '{}').routeId === routeId; } catch { return false; } });
+        if (active) throw new PoolError('ROUTE_BUSY', `${routeId} üzerinde çalışan, bekleyen veya inceleme bekleyen görev var. Önce görevi kapatın.`);
+        const nextRoutes = view.config.routes.filter(route => route.id !== routeId);
+        const nextFilters = (view.config.modelFilters || []).filter(rule => rule.routeId !== routeId);
+        pool.config = saveConfig(management.directory, { ...view.config, routes: nextRoutes, modelFilters: nextFilters }, view.revision);
+        try { pool.store.deleteQuota?.(routeId); } catch {}
+        pendingAccounts.delete(routeId);
+        pool.schedule();
+        return { ...annotateView(configView(management.directory), management.directory), deletedRoute: routeId };
+      }
       if (operation === 'settings') return managementOperation(pool, management, { operation: 'get' });
       if (operation === 'pick_folder') {
         const initial = payload.path ?? '';
@@ -197,11 +249,10 @@ export function browserUI(pool, management) {
       }
       if (operation === 'add_account') {
         const view = configView(management.directory);
-        const base = view.config.routes.find(route => route.id === payload.routeId);
-        const wsl = base?.adapter === 'agy' && !base.api ? await detectWslAgy(pool.config.python, management.directory) : null;
         // Step 1: open the official sign-in for a new profile. Nothing is saved yet.
-        const { route } = nextAccountRoute(view.config, payload.routeId, wsl);
-        if (route.runtime === 'wsl') await prepareWslProfile(route, pool.config.python, management.directory);
+        const { route } = nextAccountRoute(view.config, payload.routeId, 'native');
+        if (route.adapter === 'agy' && route.runtime !== 'wsl') prepareNativeAgyProfile(route, management.directory);
+        else if (route.runtime === 'wsl') await prepareWslProfile(route, pool.config.python, management.directory);
         const opened = await openCliLogin(route, { directory: management.directory, python: pool.config.python, prepare: async () => {} });
         pendingAccounts.set(payload.routeId, route);
         return { pending: route.id, profile: route.profile, opened: opened.opened, message: opened.message };
@@ -217,16 +268,34 @@ export function browserUI(pool, management) {
           pendingAccounts.delete(payload.routeId);
           throw new PoolError('ACCOUNT_EXISTS', `${candidate.id} zaten ekli.`);
         }
+        let candidateEmail = routeAccountEmail(candidate, management.directory);
+        if (!candidateEmail && candidate.adapter === 'agy') {
+          try { candidateEmail = (await quota(candidate, management.directory, pool.config.python, management.directory))?.email || null; } catch {}
+        }
+        if (candidateEmail) {
+          const duplicate = view.config.routes.find(route => route.adapter === candidate.adapter && !route.api && (pool.store.quota(route.id)?.email || routeAccountEmail(route, management.directory) || '').toLowerCase() === candidateEmail.toLowerCase());
+          if (duplicate) {
+            pendingAccounts.delete(payload.routeId);
+            throw new PoolError('DUPLICATE_ACCOUNT', `Bu hesap (${candidateEmail}) zaten ${duplicate.id} bağlantısında ekli. Kopya bağlantı eklenmedi.`);
+          }
+        }
+        if (candidate.adapter === 'agy' && candidate.runtime !== 'wsl') {
+          try { prepareNativeAgyProfile(candidate, management.directory); } catch {}
+        }
         const route = { ...candidate, enabled: Boolean(base?.enabled) };
         pool.config = saveConfig(management.directory, { ...view.config, routes: [...view.config.routes, route] }, view.revision);
         pool.schedule();
         pendingAccounts.delete(payload.routeId);
-        return { ...annotateView(configView(management.directory), management.directory), addedRoute: route.id };
+        return { ...annotateView(configView(management.directory), management.directory), addedRoute: route.id, ...(candidateEmail ? { email: candidateEmail } : {}) };
       }
       if (operation === 'sync_permissions') {
-        const routes = pool.config.routes.filter(route => route.runtime === 'wsl' && (!payload.routeId || route.id === payload.routeId));
+        const routes = pool.config.routes.filter(route => (route.runtime === 'wsl' || (route.adapter === 'agy' && route.profile)) && (!payload.routeId || route.id === payload.routeId));
         const results = {};
-        for (const route of routes) results[route.id] = await prepareWslProfile(route, pool.config.python, management.directory);
+        for (const route of routes) {
+          results[route.id] = route.runtime === 'wsl'
+            ? await prepareWslProfile(route, pool.config.python, management.directory)
+            : prepareNativeAgyProfile(route, management.directory);
+        }
         return { synced: results };
       }
       if (operation === 'skills') return workspaceSkills(payload.workspace || '', pool.config.workspaceRoots);
@@ -267,6 +336,9 @@ export function browserUI(pool, management) {
         const route = pool.config.routes.find(r => r.id === payload.routeId);
         if (!route) throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı.');
         if (route.runtime === 'wsl' && operation === 'refresh_catalog') await prepareWslProfile(route, pool.config.python, management.directory);
+        else if (route.adapter === 'agy' && route.profile && operation === 'refresh_catalog') {
+          try { prepareNativeAgyProfile(route, management.directory); } catch {}
+        }
         const catalog = await catalogFor(route);
         if (operation === 'catalog') return catalog;
         const view = configView(management.directory);

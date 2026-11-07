@@ -26,10 +26,15 @@ test('UI history cleanup removes every terminal state and preserves queued, runn
   const store = new Store(':memory:');
   try {
     for (const state of ['succeeded','failed','timed_out','cancelled','queued','starting','running','cancelling','needs_review']) insert(store, state, state);
-    const ui = browserUI({store}, {directory: '.', token: 'a'.repeat(64)});
+    const ui = browserUI({store, resolve: async id => { store.update(id, 'failed', 'dismissed'); return {}; }}, {directory: '.', token: 'a'.repeat(64)});
     assert.deepEqual(await ui.operation({operation: 'clear_history'}), {removed: 4});
     assert.deepEqual(store.list().map(t => t.state).sort(), ['queued','starting','running','cancelling','needs_review'].sort());
     assert.equal(store.events('running').length, 1);
     assert.deepEqual(store.clearHistory(), {removed: 0});
+    assert.deepEqual(await ui.operation({operation: 'clear_history', payload: {includeReview: true}}), {removed: 1});
+    assert.equal(store.get('needs_review'), undefined);
+    insert(store, 'single-failed', 'failed');
+    assert.deepEqual(await ui.operation({operation: 'delete_task', payload: {taskId: 'single-failed'}}), {removed: 1});
+    assert.equal(store.get('single-failed'), undefined);
   } finally { store.close(); }
 });

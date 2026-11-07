@@ -5,6 +5,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { z } from 'zod';
 import { compactCatalog, catalogSchema, categoryQuerySchema, compactModel } from './catalog.js';
 import { PoolError, configView } from './config.js';
+import { routeAccountEmail } from './adapters.js';
 import { browserUI, managementOperation } from './web.js';
 import { taskSchema } from './pool.js';
 import { version } from './version.js';
@@ -31,10 +32,15 @@ export function mcpServer(pool, caller = {}) {
     } catch (error) {
       const known = error instanceof PoolError;
       const invalid = error instanceof z.ZodError;
-      return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: { code: known ? error.code : invalid ? 'INVALID_REQUEST' : 'INTERNAL_ERROR', message: (known ? error.message : invalid ? 'İstek alanları geçersiz.' : 'İşlem tamamlanamadı.').slice(0,240), help: {tool:'pool_help',arguments:{code:known ? error.code : invalid ? 'INVALID_REQUEST' : 'INTERNAL_ERROR'}} } }) }] };
+      const invalidDetail = invalid ? error.issues.slice(0, 4).map(issue => issue.path.join('.') || 'input').join(', ') : '';
+      const rawMessage = known ? error.message : invalid ? `İstek alanları geçersiz${invalidDetail ? ` (${invalidDetail})` : ''}.` : 'İşlem tamamlanamadı.';
+      return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: { code: known ? error.code : invalid ? 'INVALID_REQUEST' : 'INTERNAL_ERROR', message: rawMessage.slice(0, 1200), help: {tool:'pool_help',arguments:{code:known ? error.code : invalid ? 'INVALID_REQUEST' : 'INTERNAL_ERROR'}} } }) }] };
     }
   });
-  register('pool_list_connections', 'Enabled connections only; each account is its own connection. Prefer pool_catalog for model discovery.', {}, () => pool.config.routes.filter(r => r.enabled).map(({id,adapter,billing,profile,runtime}) => ({id,adapter,billing,account:profile || 'default',...(runtime === 'wsl' ? {runtime} : {})})));
+  register('pool_list_connections', 'Enabled connections only; each account is its own connection. Prefer pool_catalog for model discovery.', {}, () => pool.config.routes.filter(r => r.enabled).map(route => {
+    const email = pool.store.quota(route.id)?.email || routeAccountEmail(route, pool.directory);
+    return { id: route.id, adapter: route.adapter, billing: route.billing, account: route.profile || 'default', ...(email ? { email } : {}), ...(route.runtime === 'wsl' ? { runtime: route.runtime } : {}) };
+  }));
   register('pool_list_pools', 'Categories only by default; group selects a short model page. Cached quota; no CLI calls.', categoryQuerySchema.shape, input => pool.pools(input));
   register('pool_list_models', 'Compatibility paginated catalog. Prefer pool_catalog.', catalogSchema.shape, input => compactCatalog(pool, {...input, view:'models'}));
   register('pool_help', 'Short service map, or recovery guidance for one error code.', {code:z.string().max(100).optional()}, ({code}) => serviceHelp(code));
@@ -130,7 +136,7 @@ export function createServer(pool, token, port = pool.config.port, management) {
       await transport.handleRequest(req, res, body);
     } catch { if (!res.writableEnded) fail(500, 'INTERNAL_ERROR', 'İstek tamamlanamadı. Yeniden bağlanın.'); }
   });
-  server.requestTimeout = 30_000;
+  server.requestTimeout = 120_000;
   server.headersTimeout = 10_000;
   server.keepAliveTimeout = 5000;
   server.maxHeadersCount = 32;

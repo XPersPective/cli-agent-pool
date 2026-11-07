@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { configSchema, configView, saveConfig, loadConfig } from '../src/config.js';
-import { modelSaveConfig, mergeScanDraft, addMembership, preferenceSaveConfig } from '../web/pool-state.js';
+import { modelSaveConfig, batchModelSaveConfig, mergeScanDraft, addMembership, preferenceSaveConfig } from '../web/pool-state.js';
 
 test('model autosave persists membership and effort without committing unrelated settings', () => {
   const base = { categories: [{id:'low',name:'Low'}], routes: [{ id: 'codex', enabled: false, billing: 'subscription', priority: 100, models: [{ id: 'luna', alias: 'Luna', group: 'unassigned', enabled: true, efforts: ['low', 'high'] }] }] };
@@ -66,4 +66,23 @@ test('pool selection and membership reload from disk in a fresh session', t => {
   assert.equal(restarted.categories.find(c=>c.id==='low').name,'Light');assert.equal(restarted.selectionMode,undefined);
   assert.equal(restarted.routes[0].enabled, true);
   assert.deepEqual(restarted.routes[0].models[0].memberships, [{ group: 'low', effort: 'low' }]);
+});
+
+test('batchModelSaveConfig saves multiple selected models across routes in one revision', () => {
+  const base = {
+    categories: [{ id: 'low', name: 'Low' }],
+    routes: [
+      { id: 'codex-local', enabled: false, billing: 'subscription', models: [{ id: 'm1', alias: 'M1', group: 'unassigned', enabled: false, efforts: ['low'] }, { id: 'm2', alias: 'M2', group: 'unassigned', enabled: false, efforts: ['low'] }] },
+      { id: 'agy-local', enabled: false, billing: 'subscription', models: [{ id: 'g1', alias: 'G1', group: 'unassigned', enabled: false, efforts: [] }] },
+    ],
+  };
+  const draft = structuredClone(base);
+  addMembership(draft.routes[0].models[0], 'low', 'low'); draft.routes[0].models[0].enabled = true; draft.routes[0].enabled = true;
+  addMembership(draft.routes[1].models[0], 'low', ''); draft.routes[1].models[0].enabled = true; draft.routes[1].enabled = true;
+  const saved = batchModelSaveConfig(base, draft, [{ routeId: 'codex-local', modelId: 'm1' }, { routeId: 'agy-local', modelId: 'g1' }], true);
+  assert.equal(saved.routes[0].enabled, true);
+  assert.equal(saved.routes[1].enabled, true);
+  assert.deepEqual(saved.routes[0].models[0].memberships, [{ group: 'low', effort: 'low' }]);
+  assert.deepEqual(saved.routes[1].models[0].memberships, [{ group: 'low' }]);
+  assert.equal(saved.routes[0].models[1].enabled, false);
 });

@@ -26,13 +26,15 @@ export class Store {
       attempts INTEGER NOT NULL DEFAULT 0, next_at INTEGER NOT NULL DEFAULT 0
     );
     PRAGMA user_version=2;`);
-    this.db.prepare("UPDATE tasks SET state='needs_review', error='INTERRUPTED', updated=? WHERE state IN ('starting','running','cancelling')").run(new Date().toISOString());
+    const interruptedAt = new Date().toISOString();
+    this.db.prepare("UPDATE tasks SET state='failed', error='INTERRUPTED', updated=? WHERE state IN ('starting','running','cancelling') AND (json_extract(request,'$.kind') IN ('read','text') OR (state='starting' AND json_extract(request,'$.kind')='write' AND id NOT IN (SELECT task_id FROM events WHERE kind='workspace_snapshot')))").run(interruptedAt);
+    this.db.prepare("UPDATE tasks SET state='needs_review', error='INTERRUPTED', updated=? WHERE state IN ('starting','running','cancelling')").run(interruptedAt);
     this.recoverHooks();
     this.pruneHistory();
   }
   byKey(key) { return this.db.prepare('SELECT * FROM tasks WHERE key=?').get(key); }
   get(id) { return this.db.prepare('SELECT * FROM tasks WHERE id=?').get(id); }
-  list(limit = 50, offset = 0, activeFirst = false) { return this.db.prepare("SELECT id,state,created,updated,error,workspace,json_extract(request,'$.routeId') AS routeId,json_extract(request,'$.modelId') AS modelId,json_extract(request,'$.kind') AS kind,json_extract(request,'$.mode') AS mode,json_extract(request,'$.group') AS 'group',json_extract(request,'$.effort') AS effort,json_extract(request,'$.clientLabel') AS clientLabel FROM tasks ORDER BY "+(activeFirst?"state IN ('queued','starting','running','cancelling') DESC, ":'')+"created DESC, rowid DESC LIMIT ? OFFSET ?").all(limit, offset); }
+  list(limit = 50, offset = 0, activeFirst = false) { return this.db.prepare("SELECT id,state,created,updated,error,(SELECT detail FROM events e WHERE e.task_id=tasks.id AND e.kind='original_error' ORDER BY e.seq DESC LIMIT 1) AS originalError,workspace,json_extract(request,'$.routeId') AS routeId,json_extract(request,'$.modelId') AS modelId,json_extract(request,'$.kind') AS kind,json_extract(request,'$.mode') AS mode,json_extract(request,'$.group') AS 'group',json_extract(request,'$.effort') AS effort,json_extract(request,'$.clientLabel') AS clientLabel FROM tasks ORDER BY "+(activeFirst?"state IN ('queued','starting','running','cancelling') DESC, ":'')+"created DESC, rowid DESC LIMIT ? OFFSET ?").all(limit, offset); }
   queued() { return this.db.prepare("SELECT * FROM tasks WHERE state='queued' ORDER BY created, rowid").all(); }
   held() { return this.db.prepare("SELECT id,state,workspace,json_extract(request,'$.kind') AS kind FROM tasks WHERE state IN ('starting','running','cancelling','needs_review')").all(); }
   insert(task) {
@@ -56,10 +58,24 @@ export class Store {
   notifications(id) { return this.db.prepare("SELECT detail FROM events WHERE task_id=? AND kind='notification' ORDER BY seq DESC LIMIT 10").all(id).map(row => row.detail); }
   reportedModel(id) { return this.db.prepare("SELECT detail FROM events WHERE task_id=? AND kind='progress' AND detail LIKE 'model:%' ORDER BY seq DESC LIMIT 1").get(id)?.detail.slice(6) || null; }
   errorDetail(id) { return this.db.prepare("SELECT detail FROM events WHERE task_id=? AND kind='error_detail' ORDER BY seq DESC LIMIT 1").get(id)?.detail || null; }
+  originalError(id) { return this.db.prepare("SELECT detail FROM events WHERE task_id=? AND kind='original_error' ORDER BY seq DESC LIMIT 1").get(id)?.detail || null; }
   interrupted() { return this.db.prepare("SELECT * FROM tasks WHERE state='needs_review' AND error='INTERRUPTED' ORDER BY rowid").all(); }
   snapshot(id) { return this.db.prepare("SELECT detail FROM events WHERE task_id=? AND kind='workspace_snapshot' ORDER BY seq DESC LIMIT 1").get(id)?.detail || null; }
   quota(routeId) { const row = this.db.prepare('SELECT snapshot FROM quotas WHERE route_id=?').get(routeId); return row ? JSON.parse(row.snapshot) : null; }
   saveQuota(routeId, snapshot) { this.db.prepare('INSERT INTO quotas(route_id,snapshot) VALUES(?,?) ON CONFLICT(route_id) DO UPDATE SET snapshot=excluded.snapshot').run(routeId, JSON.stringify(snapshot)); }
+  deleteQuota(routeId) { this.db.prepare('DELETE FROM quotas WHERE route_id=?').run(routeId); }
+  deleteTask(id) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const row = this.db.prepare("SELECT id FROM tasks WHERE id=? AND state IN ('succeeded','failed','timed_out','cancelled') AND id NOT IN (SELECT task_id FROM exit_hooks WHERE state!='done')").get(id);
+      if (!row) { this.db.exec('ROLLBACK'); return { removed: 0 }; }
+      this.db.prepare('DELETE FROM events WHERE task_id=?').run(id);
+      this.db.prepare('DELETE FROM exit_hooks WHERE task_id=?').run(id);
+      const removed = this.db.prepare('DELETE FROM tasks WHERE id=?').run(id).changes;
+      this.db.exec('COMMIT');
+      return { removed };
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
   pruneHistory(before = new Date(Date.now()-7*86400_000).toISOString()) {
     // Expire completed records and their admission keys together; never erase quarantine.
     this.db.exec('BEGIN IMMEDIATE');
@@ -69,6 +85,7 @@ export class Store {
       this.db.prepare('DELETE FROM exit_hooks WHERE task_id IN ('+expired+')').run(before);
       const removed = this.db.prepare('DELETE FROM tasks WHERE id IN ('+expired+')').run(before).changes;
       this.db.exec('COMMIT');
+      if (removed > 0) { try { this.db.exec('PRAGMA wal_checkpoint(PASSIVE)'); } catch { /* Best-effort WAL maintenance */ } }
       return { removed };
     } catch(error){this.db.exec('ROLLBACK');throw error;}
   }
@@ -87,7 +104,7 @@ export class Store {
     // An uncertain launch cannot be replayed safely; PB recover is idempotent and can be invoked manually.
     this.db.exec("UPDATE exit_hooks SET state='done' WHERE state='running'");
   }
-  children(parentId) { return this.db.prepare("SELECT id,state,error FROM tasks WHERE json_extract(request,'$.parentTaskId')=? ORDER BY rowid").all(parentId); }
+  children(parentId) { return this.db.prepare("SELECT id,state,error,created FROM tasks WHERE json_extract(request,'$.parentTaskId')=? ORDER BY rowid").all(parentId); }
   clearHistory() { return this.pruneHistory('9999-01-01'); }
   close() { this.db.close(); this.owner.close(); }
 }

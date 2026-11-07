@@ -9,6 +9,7 @@ import { PoolError, allowedWorkspace } from './config.js';
 import { runProcess } from './process.js';
 import { nativeSettingsFiles, settingsDigest } from './native-settings.js';
 import { agyProjectMatches } from './agy-project.js';
+import { profileHome } from './profiles.js';
 import { commandArgv } from './adapters.js';
 import { version } from './version.js';
 
@@ -301,9 +302,13 @@ export function fixFor(route, capability, context = {}) {
   return table[capability]?.[adapter] || 'Review the native CLI permission settings for this workspace.';
 }
 
-export function projectFileFor(route, workspace) {
+export function projectFileFor(route, workspace, directory = null) {
   if (route.adapter !== 'agy' || route.runtime === 'wsl') return null;
-  try { return agyProjectMatches(workspace)[0]?.file || null; } catch { return null; }
+  try {
+    const agyHome = directory ? profileHome(route, directory) : homedir();
+    const matches = agyProjectMatches(workspace, agyHome);
+    return (matches.length ? matches : agyProjectMatches(workspace))[0]?.file || null;
+  } catch { return null; }
 }
 
 export function summarize(entry) {

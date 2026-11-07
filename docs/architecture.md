@@ -259,16 +259,21 @@ not a one-hour product ceiling. Waiting expiry still returns a durable task ID.
 Account profiles let one official CLI account live in each route. Codex and
 Claude routes with `profile` run with their own `CODEX_HOME` / `CLAUDE_CONFIG_DIR`
 under the private data directory; quota, login check, catalog and login window
-use the same profile. Windows `agy` stores its only login in the fixed Credential
-Manager entry `gemini:antigravity`, so extra Antigravity accounts use
-`runtime: 'wsl'`: the official Linux `agy` runs through `wsl.exe --exec env HOME=...`
-without a shell, and agy keeps that login as a file under the profile HOME.
-Quota reads that profile's token file in memory only and never falls back to the
-Windows login. Owner actions (login, catalog refresh, service start, explicit
-sync) mirror native project records, file grants and trusted folders into the
-profile with Windows→/mnt path translation; task submission never creates
-grants and credentials are never copied. Account choice and switching thresholds
-belong to the caller; routes expose `account` and per-route quota.
+use the same profile. Native Windows `agy` profiles run with `USERPROFILE`/`HOME`
+pointed at `<dataDir>/profiles/agy/<profile>` and `WSL_DISTRO_NAME=cli-agent-pool`
+so `agy.exe` bypasses the single Windows Credential Manager entry and uses its
+per-profile `.gemini/antigravity-cli/antigravity-oauth-token` file while keeping
+browser OAuth sign-in and native Windows tool execution. All native Windows
+Antigravity routes query both Cloud Code and `agy -p /usage --output-format json`
+in parallel so Gemini, Claude/GPT and Gemini 4 Argon buckets and account email are
+available per profile. Owner actions (login, catalog refresh, service start, explicit
+sync) mirror native project records, file grants, `trustedFolders.json`, `config.json`
+and `mcp_config.json` into the profile; task submission never creates grants and
+credentials are never copied. Duplicate account sign-ins on the same adapter are
+rejected (`DUPLICATE_ACCOUNT`), and owner UI supports route removal, batch
+multi-select pool/catalog actions, and individual or bulk task history cleanup.
+Account choice and switching thresholds belong to the caller; routes expose
+`account`, `email` and per-route quota.
 
 
 2.2.0 adds optional pb-director/1 mechanisms, with no Project Brain dependency.

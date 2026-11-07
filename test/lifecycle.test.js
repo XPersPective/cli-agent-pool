@@ -184,3 +184,40 @@ test('cancelled/disabled queued preflight cleans nonces and permits a new forced
  assert.equal(f.pool.probes.size,0);assert.equal(f.pool.nonces.size,0);
  f.pool.cancel(parent.id);
 });
+
+test('stopOnQuotaBarrierPercent triggers QUOTA_BARRIER cancellation when route quota reaches barrier', async t => {
+ const f = setup(t);
+ f.store.saveQuota('native', { status: 'available', observedAt: new Date().toISOString(), windows: [{ remainingPercent: 12 }] });
+ const task = f.submit('quota-barrier-test', { stopOnQuotaBarrierPercent: 10 });
+ await until(() => f.runs.length === 1);
+ f.advance(1000); await f.pool.watchdog.tick();
+ assert.equal(f.pool.get(task.id).state, 'running');
+ f.store.saveQuota('native', { status: 'available', observedAt: new Date().toISOString(), windows: [{ remainingPercent: 9 }] });
+ f.advance(1000); await f.pool.watchdog.tick();
+ await until(() => f.pool.get(task.id).state === 'cancelled');
+ assert.equal(f.pool.get(task.id).error, 'QUOTA_BARRIER');
+ assert.ok(f.pool.get(task.id).events.some(e => e.kind === 'quota_barrier'));
+});
+
+test('supersedesTaskId cancels predecessor director when successor is queued past deadline', async t => {
+ const f = setup(t);
+ const first = f.submit('pred-task-1');
+ await until(() => f.runs.length === 1);
+ const second = f.submit('succ-task-1', { supersedesTaskId: first.id });
+ assert.equal(f.pool.get(second.id).state, 'queued');
+ f.advance(95000); await f.pool.watchdog.tick();
+ await until(() => f.pool.get(first.id).state === 'cancelled');
+ assert.equal(f.pool.get(first.id).error, 'SUPERSEDED_BY_HANDOFF');
+});
+
+test('hook parses CAP_WAKE_AT and CAP_RETRY_AFTER on exit 75 for extended schedule', async t => {
+ const wake = new Date(Date.now() + 120_000).toISOString();
+ const f = setup(t, { watchdog: { runHook: () => ({ done: Promise.resolve({ code: 75, output: `CAP_WAKE_AT ${wake}\nCAP_RETRY_AFTER 120` }) }) } });
+ const task = f.submit('hook-wake-test', { onExit: { argv: [process.execPath], timeoutSeconds: 1 } });
+ await until(() => f.runs.length === 1);
+ f.runs[0].finish({ result: report });
+ await until(() => f.store.hook(task.id)?.attempts === 1);
+ const hook = f.store.hook(task.id);
+ assert.equal(hook.state, 'pending');
+ assert.ok(hook.next_at >= Date.now() + 60_000);
+});

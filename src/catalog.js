@@ -21,7 +21,8 @@ function quotaSummary(pool, model) {
     observedAt: q.observedAt, stale: Date.now() - Date.parse(q.observedAt) >= 60000 };
 }
 export function compactModel(pool, model) {
-  return { routeId: model.routeId, ...(model.account && model.account !== 'default' ? { account: model.account } : {}), modelId: model.id, name: model.alias,
+  const email = pool.store.quota(model.routeId)?.email;
+  return { routeId: model.routeId, ...(model.account && model.account !== 'default' ? { account: model.account } : {}), ...(email ? { email } : {}), modelId: model.id, name: model.alias,
     ...(model.group && model.group !== 'unassigned' ? { category: model.group } : { categories: model.categories || [] }),
     ...(model.defaultEffort ? { effort: model.defaultEffort } : {}),
     ...(model.efforts.length ? { efforts: model.efforts } : {}), kinds: model.kinds, billing: model.billing,

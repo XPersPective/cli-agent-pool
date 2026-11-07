@@ -9,7 +9,7 @@ import { Store } from '../src/store.js';
 import { Pool } from '../src/pool.js';
 import { createServer } from '../src/server.js';
 import { codexControl } from '../src/codex-control.js';
-import { prepareWslProfile } from '../src/accounts.js';
+import { prepareWslProfile, prepareNativeAgyProfile } from '../src/accounts.js';
 import { stdioBridge } from '../src/stdio.js';
 import { rpcRequest } from '../src/rpc.js';
 import { version } from '../src/version.js';
@@ -270,8 +270,11 @@ export async function main(args = process.argv.slice(2)) {
     const address = await app.listen();
     writeFileSync(pidFile, String(process.pid), 'utf8');
     print({ status: 'listening', endpoint: `http://127.0.0.1:${address.port}/mcp`, dashboard: app.uiURL(), authentication: 'Bearer token from private access-token file; dashboard uses a separate HttpOnly browser session' });
-    // Refresh the owner's native Antigravity permissions in WSL account profiles; failures only affect that route.
+    // Refresh the owner's native Antigravity permissions in account profiles; failures only affect that route.
     for (const route of config.routes.filter(route => route.runtime === 'wsl')) void prepareWslProfile(route, config.python, directory).catch(() => {});
+    for (const route of config.routes.filter(route => route.adapter === 'agy' && route.profile && route.runtime !== 'wsl')) {
+      try { prepareNativeAgyProfile(route, directory); } catch { /* ignore */ }
+    }
     process.once('SIGINT', () => { void stop(); });
     process.once('SIGTERM', () => { void stop(); });
   } catch (error) { await stop(); throw error; }

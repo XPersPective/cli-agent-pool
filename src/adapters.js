@@ -9,8 +9,27 @@ import { fileURLToPath } from 'node:url';
 import { capture, runProcess } from './process.js';
 import { PoolError, redact, activeBillings, dataDirectory } from './config.js';
 import { loadSecret, hasSecret } from './secrets-store.js';
-import { claudeQuota, zaiQuota, zaiKeys, kimiLoggedIn, antigravityQuota, agyUsageWindows, kimiQuota, minimaxQuota, minimaxWindows, openrouterQuota, apiRouteQuota } from './quotas.js';
-import { profileEnvironment, profileHome, claudeConfigDirectory, wslPrefix, wslProfileHome, wslWindowsPath, wslUriToWindows } from './profiles.js';
+import { claudeQuota, zaiQuota, zaiKeys, kimiLoggedIn, antigravityQuota, agyUsageWindows, kimiQuota, minimaxQuota, minimaxWindows, openrouterQuota, apiRouteQuota, codexAccountEmail, claudeAccountEmail, antigravityAccountEmail } from './quotas.js';
+import { profileDirectory, profileEnvironment, profileHome, claudeConfigDirectory, wslPrefix, wslProfileHome, wslWindowsPath, wslUriToWindows } from './profiles.js';
+
+export function routeAccountEmail(route, directory = dataDirectory(), home = homedir()) {
+  if (!route || route.api) return null;
+  if (route.adapter === 'agy') {
+    if (route.runtime === 'wsl') {
+      const wslHome = wslWindowsPath(route, wslProfileHome(route));
+      return antigravityAccountEmail(wslHome, wslWindowsPath(route, `${wslProfileHome(route)}/.gemini/antigravity-cli/antigravity-oauth-token`));
+    }
+    const agyHome = profileHome(route, directory, home);
+    return antigravityAccountEmail(agyHome, route.profile ? path.join(agyHome, '.gemini', 'antigravity-cli', 'antigravity-oauth-token') : null);
+  }
+  if (route.adapter === 'codex') {
+    return codexAccountEmail(route.profile ? profileDirectory(route, directory) : process.env.CODEX_HOME || path.join(home, '.codex'));
+  }
+  if (route.adapter === 'claude') {
+    return claudeAccountEmail(home, route.profile ? profileDirectory(route, directory) : null);
+  }
+  return null;
+}
 
 export const adapterSpecs = [
   { adapter: 'codex', label: 'OpenAI Codex CLI', binaries: ['codex'], pkg: '@openai/codex', defaultBilling: 'subscription', loginCommand: 'codex login' },
@@ -599,7 +618,10 @@ export function buildArguments(route, model, task, context = null) {
     if (model.variants && !model.variants[selectedEffort]) throw new PoolError('INVALID_EFFORT', 'Bu model için desteklenen bir efor seçin.');
     const promptArg = route.promptStdin === false ? [`--print=${task.prompt}`] : ['--input-format', 'stream-json'];
     const modeArgs = task.kind === 'write' ? ['--mode', 'accept-edits'] : task.kind === 'text' ? ['--disable-slash-commands', '--settings', '{"agentMode":"plan"}'] : ['--mode', 'plan'];
-    const project = route.runtime === 'wsl' ? agyProjectArguments(task.workspace, wslWindowsPath(route, wslProfileHome(route)), wslUriToWindows) : agyProjectArguments(task.workspace);
+    const agyDir = context?.directory || dataDirectory();
+    const project = route.runtime === 'wsl'
+      ? agyProjectArguments(task.workspace, wslWindowsPath(route, wslProfileHome(route)), wslUriToWindows)
+      : (route.profile ? agyProjectArguments(task.workspace, profileHome(route, agyDir)) : agyProjectArguments(task.workspace));
     return [...argv, ...project, '--output-format', 'stream-json', ...promptArg, ...modeArgs, ...(task.mode === 'execute' ? ['--json-schema', JSON.stringify(executionReportJsonSchema)] : []), '--model', model.variants?.[selectedEffort] || model.id, ...(selectedEffort ? ['--effort', selectedEffort] : [])];
   }
   if (route.adapter === 'omniroute') return [...argv, 'chat', '--stdin', '--no-history', '-m', model.id, ...(effort ? ['--reasoning-effort', effort] : [])];
@@ -653,10 +675,10 @@ export async function checkAuth(route, cwd, python, directory = dataDirectory(),
     if (route.adapter === 'zcode') assertZcodePlanSelection(route, zcodeSelection(profileHome(route, directory)));
     if (route.adapter === 'mmx') {
       const snapshot = await quota(route, cwd, python, directory);
+      if (snapshot.auth === 'missing') throw new PoolError('AUTH_REQUIRED', `mmx içinde giriş yapın (${loginCommands.mmx}).`);
       if (snapshot.subscription !== 'active') {
         throw new PoolError('SUBSCRIPTION_REQUIRED', 'mmx resmi CLI erişimi için etkin MiniMax Token Plan gerekir. Günlük MiniMax Credits bakiyesi MiniMax Code (mcode) hesabı üzerinden kullanılır.');
       }
-      if (snapshot.auth === 'missing') throw new PoolError('AUTH_REQUIRED', `mmx içinde giriş yapın (${loginCommands.mmx}).`);
     }
   }
 }
@@ -708,11 +730,13 @@ export async function accountLoggedIn(route, cwd, python, directory = dataDirect
 export function classifyFailure(message) {
   if (/requires? usage credits|usage credits (?:are )?(?:required|exhausted)|no (?:remaining )?usage credits/i.test(message)) return 'CREDITS_REQUIRED';
   if (/current subscription does not have access|active subscription (?:is )?required|no resource package|\b1113\b/i.test(message)) return 'SUBSCRIPTION_REQUIRED';
-  if (/only.*(?:within|official)|unsupported client|client.*not allowed/i.test(message)) return 'PROVIDER_RESTRICTION';
-  if (/unauthorized|not logged|login required|token expired|invalid.{0,20}(?:api.?key|token)|\b401\b/i.test(message)) return 'AUTH_REQUIRED';
-  if (/rate.?limit|quota|insufficient.{0,20}(?:credit|balance)|\b429\b/i.test(message)) return 'QUOTA_EXHAUSTED';
+  if (/only (?:available|usable|supported) (?:within|in official)|only use official|unsupported client|client.*not allowed/i.test(message)) return 'PROVIDER_RESTRICTION';
+  if (/unauthorized|unauthenticated|not logged|login required|token expired|invalid_grant|refresh_token_expired|invalid.{0,20}(?:api.?key|token)|(?:http|status|code|error)\s*[:=]?\s*401\b/i.test(message)) return 'AUTH_REQUIRED';
+  if (/rate.?limit|quota|resource_exhausted|insufficient_quota|usage_limit_reached|credit balance is too low|insufficient.{0,20}(?:credit|balance)|(?:http|status|code|error)\s*[:=]?\s*429\b/i.test(message)) return 'QUOTA_EXHAUSTED';
   if (/model.{0,30}(?:not found|unavailable|not exist|not supported)|unknown model|select a model/i.test(message)) return 'MODEL_UNAVAILABLE';
-  if (/workspace.{0,20}trust|permission denied/i.test(message)) return 'PERMISSION_REQUIRED';
+  if (/workspace.{0,20}trust|permission denied|permission check failed/i.test(message)) return 'PERMISSION_REQUIRED';
+  if (/\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT)\b|fetch failed|socket hang up|tls handshake timeout|dial tcp|network (?:is )?(?:unreachable|unavailable)|Post "https?:\/\/[^"]+": EOF/i.test(message)) return 'NETWORK_UNAVAILABLE';
+  if (/overloaded_error|service_unavailable|temporarily unavailable|server is overloaded|(?:http|status|code)\s*[:=]?\s*(?:502|503|504|529)\b/i.test(message)) return 'PROVIDER_OVERLOADED';
   return 'CLI_FAILED';
 }
 
@@ -730,6 +754,7 @@ const promptArgAdapters = new Set(['zcode', 'kimi', 'aider']);
 export function execute(route, model, task, python, progress, directory = dataDirectory(), context = null) {
   task = { ...task, prompt: taskPrompt(task, context) };
   let answer = '';
+  let previousStepAnswer = '';
   let rawLines = [];
   let productError = false;
   let sawResult = false;
@@ -740,14 +765,14 @@ export function execute(route, model, task, python, progress, directory = dataDi
   const extraEnv = { ...profileEnvironment(route, directory), ...routeEnvironment(route, directory, task.kind), ...(context ? directorEnvironment(context) : {}), CLI_AGENT_POOL_WORKER: '1' };
   const usesStdin = route.promptStdin ?? !promptArgAdapters.has(route.adapter);
   const input = !usesStdin ? '' : route.adapter === 'mmx' ? JSON.stringify([{ role: 'user', content: task.prompt }]) : route.adapter === 'agy' ? `${JSON.stringify({ event: 'user', message: { content: task.prompt } })}\n` : task.prompt;
-  const process = runProcess({ argv, cwd: task.workspace, input, extraEnv, python, timeoutMs: task.timeoutSeconds * 1000,
+  const process = runProcess({ argv, cwd: task.workspace, input, extraEnv, python, timeoutMs: task.timeoutSeconds * 1000, maxBytes: 268_435_456, retainBytes: 2_097_152,
     onLine(line) {
       if (!line.trim()) return;
       context?.onActivity?.();
       let event;
       try { event = JSON.parse(line); } catch {
-        if (strictJsonlAdapters.has(route.adapter)) throw new Error('Invalid JSONL');
-        rawLines.push(line);
+        if (rawLines.length >= 50) rawLines.shift();
+        rawLines.push(line.slice(0, 1000));
         return;
       }
       watchEvent(context, event);
@@ -793,8 +818,15 @@ export function execute(route, model, task, python, progress, directory = dataDi
         if (/.failed$/.test(event.type || '')) { productError = true; failureText = JSON.stringify(event.error || event.result?.error || ''); }
         if (event.type === 'turn.completed' && typeof event.model?.modelId === 'string') progress('model:' + event.model.modelId.slice(0, 100));
       } else if (route.adapter === 'opencode' || route.adapter === 'mimo') {
+        if (event.type === 'step_start') {
+          if (answer.trim()) previousStepAnswer = answer;
+          answer = '';
+        }
         if (event.type === 'text' && event.part?.text) answer += event.part.text;
-        if (event.type === 'step_finish') sawResult = true;
+        if (event.type === 'step_finish') {
+          if (!answer.trim() && previousStepAnswer) answer = previousStepAnswer;
+          sawResult = true;
+        }
         if (event.type === 'error') productError = true;
       } else {
         if (event.type === 'result') {
@@ -842,6 +874,10 @@ export function execute(route, model, task, python, progress, directory = dataDi
       if (result.stopReason) return failed(result.stopReason);
       if (permissionDenied) return { error: 'PERMISSION_REQUIRED', detail: permissionDetail || 'Native tool permission denied.', ...(answer.trim() ? { result: redact(answer) } : {}) };
       if (result.code !== 0 || productError) return failed(classifyFailure(`${failureText} ${result.stderr} ${rawLines.join('\n')}`));
+      if (!sawResult && strictJsonlAdapters.has(route.adapter) && rawLines.length) {
+        const classified = classifyFailure(`${rawLines.join('\n')} ${result.stderr}`);
+        return failed(classified === 'CLI_FAILED' ? 'PROTOCOL_ERROR' : classified);
+      }
       if (!sawResult || !answer.trim()) return failed('INVALID_RESULT');
       if (route.adapter === 'mcode' && task.mode === 'execute') {
         // MiniMax may introduce its final report with prose. Accept only one
@@ -1088,19 +1124,15 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
     const tokenFile = isWsl
       ? wslWindowsPath(route, `${wslProfileHome(route)}/.gemini/antigravity-cli/antigravity-oauth-token`)
       : (route.profile ? path.join(agyHome, '.gemini', 'antigravity-cli', 'antigravity-oauth-token') : undefined);
-    const result = await antigravityQuota(agyHome, { tokenFile, credentialStore: !route.profile && !isWsl });
-    // Prefer the CLI's own /usage report (what the user sees, including Argon and reset times).
-    // Windows agy always authenticates with the single Credential Manager login, even under a
-    // profile HOME, so its /usage describes the default account only; profile routes keep the
-    // per-account Cloud Code snapshot read from their own token file.
-    let windows = [];
-    if (!route.profile && !isWsl) try {
-      const usage = await capture([...argv, '-p', '/usage', '--output-format', 'json'], cwd, python, env, 30_000);
-      windows = agyUsageWindows(JSON.parse(usage.output));
-    } catch { /* fall back to the Cloud Code API snapshot */ }
+    const [result, windows] = await Promise.all([
+      antigravityQuota(agyHome, { tokenFile, credentialStore: !route.profile && !isWsl }),
+      !isWsl ? capture([...argv, '-p', '/usage', '--output-format', 'json'], cwd, python, env, 30_000).then(usage => agyUsageWindows(JSON.parse(usage.output))).catch(() => []) : Promise.resolve([]),
+    ]);
     if (windows.length) {
       const status = windows.every(window => window.remainingPercent <= 0) ? 'rate_limited' : 'available';
-      return { ...base, account: route.profile || 'default', ...result, status, scope: 'model', windows, source: 'agy-usage' };
+      const cloudOk = result && result.status !== 'auth_required' && !result.networkError;
+      const mergedExtra = cloudOk ? result : { ...(result?.email ? { email: result.email } : {}), auth: 'verified' };
+      return { ...base, account: route.profile || 'default', ...mergedExtra, status, scope: 'model', windows, source: 'agy-usage' };
     }
     return { ...base, account: route.profile || 'default', ...result };
   }
@@ -1142,7 +1174,7 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
       if (result.code === 0 && count !== undefined) snapshot = { status: Number(count) === 0 && route.billing !== 'free' ? 'auth_required' : 'unknown', auth: Number(count) > 0 ? 'credentials_present' : 'unverified', windows: [], source: 'native-provider-list' };
     } catch { /* A failed inspection is not proof that the user is logged out. */ }
     if (route.adapter === 'opencode' && route.models.some(model => model.id.startsWith('openrouter/'))) {
-      const openrouter = await openrouterQuota();
+      const openrouter = await openrouterQuota(profileHome(route, directory));
       if (openrouter) snapshot = { ...snapshot, ...openrouter, auth: openrouter.auth === 'missing' ? snapshot.auth : 'credentials_present', status: snapshot.status === 'unknown' ? 'available' : snapshot.status };
     }
     return { ...base, ...snapshot };

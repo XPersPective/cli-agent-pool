@@ -3,8 +3,8 @@ import { mkdirSync, mkdtempSync, lstatSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { allowedWorkspace, PoolError, nonMeteredBillings, dataDirectory, configView, saveConfig } from './config.js';
-import { checkAuth, execute, quota, loginCommands } from './adapters.js';
-import { modelFiltered } from '../web/pool-state.js';
+import { checkAuth, execute, quota, loginCommands, routeAccountEmail } from './adapters.js';
+import { modelFiltered, quotaApplies } from '../web/pool-state.js';
 import { categoryPage } from './catalog.js';
 import { codexControl } from './codex-control.js';
 import { supportsExecution, validateMode, workspaceConflict, parseExecutionReport } from './task-protocol.js';
@@ -125,22 +125,41 @@ export class Pool {
     return [...unique.values()];
   }
   pools(input = {}) { return categoryPage(this, input); }
-  select(request) {
+  select(request, options = {}) {
     validateMode(request);
     if (request.group && !this.config.categories.some(category => category.id === request.group))
       throw new PoolError('CATEGORY_NOT_FOUND', 'Kategori bulunamadı. pool_list_pools ile kategorileri sorgulayın.');
+    const activeByRoute = new Map();
+    for (const handle of this.active.values()) {
+      if (handle?.routeId) activeByRoute.set(handle.routeId, (activeByRoute.get(handle.routeId) || 0) + 1);
+    }
+    const effectiveRemaining = model => {
+      const snap = this.store.quota(model.routeId);
+      if (!snap || Date.now() - Date.parse(snap.observedAt) >= 60_000) return null;
+      const wins = (snap.windows || []).filter(w => quotaApplies(w, model.id) && Number.isFinite(w.remainingPercent));
+      if (!wins.length) return null;
+      return Math.max(0, Math.min(...wins.map(w => w.remainingPercent)) - (activeByRoute.get(model.routeId) || 0) * 3);
+    };
     const rejected = new Map();
     const matches = (request.group ? this.models() : this.catalogModels()).filter(model => {
       if ((request.routeId && model.routeId !== request.routeId) || (request.modelId && model.id !== request.modelId) || (request.group && model.group !== request.group)) return false;
-      const snapshot = this.store.quota(model.routeId);
+      const snapshot = options.ignoreQuota ? null : this.store.quota(model.routeId);
       const route = this.config.routes.find(r => r.id === model.routeId);
-      const reason = rejectionReason(model, route, snapshot, request);
+      const reason = rejectionReason(model, route, snapshot, request, activeByRoute.get(model.routeId) || 0);
       if (reason) rejected.set(reason, (rejected.get(reason) || 0) + 1);
       return !reason; })
       .sort((a, b) => {
         const tierA = nonMeteredBillings.has(a.billing) ? 0 : 1;
         const tierB = nonMeteredBillings.has(b.billing) ? 0 : 1;
-        return tierA - tierB || a.priority - b.priority || a.routeId.localeCompare(b.routeId) || a.id.localeCompare(b.id);
+        if (tierA !== tierB) return tierA - tierB;
+        if (a.priority !== b.priority) return a.priority - b.priority;
+        const remA = effectiveRemaining(a);
+        const remB = effectiveRemaining(b);
+        if (remA !== null && remB !== null && Math.abs(remA - remB) >= 1) return remB - remA;
+        const loadA = activeByRoute.get(a.routeId) || 0;
+        const loadB = activeByRoute.get(b.routeId) || 0;
+        if (loadA !== loadB) return loadA - loadB;
+        return a.routeId.localeCompare(b.routeId) || a.id.localeCompare(b.id);
       });
     if (!matches.length) throw new PoolError('NO_ROUTE', noRouteMessage(request, rejected));
     return { selected: matches[0], alternatives: matches.slice(1), reason: 'Önce abonelik, token planı ve ücretsiz modeller tercih edilir; ücretli API yalnızca açıkça seçildiğinde veya otomatik seçime izin verildiğinde kullanılır.' };
@@ -155,16 +174,27 @@ export class Pool {
       const cwd = this.directory;
       let snapshot;
       if (route.adapter === 'codex' && !route.api) {
-        try { snapshot = { ...(await codexControl(route, cwd, this.config.python, 'quotas', this.directory)), adapter: route.adapter, billing: route.billing, loginCommand: loginCommands.codex }; }
+        const email = routeAccountEmail(route, this.directory);
+        const emailExtra = email ? { email } : {};
+        try { snapshot = { ...(await codexControl(route, cwd, this.config.python, 'quotas', this.directory)), adapter: route.adapter, billing: route.billing, loginCommand: loginCommands.codex, ...emailExtra }; }
         catch {
           try { await this.checkAuth(route, cwd, this.config.python, this.directory); }
           catch (error) {
             if (error.code !== 'AUTH_REQUIRED') throw error;
-            snapshot = { connection: route.id, status: 'auth_required', windows: [], observedAt: new Date().toISOString(), loginCommand: loginCommands.codex };
+            snapshot = { connection: route.id, status: 'auth_required', windows: [], observedAt: new Date().toISOString(), loginCommand: loginCommands.codex, ...emailExtra };
           }
-          snapshot ||= cached?.windows?.length ? cached : { connection: route.id, status: 'unknown', windows: [], observedAt: new Date().toISOString(), loginCommand: loginCommands.codex };
+          snapshot ||= cached?.windows?.length ? { ...cached, ...emailExtra } : { connection: route.id, status: 'unknown', windows: [], observedAt: new Date().toISOString(), loginCommand: loginCommands.codex, ...emailExtra };
         }
       } else snapshot = await quota(route, cwd, this.config.python, this.directory);
+      if (snapshot.networkError && !snapshot.windows?.length && cached?.windows?.length) {
+        snapshot = {
+          ...cached,
+          observedAt: snapshot.observedAt || new Date().toISOString(),
+          stale: true,
+          networkError: true,
+          note: snapshot.note || cached.note,
+        };
+      }
       if (route.adapter === 'qwen' && snapshot.auth === 'verified' && cached?.source === 'cli-run-rejection' &&
           Date.now() - Date.parse(cached.observedAt) < 5 * 60_000) {
         snapshot = { ...snapshot, status: 'unknown', lastRejectedAt: cached.observedAt, lastRejectedModel: cached.modelId,
@@ -248,7 +278,8 @@ export class Pool {
     const blocker = task.state === 'queued' ? this.store.held().find(held => workspaceConflict(held, scope)) || earlier.find(row => workspaceConflict({ ...JSON.parse(row.request), workspace: row.workspace, state: row.state }, scope)) : null;
     const queueReason = blocker ? blocker.state === 'needs_review' ? 'WORKSPACE_REVIEW_REQUIRED' : 'WORKSPACE_BUSY' : null;
     const report = request.mode === 'execute' && task.result ? parseExecutionReport(task.result) : null;
-    return { notifications: this.store.notifications(task.id), profile: request.profile || 'worker', parentTaskId: request.parentTaskId || null, preflight: request.preflight ? this.store.preflightForTask(task.id) : undefined, id: task.id, state: task.state, mode: request.mode || null, report, routeId: request.routeId, modelId: request.modelId, reportedModel, queueReason, blockedBy:blocker?.id || null, group: request.group, effort: request.effort || null, clientLabel:request.clientLabel || null, historyExpired:Boolean(request.historyExpired), kind: request.kind, workspace: request.workspace, prompt: request.prompt || null, created: task.created, updated: task.updated, result: task.result, error: task.error, errorDetail: this.store.errorDetail(id), events };
+    const originalError = this.store.originalError(id);
+    return { notifications: this.store.notifications(task.id), profile: request.profile || 'worker', parentTaskId: request.parentTaskId || null, preflight: request.preflight ? this.store.preflightForTask(task.id) : undefined, id: task.id, state: task.state, mode: request.mode || null, report, routeId: request.routeId, modelId: request.modelId, reportedModel, queueReason, blockedBy:blocker?.id || null, group: request.group, effort: request.effort || null, clientLabel:request.clientLabel || null, historyExpired:Boolean(request.historyExpired), kind: request.kind, workspace: request.workspace, prompt: request.prompt || null, created: task.created, updated: task.updated, result: task.result, error: task.error, ...(originalError ? { originalError } : {}), errorDetail: this.store.errorDetail(id), events };
   }
   list(limit = 50, offset = 0, activeFirst = false) {
     return this.store.list(limit, offset, activeFirst);
@@ -269,6 +300,7 @@ export class Pool {
     const task = this.store.get(taskId);
     if (!task) throw new PoolError('NOT_FOUND', 'Görev bulunamadı.');
     if (task.state !== 'needs_review' || this.active.has(taskId)) throw new PoolError('INVALID_STATE', 'Yalnızca durmuş ve dosyaları incelenmiş görev çözümlenebilir.');
+    if (task.error && task.error !== 'MANUALLY_RESOLVED') this.store.event(taskId, 'original_error', task.error);
     this.store.event(taskId, 'review_resolution', note);
     this.store.update(taskId, 'failed', task.result, 'MANUALLY_RESOLVED');
     this.schedule();
@@ -345,11 +377,41 @@ export class Pool {
       if (outcome.detail) this.store.event(task.id, 'error_detail', outcome.detail);
       if (outcome.error === 'QUOTA_EXHAUSTED') {
         const previous = this.store.quota(route.id);
+        if (route.adapter === 'qwen') {
+          this.store.saveQuota(route.id, {
+            connection: route.id, adapter: route.adapter, billing: route.billing,
+            status: 'unknown', auth: previous?.auth || 'credentials_present', windows: [],
+            source: 'cli-run-rejection', observedAt: new Date().toISOString(), modelId: model.id,
+            note: 'Son gerçek CLI çağrısı sağlayıcı tarafından kota/kredi nedeniyle reddedildi; kalan kota yüzdesi bilinmiyor.',
+          });
+        } else {
+          let matched = false;
+          const updatedWindows = (previous?.windows || []).map(window => {
+            if (quotaApplies(window, model.id)) {
+              matched = true;
+              return { ...window, remainingPercent: 0 };
+            }
+            return window;
+          });
+          if (!matched) updatedWindows.push({ name: `${model.id}:exhausted`, remainingPercent: 0, models: [model.id] });
+          const scope = previous?.scope || (route.adapter === 'agy' ? 'model' : 'account');
+          const status = scope === 'model' && updatedWindows.some(w => Number(w.remainingPercent) > 0) ? 'available' : 'rate_limited';
+          this.store.saveQuota(route.id, {
+            connection: route.id, adapter: route.adapter, billing: route.billing,
+            ...(previous?.email ? { email: previous.email } : {}),
+            status, scope, auth: previous?.auth || 'credentials_present', windows: updatedWindows,
+            source: 'cli-run-rejection', observedAt: new Date().toISOString(), modelId: model.id,
+            note: 'Son gerçek CLI çağrısı sağlayıcı tarafından kota/kredi nedeniyle reddedildi.',
+          });
+        }
+      } else if (outcome.error === 'AUTH_REQUIRED') {
+        const previous = this.store.quota(route.id);
         this.store.saveQuota(route.id, {
           connection: route.id, adapter: route.adapter, billing: route.billing,
-          status: 'unknown', auth: previous?.auth || 'credentials_present', windows: [],
-          source: 'cli-run-rejection', observedAt: new Date().toISOString(), modelId: model.id,
-          note: 'Son gerçek CLI çağrısı sağlayıcı tarafından kota/kredi nedeniyle reddedildi; kalan kota yüzdesi bilinmiyor.',
+          ...(previous?.email ? { email: previous.email } : {}),
+          status: 'auth_required', auth: 'missing', windows: [],
+          source: 'cli-run-auth-error', observedAt: new Date().toISOString(),
+          note: 'Son CLI çağrısı oturum/yetki hatası döndürdü; yeniden giriş yapın.',
         });
       }
       if (!outcome.error && route.adapter === 'qwen' && this.store.quota(route.id)?.source === 'cli-run-rejection') {
@@ -370,6 +432,16 @@ export class Pool {
       } else this.store.update(task.id, 'succeeded', outcome.result);
     } catch (error) {
       try {
+        if (error instanceof PoolError && error.code === 'AUTH_REQUIRED') {
+          const previous = this.store.quota(route.id);
+          this.store.saveQuota(route.id, {
+            connection: route.id, adapter: route.adapter, billing: route.billing,
+            ...(previous?.email ? { email: previous.email } : {}),
+            status: 'auth_required', auth: 'missing', windows: [],
+            source: 'cli-auth-check', observedAt: new Date().toISOString(),
+            note: error.message || 'CLI oturumu gerekli.',
+          });
+        }
         await director.settlePreflight(this, task.id, { error: error instanceof PoolError ? error.code : 'INTERNAL_ERROR', message: error instanceof PoolError ? error.message : null }).catch(() => {});
         const changed = handle.run && request.kind === 'write' ? await this.writeChanged(task.id, request, before).catch(() => true) : false;
         this.store.update(task.id, changed ? 'needs_review' : handle.cancelled ? 'cancelled' : 'failed', null, error instanceof PoolError ? error.code : 'INTERNAL_ERROR');

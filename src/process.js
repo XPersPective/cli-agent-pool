@@ -11,13 +11,14 @@ export function childEnvironment(extraEnv = {}) {
   return { ...env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1', NO_COLOR: '1', FORCE_COLOR: '0', ...extraEnv };
 }
 
-export function runProcess({ argv, cwd, input = '', relay = false, extraEnv = {}, python = process.platform === 'win32' ? 'python' : 'python3', timeoutMs = 30_000, onLine = () => {}, maxBytes = 1_048_576 }) {
+export function runProcess({ argv, cwd, input = '', relay = false, extraEnv = {}, python = process.platform === 'win32' ? 'python' : 'python3', timeoutMs = 30_000, onLine = () => {}, maxBytes = 1_048_576, retainBytes = maxBytes }) {
   let stopReason = null;
   let bytes = 0;
   let output = '';
   let stderr = '';
   let settled = false;
   let lineFailure = false;
+  const trimTail = (text, limit) => Buffer.byteLength(text) <= limit ? text : text.slice(-Math.max(1024, Math.floor(limit * 0.75)));
   const child = spawn(python, ['-u', supervisor], { cwd, env: childEnvironment(extraEnv), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   const cancel = reason => {
     if (settled || stopReason) return;
@@ -32,12 +33,12 @@ export function runProcess({ argv, cwd, input = '', relay = false, extraEnv = {}
   child.stdout.on('data', chunk => {
     bytes += Buffer.byteLength(chunk);
     if (bytes > maxBytes) cancel('OUTPUT_LIMIT');
-    else output += chunk;
+    else output = retainBytes < maxBytes ? trimTail(output + chunk, retainBytes) : output + chunk;
   });
   child.stderr.on('data', chunk => {
     bytes += Buffer.byteLength(chunk);
     if (bytes > maxBytes) cancel('OUTPUT_LIMIT');
-    else stderr += chunk;
+    else stderr = retainBytes < maxBytes ? trimTail(stderr + chunk, retainBytes) : stderr + chunk;
   });
   child.stdin.on('error', () => {});
   const done = new Promise(resolve => {

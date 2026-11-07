@@ -1,5 +1,19 @@
 # Devralma ve düzeltme planı — 19 Ekim 2026
 
+## Native Windows çoklu Antigravity hesabı, Argon kotası ve yönetim ekranı iyileştirmeleri — 6 Kasım 2026
+
+Kullanıcı WSL kullanmadan Windows üzerinde birden çok Antigravity, Codex ve Claude
+hesabını paralel çalıştırmayı, Argon dahil tüm kotaları ve hesap e-postasını
+görmeyi, kopya hesapları engellemeyi, bağlantı silmeyi, havuz ve katalogda çoklu
+seçim (checkbox) ile toplu ekleme/çıkarmayı, başarısız/inceleme bekleyen çağrıları
+temizlemeyi ve projeler arası geçişte Antigravity izin engellerinin kalıcı olarak
+çözülmesini istedi.
+
+- [x] Native Windows Antigravity profil izolasyonu (`USERPROFILE`/`HOME` + `WSL_DISTRO_NAME=cli-agent-pool`), tüm native profillerde `agy -p /usage --output-format json` + Cloud Code paralel kota ve Argon (`gemini-4-argon`) okuma.
+- [x] Bağlantı ve kota çıktılarında hesap e-postası (`email`), `finish_account` içinde kopya hesap reddi (`DUPLICATE_ACCOUNT`) ve `delete_route` ile bağlantı silme.
+- [x] Havuz üyeleri ve katalogda çoklu seçim kutucukları (`batchModelSaveConfig`), Ayarlar 2 sütunlu kart düzeni, Çağrılar ekranında tekil görev silme (`delete_task`), inceleme kapatma (`resolve`) ve tüm geçmişi temizleme (`includeReview: true`).
+- [x] Owner Antigravity proje izinlerinin (`permissionGrants`, `trustedFolders.json`, `config.json`, `mcp_config.json`) tüm native profillere kopyalanması ve `D:/repositories` üst proje kaydı.
+
 ## Çağrı geçmişini sınırla — 1 Kasım 2026
 
 Kullanıcı tamamlanan eski çağrıların birikmemesini ve elle temizlenebilmesini

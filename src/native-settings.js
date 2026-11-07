@@ -6,7 +6,7 @@ import { lstatSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { agyProjectMatches } from './agy-project.js';
-import { claudeConfigDirectory, profileDirectory } from './profiles.js';
+import { claudeConfigDirectory, profileDirectory, profileHome } from './profiles.js';
 
 const FILE_LIMIT = 4_194_304;
 
@@ -53,8 +53,10 @@ export function nativeSettingsFiles(route, workspace, directory, home = homedir(
     const codexHome = route.profile ? profileDirectory(route, directory) : process.env.CODEX_HOME || path.join(home, '.codex');
     files.push(...listFiles(path.join(codexHome, 'rules')));
   } else if (route?.adapter === 'agy' && route.runtime !== 'wsl') {
-    files.push(...agyProjectMatches(workspace, home).map(match => match.file),
-      path.join(home, '.gemini', 'config', 'config.json'), path.join(home, '.gemini', 'config', 'mcp_config.json'));
+    const agyHome = directory ? profileHome(route, directory, home) : home;
+    const matches = agyProjectMatches(workspace, agyHome);
+    files.push(...(matches.length ? matches : agyProjectMatches(workspace, home)).map(match => match.file),
+      path.join(agyHome, '.gemini', 'config', 'config.json'), path.join(agyHome, '.gemini', 'config', 'mcp_config.json'));
   }
   return [...new Set(files)];
 }

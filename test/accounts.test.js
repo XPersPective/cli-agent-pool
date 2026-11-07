@@ -117,12 +117,41 @@ test('adding an account creates a separate disabled route with copied model memb
   assert.notEqual(first.route.models, codex.models);
   assert.equal(nextAccountRoute(first.config, 'codex-local').route.id, 'codex-acc3');
   assert.equal(configSchema.safeParse(first.config).success, true);
-  assert.throws(() => nextAccountRoute({ routes: [native('agy')] }, 'agy-local'), { code: 'WSL_UNAVAILABLE' });
+  const agyNative = nextAccountRoute({ routes: [native('agy')] }, 'agy-local');
+  assert.equal(agyNative.route.id, 'agy-acc2');
+  assert.equal(agyNative.route.profile, 'acc2');
+  assert.equal(agyNative.route.runtime, undefined);
+  assert.equal(configSchema.safeParse(agyNative.config).success, true);
+  assert.throws(() => nextAccountRoute({ routes: [native('agy')] }, 'agy-local', null), { code: 'WSL_UNAVAILABLE' });
   const agy = nextAccountRoute({ routes: [native('agy')] }, 'agy-local', { distro: 'Ubuntu', home: '/home/u', executable: '/home/u/.local/bin/agy' });
   assert.deepEqual({ runtime: agy.route.runtime, wsl: agy.route.wsl, executable: agy.route.executable, profile: agy.route.profile }, { runtime: 'wsl', wsl: { distro: 'Ubuntu', home: '/home/u' }, executable: '/home/u/.local/bin/agy', profile: 'acc2' });
   assert.equal(configSchema.safeParse(agy.config).success, true);
   assert.throws(() => nextAccountRoute({ routes: [native('opencode')] }, 'opencode-local'), { code: 'ACCOUNT_UNSUPPORTED' });
   assert.throws(() => nextAccountRoute({ routes: [] }, 'missing'), { code: 'NOT_FOUND' });
+});
+
+test('native Windows Antigravity profile isolates token storage via WSL_DISTRO_NAME and mirrors permissions', t => {
+  const directory = temp(t);
+  const agyAcc = native('agy', { id: 'agy-acc2', profile: 'acc2' });
+  const target = path.join(directory, 'profiles', 'agy', 'acc2');
+  assert.deepEqual(routeCommand(agyAcc, directory).env, { USERPROFILE: target, HOME: target, WSL_DISTRO_NAME: 'cli-agent-pool' });
+  assert.equal(profileHome(agyAcc, directory, 'C:/real'), target);
+  const home = temp(t);
+  const projects = path.join(home, '.gemini', 'config', 'projects');
+  mkdirSync(projects, { recursive: true });
+  mkdirSync(path.join(home, '.gemini', 'antigravity-cli'), { recursive: true });
+  writeFileSync(path.join(projects, 'p1.json'), JSON.stringify({ id: 'p1', projectResources: { resources: [{ gitFolder: { folderUri: 'file:///d%3A/repositories/my%20repo' } }] }, settings: { fileAccessPolicy: 'AGENT_SETTING_POLICY_ALLOW' } }));
+  writeFileSync(path.join(home, '.gemini', 'config', 'config.json'), JSON.stringify({ userSettings: { cascadeCommandsAutoExecution: 3 } }));
+  writeFileSync(path.join(home, '.gemini', 'config', 'mcp_config.json'), JSON.stringify({ mcpServers: { 'cli-agent-pool': { command: 'node' } } }));
+  writeFileSync(path.join(home, '.gemini', 'config', '.migrated'), '');
+  writeFileSync(path.join(home, '.gemini', 'trustedFolders.json'), JSON.stringify({ 'D:\\repositories': 'TRUST_FOLDER' }));
+  writeFileSync(path.join(home, '.gemini', 'antigravity-cli', 'settings.json'), JSON.stringify({ permissions: { allow: ['read_file(D:/repositories/a)', 'command(*)'] }, trustedWorkspaces: ['D:\\repositories\\a'] }));
+  const summary = mirrorAgyPermissions(path.join(target, '.gemini'), home, false);
+  assert.deepEqual(summary, { projects: 1, grants: 2, trusted: 1 });
+  assert.equal(existsSync(path.join(target, '.gemini', 'config', 'config.json')), true);
+  assert.equal(existsSync(path.join(target, '.gemini', 'config', 'mcp_config.json')), true);
+  assert.equal(existsSync(path.join(target, '.gemini', 'config', '.migrated')), true);
+  assert.deepEqual(JSON.parse(readFileSync(path.join(target, '.gemini', 'trustedFolders.json'), 'utf8')), { 'D:\\repositories': 'TRUST_FOLDER' });
 });
 
 test('WSL detection and profile preparation use fixed shell-free commands', async () => {
