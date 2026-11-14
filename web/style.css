@@ -809,6 +809,25 @@
   label.route-header { cursor: pointer; }
   .route-actions-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); flex-wrap: wrap; padding-top: var(--s-3); border-top: 1px solid var(--border); }
 
+  /* Settings -> Account Models Checklist */
+  .route-models-panel { border: 1px solid var(--border); border-radius: var(--r-md); background: var(--sunken); }
+  .route-models-panel > summary { display: flex; align-items: center; gap: 8px; padding: 10px var(--s-3); font-size: 13px; font-weight: 600; cursor: pointer; list-style: none; border-radius: var(--r-md); }
+  .route-models-panel > summary::before { content: "▸" / ""; display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: var(--r-xs); background: var(--raised); color: var(--muted); font-size: 10px; transition: transform var(--t-med) var(--ease); }
+  .route-models-panel[open] > summary::before { transform: rotate(90deg); }
+  .route-models-panel > summary:hover { background: var(--hover); }
+  .route-models-body { display: grid; gap: var(--s-2); padding: 0 var(--s-3) var(--s-3); }
+  .route-models-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); }
+  .route-models-toolbar input[type=search] { min-width: 190px; max-width: 280px; margin-left: auto; }
+  .route-models-list { display: grid; gap: 6px; max-height: 320px; overflow-y: auto; padding: 2px 0; }
+  .route-model-row { display: flex; align-items: center; gap: var(--s-2); flex-wrap: wrap; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface); cursor: pointer; transition: border-color var(--t-fast) var(--ease), background-color var(--t-fast) var(--ease); }
+  .route-model-row:hover { border-color: color-mix(in oklab, var(--accent) 45%, var(--border)); }
+  .route-model-row.is-filtered { border-color: color-mix(in oklab, var(--warning) 50%, var(--border)); background: color-mix(in oklab, var(--warning) 8%, var(--surface)); }
+  .route-model-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 200px; }
+  .route-model-title { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+  .route-model-title strong { font-family: var(--font-mono); font-size: 12.5px; overflow-wrap: anywhere; }
+  .route-model-title small { color: var(--muted); font-size: 11.5px; }
+  .route-model-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+
   .theme-field { display: inline-flex; align-items: center; gap: var(--s-2); font-size: 12px; font-weight: 550; color: var(--muted); }
   .theme-field select { width: auto; min-width: 110px; }
 
@@ -893,6 +912,8 @@
     .calls-section > .section-heading > .actions { margin-left: 0; width: 100%; }
     .call-metadata { grid-template-columns: 100px minmax(0, 1fr); }
     .route-settings > summary .hint, .route-summary-meta { margin-left: 0; }
+    .route-models-toolbar input[type=search] { margin-left: 0; max-width: none; width: 100%; }
+    .route-model-meta { margin-left: 0; }
     dialog { padding: var(--s-4); border-radius: var(--r-lg); }
     dialog > .section-heading { top: calc(-1 * var(--s-4)); margin: calc(-1 * var(--s-4)) calc(-1 * var(--s-4)) var(--s-3); padding: var(--s-4) var(--s-4) var(--s-3); }
   }

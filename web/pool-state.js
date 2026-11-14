@@ -167,10 +167,26 @@ export function modelIdentity(id) {
 }
 export function modelFamily(id) {
   const key = modelIdentity(id);
-  return key.match(/(?:^|-)(argon|astra|sol|terra|luna|opus|sonnet|haiku)(?:-|$)/)?.[1] || key.match(/^(gemini|qwen|glm|kimi|mimo|deepseek|gpt-oss|gpt)(?:-|$)/)?.[1] || key.replace(/[-_.]?\d.*$/, '') || key;
+  return key.match(/(?:^|-)(argon|hydrogen|astra|sol|terra|luna|opus|sonnet|haiku|fable)(?:-|$)/)?.[1] || key.match(/^(gemini|qwen|glm|kimi|mimo|deepseek|gpt-oss|gpt)(?:-|$)/)?.[1] || key.replace(/[-_.]?\d.*$/, '') || key;
 }
 export function modelFiltered(filters, routeId, modelId) {
   return (filters || []).some(rule => (!rule.routeId || rule.routeId === routeId) && (rule.match === 'family' ? modelFamily(modelId) === rule.value : rule.routeId ? modelId.toLowerCase() === rule.value.toLowerCase() : modelIdentity(modelId) === modelIdentity(rule.value)));
+}
+export function isSettingsFiltered(filters, routeId, modelId) {
+  return (filters || []).some(rule => rule.reason === 'settings' && modelFiltered([rule], routeId, modelId));
+}
+export function setRouteModelSettingsFilter(filters, routeId, modelId, excluded, routes = null) {
+  const list = structuredClone(filters || []);
+  if (!excluded) {
+    return unhideModels(list, routes || [{ id: routeId, models: [{ id: modelId }] }], [{ routeId, modelId }]);
+  }
+  const existing = list.find(item => item.match === 'model' && item.routeId === routeId && item.value.toLowerCase() === modelId.toLowerCase());
+  if (existing) {
+    existing.reason = existing.reason || 'settings';
+    return list;
+  }
+  list.push({ match: 'model', value: modelId, routeId, reason: 'settings' });
+  return list;
 }
 export function unhideModels(filters, routes, targets) {
   const targetKeys = new Set((targets || []).map(t => JSON.stringify([t.routeId, t.modelId])));

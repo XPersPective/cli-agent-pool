@@ -8,12 +8,12 @@ import path from 'node:path';
 import { configSchema } from '../src/config.js';
 import { Pool } from '../src/pool.js';
 import { Store } from '../src/store.js';
-import { claudeCatalog, routeCatalog, mergeCatalogModels, execute } from '../src/adapters.js';
-import { claudeWindows, antigravityGroupWindows } from '../src/quotas.js';
+import { claudeCatalog, routeCatalog, mergeCatalogModels, importDiscoveredRoutes, execute } from '../src/adapters.js';
+import { claudeWindows, antigravityGroupWindows, agyUsageWindows } from '../src/quotas.js';
 import { browserUI, openCliLogin } from '../src/web.js';
 import { ensureInitialized } from '../src/daemon.js';
 import { isCategoryId } from '../web/categories.js';
-import { memberships, mergeScanDraft, addMembership, quotaWindows, quotaWindowPercent, modelIssueInfo, quotaMatches, effortLabel, modelFamily, modelIdentity, modelFiltered, unhideModels, sortModels, initialTaskGroup, restoredWorkspace } from '../web/pool-state.js';
+import { memberships, mergeScanDraft, addMembership, quotaWindows, quotaWindowPercent, modelIssueInfo, quotaMatches, effortLabel, modelFamily, modelIdentity, modelFiltered, isSettingsFiltered, setRouteModelSettingsFilter, unhideModels, sortModels, initialTaskGroup, restoredWorkspace } from '../web/pool-state.js';
 
 test('adding to an explicit target pool preserves other memberships and validates effort before mutation', () => {
   const model = { group: 'high', defaultEffort: 'high', efforts: ['low', 'medium', 'high'] };
@@ -491,4 +491,93 @@ test('Pool.select uses manual order tie-breaker and browserUI supports safe shut
   assert.equal(updated.updated, true);
   assert.equal(updated.shortcut, true);
   assert.equal(updateCalled, 1);
+});
+
+test('Hydrogen/Fable families, Antigravity Hydrogen quota windows, live Codex scan_import, and Settings model filters work together', async t => {
+  assert.equal(modelFamily('gemini-4-hydrogen'), 'hydrogen');
+  assert.equal(modelFamily('gemini-4-hydrogen-xhigh'), 'hydrogen');
+  assert.equal(modelFamily('claude-fable-5-2'), 'fable');
+
+  const usageWins = agyUsageWindows({
+    command: {
+      data: {
+        groups: [
+          {
+            name: 'Gemini Models',
+            description: 'Models within this group: Gemini 4 Hydrogen, Gemini 3.8 Flash',
+            buckets: [
+              { window: 'weekly', remaining_fraction: 0.68 },
+              { window: '5h', remaining_fraction: 0.75 },
+            ],
+          },
+          {
+            name: 'Gemini 4 Argon',
+            buckets: [{ window: 'weekly', remaining_fraction: 0.82 }],
+          },
+        ],
+      },
+    },
+  });
+  assert.deepEqual(quotaWindows({ windows: usageWins }, 'gemini-4-hydrogen').map(w => w.remaining), [68, 75]);
+  assert.deepEqual(quotaWindows({ windows: usageWins }, 'gemini-4-argon').map(w => w.remaining), [82]);
+
+  const groupWins = antigravityGroupWindows({
+    groups: [
+      { displayName: 'Gemini Models', description: 'Gemini 4 Hydrogen, Gemini 3.8 Flash', buckets: [{ window: '5h', remainingFraction: 0.9 }] },
+      { displayName: 'Gemini 4 Argon', buckets: [{ window: 'weekly', remainingFraction: 0.4 }] },
+    ],
+  });
+  assert.deepEqual(quotaWindows({ windows: groupWins }, 'gemini-4-hydrogen').map(w => w.remaining), [90]);
+  assert.deepEqual(quotaWindows({ windows: groupWins }, 'gemini-4-argon').map(w => w.remaining), [40]);
+
+  const root = mkdtempSync(path.join(tmpdir(), 'pool-sync-settings-'));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  const codexStub = path.join(root, 'codex-stub.mjs');
+  writeFileSync(codexStub, `import { createInterface } from 'node:readline';
+const rl = createInterface({ input: process.stdin });
+rl.on('line', line => {
+  const msg = JSON.parse(line);
+  if (msg.method === 'initialize') console.log(JSON.stringify({ id: msg.id, result: { ok: true } }));
+  else if (msg.method === 'model/list') console.log(JSON.stringify({ id: msg.id, result: { data: [
+    { id: 'gpt-6.1-sol', displayName: 'GPT-6.1-Sol', supportedReasoningEfforts: [{ reasoningEffort: 'high' }] },
+    { id: 'gpt-6.2-nova', displayName: 'GPT-6.2-Nova', supportedReasoningEfforts: [{ reasoningEffort: 'medium' }] },
+  ] } }));
+});`);
+
+  const initialConfig = configSchema.parse({
+    workspaceRoots: [root],
+    modelFilters: [{ match: 'model', value: 'gpt-6.1-sol', routeId: 'codex-test', reason: 'settings' }],
+    routes: [{
+      id: 'codex-test',
+      adapter: 'codex',
+      executable: codexStub,
+      billing: 'subscription',
+      enabled: true,
+      models: [{ id: 'gpt-6.1-sol', alias: 'GPT-6.1-Sol', group: 'high', memberships: [{ group: 'high' }], enabled: true, kinds: ['text'] }],
+    }],
+  });
+  writeFileSync(path.join(root, 'config.json'), JSON.stringify(initialConfig, null, 2));
+
+  const store = new Store(':memory:');
+  const pool = new Pool(initialConfig, store, { directory: root });
+  t.after(async () => { await pool.close(); store.close(); });
+
+  const ui = browserUI(pool, { directory: root, token: 'b'.repeat(64) });
+  const scanned = await ui.operation({ operation: 'scan_import', payload: { routeId: 'codex-test' } });
+  const codexRoute = scanned.config.routes.find(r => r.id === 'codex-test');
+  assert.ok(codexRoute.models.some(m => m.id === 'gpt-6.1-sol'), 'Settings route retains filtered model');
+  assert.ok(codexRoute.models.some(m => m.id === 'gpt-6.2-nova'), 'Live Codex scan imports newly released model');
+
+  assert.equal(isSettingsFiltered(scanned.config.modelFilters, 'codex-test', 'gpt-6.1-sol'), true);
+  assert.equal(pool.models().some(m => m.routeId === 'codex-test' && m.id === 'gpt-6.1-sol'), false);
+  assert.equal(pool.models().some(m => m.routeId === 'codex-test' && m.id === 'gpt-6.2-nova'), true);
+  assert.throws(() => pool.select({ kind: 'text', routeId: 'codex-test', modelId: 'gpt-6.1-sol' }), { code: 'NO_ROUTE' });
+  assert.equal(pool.select({ kind: 'text', routeId: 'codex-test', modelId: 'gpt-6.2-nova' }).selected.id, 'gpt-6.2-nova');
+
+  const unhidden = setRouteModelSettingsFilter(scanned.config.modelFilters, 'codex-test', 'gpt-6.1-sol', false, scanned.config.routes);
+  assert.equal(isSettingsFiltered(unhidden, 'codex-test', 'gpt-6.1-sol'), false);
+  const rehidden = setRouteModelSettingsFilter(unhidden, 'codex-test', 'gpt-6.2-nova', true, scanned.config.routes);
+  assert.equal(isSettingsFiltered(rehidden, 'codex-test', 'gpt-6.2-nova'), true);
+
+  assert.equal(typeof importDiscoveredRoutes, 'function');
 });

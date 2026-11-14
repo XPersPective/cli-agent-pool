@@ -56,7 +56,7 @@ export const configSchema = z.object({
   groupingMode: z.unknown().optional(),
   selectionMode: z.unknown().optional(),
   categories: z.array(z.object({ id: label.refine(isCategoryId), name: label }).strict()).max(64).optional(),
-  modelFilters: z.array(z.object({ match: z.enum(['model', 'family']), value: label, routeId: label.optional(), reason: z.enum(['manual', 'auth_error', 'quota_unknown', 'subscription']).optional() }).strict()).max(500).default([]),
+  modelFilters: z.array(z.object({ match: z.enum(['model', 'family']), value: label, routeId: label.optional(), reason: z.enum(['manual', 'auth_error', 'auth_issue', 'quota_unknown', 'unknown_quota', 'subscription', 'settings']).optional() }).strict()).max(500).default([]),
   // Owner-approved roots that director tasks may read outside their workspace (e.g. the skills library).
   directorReadRoots: z.array(z.string().min(1).max(4096).refine(value => path.isAbsolute(value), 'Okuma kökü mutlak olmalı.')).max(20).default(() => [path.join(homedir(), '.skills-manager', 'skills')]),
   routes: z.array(z.object({

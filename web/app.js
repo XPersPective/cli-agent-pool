@@ -15,6 +15,8 @@ import {
   modelIdentity,
   modelFamily,
   modelFiltered,
+  isSettingsFiltered,
+  setRouteModelSettingsFilter,
   unhideModels,
   sortModels,
 } from '/pool-state.js';
@@ -113,6 +115,10 @@ let categoryEditorStamp = '';
 let dragPayload = null;
 let refreshIntervalId = null;
 let quotaIntervalId = null;
+let catalogIntervalId = null;
+let catalogSyncing = false;
+const routeModelsSearch = new Map();
+const expandedModelsPanels = new Map();
 
 let viewPreferences = {};
 try {
@@ -380,6 +386,37 @@ function formatQuotaText(conn, q) {
   return `Durum: ${q.status}${q.auth ? ` (${q.auth})` : ''}`;
 }
 
+async function autoSyncCatalogs({ showErrors = false, refreshAfter = true, ignoreBusy = false } = {}) {
+  if (catalogSyncing || serviceStopped || (!ignoreBusy && busy)) return null;
+  if (!ignoreBusy && poolDirty) return null;
+  catalogSyncing = true;
+  try {
+    const before = structuredClone(baseConfig || settings?.config || {});
+    const res = await call('scan_import', {});
+    const draft = poolDirty && settings?.config ? structuredClone(settings.config) : null;
+    settings = { ...res, config: draft ? mergeScanDraft(res.config, before, draft) : res.config };
+    baseConfig = structuredClone(res.config);
+    poolDirty = Boolean(draft && JSON.stringify(settings.config) !== JSON.stringify(res.config));
+    updateSave();
+    renderPool();
+    if (!$('settings').hidden) renderSettings();
+    if (res.addedModels > 0 || res.addedRoutes > 0) {
+      notice(`${res.addedModels} yeni model otomatik çekildi.${showErrors && res.catalogErrors?.length ? ` (${res.catalogErrors.length} bağlantı hata verdi)` : ''}`);
+      if (refreshAfter) {
+        await refresh();
+        void refreshQuotas();
+      }
+    } else if (refreshAfter) {
+      await refresh();
+    }
+    return res;
+  } catch {
+    return null;
+  } finally {
+    catalogSyncing = false;
+  }
+}
+
 async function runScanImport(routeId) {
   const draft = poolDirty ? structuredClone(settings.config) : null;
   const before = baseConfig || settings?.config;
@@ -446,6 +483,7 @@ async function triggerSafeExit() {
     serviceStopped = true;
     clearInterval(refreshIntervalId);
     clearInterval(quotaIntervalId);
+    clearInterval(catalogIntervalId);
     $('connection-state').textContent = 'Güvenli kapatıldı';
     $('connection-state').dataset.connected = 'false';
     $('connection-state').title = 'Servis güvenli şekilde kapatıldı';
@@ -549,7 +587,7 @@ function settingField(label, value, update, choices, markDirty = true) {
 
 function renderSettings() {
   if (!settings || !snapshot) return;
-  const expanded = new Set([...$('settings-routes').querySelectorAll('details[open]')].map(node => node.dataset.routeId));
+  const expanded = new Set([...$('settings-routes').querySelectorAll('details.route-settings[open]')].map(node => node.dataset.routeId));
   const previousAdapter = $('new-adapter').value;
   const adapters = snapshot.installed.filter(cli => cli.status === 'installed');
   $('new-adapter').replaceChildren(new Option('CLI seçin', ''), ...adapters.map(cli => new Option(`${cli.label || cli.adapter} (${cli.discoveredModels?.length || 0} model)`, cli.adapter)));
@@ -656,10 +694,120 @@ function renderSettings() {
       body.append(trustedLabel);
     }
 
+    const modelsDetails = element('details', null, 'route-models-panel');
+    modelsDetails.open = expandedModelsPanels.has(route.id) ? expandedModelsPanels.get(route.id) : true;
+    modelsDetails.addEventListener('toggle', () => { expandedModelsPanels.set(route.id, modelsDetails.open); });
+    const filters = settings.config.modelFilters || [];
+    const activeCount = route.models.filter(m => !modelFiltered(filters, route.id, m.id)).length;
+    const filteredCount = route.models.length - activeCount;
+    modelsDetails.append(element(
+      'summary',
+      `Hesaba bağlı modeller (${route.models.length} model · ${activeCount} aktif${filteredCount ? ` · ${filteredCount} gizli/filtreli` : ''})`,
+    ));
+
+    const modelsBody = element('div', null, 'route-models-body');
+    modelsBody.append(element('p', 'Yeni eklenen modeller varsayılan olarak sisteme otomatik dahil edilir. Kataloğa ve havuzlara hiç girmesini istemediğiniz modelleri işaretlemeniz yeterlidir.', 'hint'));
+
+    const modelsToolbar = element('div', null, 'route-models-toolbar actions');
+    if (!route.api && route.adapter !== 'custom') {
+      modelsToolbar.append(button('Model sürümlerini yenile', async () => { await refreshCatalog(route.id); }));
+    }
+    if (filteredCount > 0) {
+      modelsToolbar.append(button(`Tümünü sisteme dahil et (${filteredCount})`, async () => {
+        settings.config.modelFilters = unhideModels(
+          settings.config.modelFilters || [],
+          settings.config.routes,
+          route.models.map(m => ({ routeId: route.id, modelId: m.id })),
+        );
+        await savePreference('modelFilters');
+        notice(`${route.id}: tüm modeller sisteme dahil edildi.`);
+      }));
+    }
+    if (activeCount > 0) {
+      modelsToolbar.append(button(`Tümünü filtrele (${activeCount})`, async () => {
+        let next = settings.config.modelFilters || [];
+        for (const m of route.models) {
+          next = setRouteModelSettingsFilter(next, route.id, m.id, true, settings.config.routes);
+        }
+        settings.config.modelFilters = next;
+        await savePreference('modelFilters');
+        notice(`${route.id}: ${activeCount} model katalog ve havuzlardan gizlendi.`);
+      }));
+    }
+
+    const modelsList = element('div', null, 'route-models-list');
+    const renderRouteModelRows = () => {
+      const q = (routeModelsSearch.get(route.id) || '').trim().toLocaleLowerCase('tr');
+      const matching = q
+        ? route.models.filter(m => `${m.id} ${m.alias || ''} ${modelFamily(m.id)}`.toLocaleLowerCase('tr').includes(q))
+        : route.models;
+      const sortedModels = sortModels(matching.map(model => ({ route, model })), 'family', false, sortContext(''));
+      if (!sortedModels.length) {
+        modelsList.replaceChildren(element(
+          'p',
+          route.models.length ? 'Aramanıza uyan model yok.' : 'Bu bağlantıda henüz çekilmiş model yok. Yukarıdaki "Model sürümlerini yenile" düğmesine basın.',
+          'empty',
+        ));
+        return;
+      }
+      modelsList.replaceChildren(...sortedModels.map(({ model }) => {
+        const currentFilters = settings.config.modelFilters || [];
+        const excluded = modelFiltered(currentFilters, route.id, model.id);
+        const row = element('label', null, `route-model-row${excluded ? ' is-filtered' : ''}`);
+        const check = document.createElement('input');
+        check.type = 'checkbox';
+        check.className = 'route-model-exclude';
+        check.checked = excluded;
+        check.setAttribute('aria-label', `${model.id} modelini gizle / katalog ve havuz dışı bırak`);
+        check.addEventListener('change', () => void action(async () => {
+          settings.config.modelFilters = setRouteModelSettingsFilter(
+            settings.config.modelFilters || [],
+            route.id,
+            model.id,
+            check.checked,
+            settings.config.routes,
+          );
+          await savePreference('modelFilters');
+          notice(`${model.id} (${route.id}) ${check.checked ? 'sistemden gizlendi (katalog/havuz dışı)' : 'sisteme dahil edildi'}.`);
+        }));
+
+        const textWrap = element('div', null, 'route-model-info');
+        const titleLine = element('div', null, 'route-model-title');
+        titleLine.append(element('strong', model.id));
+        if (model.alias && model.alias !== model.id) titleLine.append(element('small', model.alias));
+        textWrap.append(titleLine);
+
+        const meta = element('div', null, 'route-model-meta');
+        meta.append(element('span', familyLabel(modelFamily(model.id)), 'badge subtle'));
+        if (model.efforts?.length) meta.append(element('span', model.efforts.join(', '), 'badge subtle'));
+        const poolsList = memberships(model).map(m => groupLabel(m.group));
+        if (poolsList.length) meta.append(element('span', `Havuz: ${poolsList.join(', ')}`, 'badge subtle'));
+        meta.append(element('span', excluded ? 'Filtreli (Katalog/Havuz dışı)' : 'Sistemde aktif', `badge ${excluded ? 'warn' : 'ok'}`));
+
+        row.append(check, textWrap, meta);
+        return row;
+      }));
+    };
+
+    if (route.models.length > 6) {
+      const searchInput = document.createElement('input');
+      searchInput.type = 'search';
+      searchInput.className = 'route-models-search';
+      searchInput.value = routeModelsSearch.get(route.id) || '';
+      searchInput.placeholder = 'Modellerde ara…';
+      searchInput.setAttribute('aria-label', `${route.id} modellerinde ara`);
+      searchInput.addEventListener('input', () => {
+        routeModelsSearch.set(route.id, searchInput.value);
+        renderRouteModelRows();
+      });
+      modelsToolbar.append(searchInput);
+    }
+    renderRouteModelRows();
+
     const addModelRow = element('div', null, 'actions');
     const newModelInput = document.createElement('input');
     newModelInput.setAttribute('aria-label', `${route.id} için yeni model kimliği`);
-    newModelInput.placeholder = 'Bu bağlantıya yeni model kimliği ekle';
+    newModelInput.placeholder = 'Bu bağlantıya manuel yeni model kimliği ekle';
     const addModelBtn = button('Model ekle', async () => {
       const id = newModelInput.value.trim();
       if (!id) throw new Error('Model kimliği girin.');
@@ -669,11 +817,10 @@ function renderSettings() {
       newModelInput.value = '';
       await saveModel(route.id, id);
     });
-    const manualModel = element('details');
-    manualModel.append(element('summary', `Kayıtlı modeller (${route.models.length}) · Yeni model kimliği ekle`));
     addModelRow.append(newModelInput, addModelBtn);
-    manualModel.append(addModelRow);
-    body.append(manualModel);
+    modelsBody.append(modelsToolbar, modelsList, addModelRow);
+    modelsDetails.append(modelsBody);
+    body.append(modelsDetails);
 
     const routeActionsBar = element('div', null, 'route-actions-bar');
     const routeActions = element('div', null, 'actions');
@@ -745,7 +892,7 @@ $('new-adapter').addEventListener('change', () => {
   if (cli?.defaultBilling) $('new-billing').value = cli.defaultBilling;
 });
 
-$('refresh').addEventListener('click', () => void action(async () => { await refresh(); await refreshQuotas(); }));
+$('refresh').addEventListener('click', () => void action(async () => { await autoSyncCatalogs({ showErrors: true, refreshAfter: false, ignoreBusy: true }); await refresh(); await refreshQuotas(); }));
 $('scan-import').addEventListener('click', () => void action(runScanImport));
 $('sync-all-permissions')?.addEventListener('click', () => void action(async () => {
   const result = await call('sync_permissions', {});
@@ -799,7 +946,9 @@ async function saveModelsBatch(targets, enableRoutes = false, message = 'Seçile
 
 $('save-pool').addEventListener('click', () => void action(saveSettings));
 $('settings').addEventListener('change', event => {
-  if (!['theme', 'routes-search', 'routes-filter'].includes(event.target.id)) dirty();
+  if (['theme', 'routes-search', 'routes-filter'].includes(event.target.id)) return;
+  if (event.target.classList?.contains('route-models-search') || event.target.classList?.contains('route-model-exclude')) return;
+  dirty();
 });
 
 $('add-route').addEventListener('click', () => void action(async () => {
@@ -1145,10 +1294,10 @@ function renderPool() {
 
   $('members-heading').textContent = isAllGroup(selectedGroup) ? 'Havuzdaki tüm modeller' : `${groupLabel(selectedGroup)} üyeleri`;
   const allHiddenCount = settings.config.routes.reduce(
-    (sum, r) => sum + r.models.filter(m => modelFiltered(settings.config.modelFilters, r.id, m.id)).length,
+    (sum, r) => sum + r.models.filter(m => modelFiltered(settings.config.modelFilters, r.id, m.id) && hiddenReasonCategory(r, m) !== 'settings').length,
     0,
   );
-  $('filter-count').textContent = allHiddenCount || settings.config.modelFilters?.length || 0;
+  $('filter-count').textContent = allHiddenCount;
 
   const memberScroll = $('pool-members').scrollLeft, memberTop = $('pool-members').scrollTop;
   const search = ($('pool-member-search')?.value || '').trim().toLocaleLowerCase('tr');
@@ -1298,14 +1447,18 @@ function renderPoolBatchBar(visibleItems) {
 async function refreshCatalog(routeId) {
   if (poolDirty) { await runScanImport(routeId); return; }
   settings = await call('refresh_catalog', { routeId });
+  baseConfig = structuredClone(settings.config);
   renderPool();
+  if (!$('settings').hidden) renderSettings();
   await refresh();
-  notice('Model sürümleri güncellendi.');
+  const countText = Number.isFinite(settings.totalModels) ? `${settings.totalModels} model ` : '';
+  notice(`${routeId}: ${countText}senkronize edildi${settings.addedModels ? ` (+${settings.addedModels} yeni model)` : ''}.`);
 }
 
 function familyLabel(value) {
   return ({
     argon: 'Argon',
+    hydrogen: 'Hydrogen',
     sol: 'Sol',
     terra: 'Terra',
     astra: 'Astra',
@@ -1313,6 +1466,7 @@ function familyLabel(value) {
     opus: 'Opus',
     sonnet: 'Sonnet',
     haiku: 'Haiku',
+    fable: 'Fable',
     gemini: 'Gemini',
     qwen: 'Qwen',
     glm: 'GLM',
@@ -1539,6 +1693,7 @@ function renderCatalogBatchBar(entries) {
 
 function hiddenReasonCategory(route, model) {
   const filters = settings?.config?.modelFilters || [];
+  if (isSettingsFiltered(filters, route.id, model.id)) return 'settings';
   const matching = filters.filter(rule => modelFiltered([rule], route.id, model.id));
   const explicitReason = matching.find(r => r.reason)?.reason;
   const issue = modelIssueInfo(route, model, snapshot?.quotas?.[route.id], quotaErrors[route.id]);
@@ -1555,6 +1710,7 @@ const hiddenReasonLabels = {
   auth_issue: 'Giriş / Abonelik sorunlu',
   unknown_quota: 'Kotası okunamayan',
   manual: 'Elle gizlenen',
+  settings: 'Ayarlarda filtrelenen',
 };
 
 async function restoreHiddenTargets(targets, successMessage) {
@@ -1576,21 +1732,26 @@ function renderHidden() {
       }
     }
   }
+  const viewMode = $('hidden-view')?.value || 'reason';
+  const operationalHidden = allHidden.filter(item => item.reasonKey !== 'settings');
+  const settingsHidden = allHidden.filter(item => item.reasonKey === 'settings');
+  const scopedHidden = viewMode === 'settings' ? settingsHidden : operationalHidden;
   if ($('hidden-panel-count')) {
-    $('hidden-panel-count').textContent = `${allHidden.length} model · ${filters.length} kural`;
+    $('hidden-panel-count').textContent = `${operationalHidden.length} model${settingsHidden.length ? ` (+${settingsHidden.length} ayar filtresi)` : ''}`;
   }
 
   const search = ($('hidden-search')?.value || '').trim().toLocaleLowerCase('tr');
   const searched = search
-    ? allHidden.filter(({ route, model }) => `${searchHaystack(route, model)} ${hiddenReasonLabels[hiddenReasonCategory(route, model)]}`.toLocaleLowerCase('tr').includes(search))
-    : allHidden;
+    ? scopedHidden.filter(({ route, model, reasonKey }) => `${searchHaystack(route, model)} ${hiddenReasonLabels[reasonKey] || ''}`.toLocaleLowerCase('tr').includes(search))
+    : scopedHidden;
 
-  const viewMode = $('hidden-view')?.value || 'reason';
   let navGroups = [];
   if (viewMode === 'reason') {
     navGroups = ['auth_issue', 'unknown_quota', 'manual']
       .map(id => ({ id, label: hiddenReasonLabels[id], count: searched.filter(e => e.reasonKey === id).length }))
       .filter(g => g.count > 0);
+  } else if (viewMode === 'settings') {
+    navGroups = buildSubGroups(searched, 'route');
   } else if (viewMode !== 'all') {
     navGroups = buildSubGroups(searched, viewMode);
   }
@@ -1621,10 +1782,13 @@ function renderHidden() {
   // Raw filter rules strip (helpful when a family rule matches future/empty models too)
   const rulesBar = $('hidden-rules-bar');
   if (rulesBar) {
-    if (filters.length) {
+    const visibleRules = filters
+      .map((rule, index) => ({ rule, index }))
+      .filter(({ rule }) => viewMode === 'settings' ? rule.reason === 'settings' : rule.reason !== 'settings');
+    if (visibleRules.length) {
       const wrap = element('div', null, 'actions');
-      wrap.append(element('small', 'Aktif kurallar:'));
-      filters.forEach((rule, index) => {
+      wrap.append(element('small', viewMode === 'settings' ? 'Ayar filtreleri:' : 'Aktif kurallar:'));
+      visibleRules.forEach(({ rule, index }) => {
         const label = `${rule.match === 'family' ? `${familyLabel(rule.value)} ailesi` : rule.value}${rule.routeId ? ` (${rule.routeId})` : ' (Tümü)'}`;
         const chip = button(`× ${label}`, async () => {
           filters.splice(index, 1);
@@ -1643,6 +1807,7 @@ function renderHidden() {
   const subFiltered = searched.filter(item => {
     if (!selectedHiddenSubgroup || viewMode === 'all') return true;
     if (viewMode === 'reason') return item.reasonKey === selectedHiddenSubgroup;
+    if (viewMode === 'settings') return entryMatchesSubGroup(item, 'route', selectedHiddenSubgroup);
     return entryMatchesSubGroup(item, viewMode, selectedHiddenSubgroup);
   });
 
@@ -1655,15 +1820,15 @@ function renderHidden() {
   // Hidden batch bar
   const bar = $('hidden-batch-bar');
   if (bar) {
-    if (!allHidden.length) {
+    if (!scopedHidden.length) {
       bar.hidden = true;
       bar.replaceChildren();
     } else {
       bar.hidden = false;
       const selectedCount = selectedHiddenItems.size;
-      const unknownTargets = allHidden.filter(e => e.reasonKey === 'unknown_quota').map(e => ({ routeId: e.route.id, modelId: e.model.id }));
-      const authTargets = allHidden.filter(e => e.reasonKey === 'auth_issue').map(e => ({ routeId: e.route.id, modelId: e.model.id }));
-      const info = element('span', selectedCount ? `${selectedCount} gizli model seçildi` : `${sorted.length} / ${allHidden.length} gizlenen model`);
+      const unknownTargets = scopedHidden.filter(e => e.reasonKey === 'unknown_quota').map(e => ({ routeId: e.route.id, modelId: e.model.id }));
+      const authTargets = scopedHidden.filter(e => e.reasonKey === 'auth_issue').map(e => ({ routeId: e.route.id, modelId: e.model.id }));
+      const info = element('span', selectedCount ? `${selectedCount} gizli model seçildi` : `${sorted.length} / ${scopedHidden.length} gizlenen model`);
       const actions = element('div', null, 'actions');
 
       if (sorted.length) {
@@ -1691,11 +1856,9 @@ function renderHidden() {
           await restoreHiddenTargets(authTargets, `Giriş/abonelik sorunlu ${authTargets.length} model geri yüklendi.`);
         }));
       }
-      actions.append(button(`Tümünü geri yükle (${allHidden.length})`, async () => {
-        settings.config.modelFilters = [];
-        selectedHiddenItems.clear();
-        await savePreference('modelFilters');
-        notice('Tüm gizlenen modeller geri yüklendi.');
+      actions.append(button(`Tümünü geri yükle (${scopedHidden.length})`, async () => {
+        const list = scopedHidden.map(e => ({ routeId: e.route.id, modelId: e.model.id }));
+        await restoreHiddenTargets(list, viewMode === 'settings' ? 'Ayarlarda filtrelenen tüm modeller geri yüklendi.' : 'Tüm gizlenen modeller geri yüklendi.');
       }));
       bar.replaceChildren(info, actions);
     }
@@ -1704,7 +1867,7 @@ function renderHidden() {
   $('hidden-models').replaceChildren(
     ...(sorted.length
       ? sorted.map(({ route, model }) => modelCard(route, model, null, { hiddenView: true, reasonKey: hiddenReasonCategory(route, model) }))
-      : [element('p', allHidden.length ? 'Bu alt filtrede gizlenen model yok.' : 'Gizlenen model yok. Model kartlarından "Gizle" düğmesiyle sorunlu veya eski modelleri buraya taşıyabilirsiniz.', 'empty')]),
+      : [element('p', scopedHidden.length ? 'Bu alt filtrede gizlenen model yok.' : viewMode === 'settings' ? 'Ayarlarda filtrelenen model yok.' : 'Gizlenen model yok. Model kartlarından "Gizle" düğmesiyle sorunlu veya eski modelleri buraya taşıyabilirsiniz.', 'empty')]),
   );
   updateQuotaToggle();
 }
@@ -2415,6 +2578,12 @@ window.addEventListener('beforeunload', event => {
   if (poolDirty) { event.preventDefault(); event.returnValue = ''; }
 });
 
-void refresh().then(() => { if (snapshot) void refreshQuotas(); });
+void refresh().then(() => {
+  if (snapshot) {
+    void refreshQuotas();
+    void autoSyncCatalogs();
+  }
+});
 refreshIntervalId = setInterval(() => { if (!document.hidden && !busy && !serviceStopped) void refresh(); }, 5000);
 quotaIntervalId = setInterval(() => { if (!document.hidden && snapshot && !busy && !serviceStopped) void refreshQuotas(); }, 60000);
+catalogIntervalId = setInterval(() => { if (!document.hidden && snapshot && !busy && !poolDirty && !serviceStopped) void autoSyncCatalogs(); }, 600_000);

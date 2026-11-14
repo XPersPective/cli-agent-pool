@@ -335,10 +335,11 @@ export function localModelsFor(adapter, home = homedir()) {
     }
     add('opencode/beam-free', 'Beam Free (Ücretsiz)', 'free', [], ['text', 'read', 'write'], true);
   } else if (adapter === 'codex') {
-    const cache = readJsonSafe(path.join(home, '.codex', 'models_cache.json'));
+    const directCache = path.join(home, 'models_cache.json');
+    const cache = readJsonSafe(existsSync(directCache) ? directCache : path.join(home, '.codex', 'models_cache.json'));
     if (Array.isArray(cache.models)) {
       for (const row of cache.models) {
-        if (row && typeof row.slug === 'string') {
+        if (row && typeof row.slug === 'string' && row.visibility !== 'hide') {
           const efforts = Array.isArray(row.supported_reasoning_levels)
             ? row.supported_reasoning_levels.map(x => x.effort || x).filter(e => typeof e === 'string')
             : ['low', 'medium', 'high'];
@@ -394,12 +395,12 @@ export function importDiscoveredRoutes(config) {
   let addedRoutes = 0;
   let addedModels = 0;
   for (const cli of discovered) {
-    let route = cloned.routes.find(r => r.adapter === cli.adapter && !r.api);
-    if (!route) {
+    let targetRoutes = cloned.routes.filter(r => r.adapter === cli.adapter && !r.api);
+    if (!targetRoutes.length) {
       let id = `${cli.adapter}-local`;
       let suffix = 2;
       while (cloned.routes.some(r => r.id === id)) id = `${cli.adapter}-local-${suffix++}`;
-      route = {
+      const created = {
         id,
         adapter: cli.adapter,
         executable: cli.executable,
@@ -410,18 +411,21 @@ export function importDiscoveredRoutes(config) {
         minRemainingPercent: 0,
         models: [],
       };
-      cloned.routes.push(route);
+      cloned.routes.push(created);
+      targetRoutes = [created];
       addedRoutes++;
     }
-    for (const model of cli.discoveredModels || []) {
-      if (cli.adapter === 'claude' && ['opus', 'sonnet', 'haiku'].includes(model.id) && route.models.some(existing => existing.id.startsWith(`claude-${model.id}-`))) continue;
-      if (!modelFiltered(cloned.modelFilters, route.id, model.id) && !route.models.some(existing => existing.id === model.id) && route.models.length < 100) {
-        const { free, ...cleanModel } = model;
-        route.models.push({ ...cleanModel, ...(free === true ? { billing: 'free' } : {}) });
-        addedModels++;
+    for (const route of targetRoutes) {
+      for (const model of cli.discoveredModels || []) {
+        if (cli.adapter === 'claude' && ['opus', 'sonnet', 'haiku'].includes(model.id) && route.models.some(existing => existing.id.startsWith(`claude-${model.id}-`))) continue;
+        if (!route.models.some(existing => existing.id === model.id) && route.models.length < 100) {
+          const { free, ...cleanModel } = model;
+          route.models.push({ ...cleanModel, ...(free === true ? { billing: 'free' } : {}) });
+          addedModels++;
+        }
       }
+      if (['lmstudio', 'ollama'].includes(cli.adapter)) route.models = route.models.filter(model => model.id !== 'default' || model.memberships?.length || ['high', 'medium', 'low'].includes(model.group));
     }
-    if (['lmstudio', 'ollama'].includes(cli.adapter)) route.models = route.models.filter(model => model.id !== 'default' || model.memberships?.length || ['high', 'medium', 'low'].includes(model.group));
   }
   return { config: cloned, addedRoutes, addedModels, discoveredCount: discovered.length };
 }
@@ -955,13 +959,24 @@ export async function claudeCatalog(route, cwd, python, directory = dataDirector
   return { connection: route.id, models: models.slice(0, 100), nextCursor: null };
 }
 
+export function migrateFilterAliases(filters, routeId, catalog) {
+  for (const item of catalog?.models || []) {
+    if (!item.variants) continue;
+    for (const rule of filters || []) {
+      if (rule.match === 'model' && (!rule.routeId || rule.routeId === routeId) && item.aliases?.includes(rule.value)) {
+        rule.value = item.id;
+      }
+    }
+  }
+}
+
 export function mergeCatalogModels(route, catalog, filters = []) {
   const staged = structuredClone(route);
-  const nextFilters=structuredClone(filters);
-  for(const item of catalog.models) if(item.variants) for(const rule of nextFilters) if(rule.match==='model' && (!rule.routeId || rule.routeId===route.id) && item.aliases?.includes(rule.value)) rule.value=item.id;
+  const nextFilters = structuredClone(filters);
+  migrateFilterAliases(nextFilters, route.id, catalog);
   const added = mergeCatalogModelsInto(staged, catalog, nextFilters);
   route.models = staged.models;
-  filters.splice(0,filters.length,...nextFilters);
+  filters.splice(0, filters.length, ...nextFilters);
   return added;
 }
 

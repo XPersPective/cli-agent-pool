@@ -5,7 +5,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { configView, saveConfig, PoolError, dataDirectory } from './config.js';
-import { discover, routeCatalog, importDiscoveredRoutes, loginCommands, mergeCatalogModels, routeCommand, accountLoggedIn, routeAccountEmail, quota } from './adapters.js';
+import { discover, routeCatalog, importDiscoveredRoutes, loginCommands, mergeCatalogModels, migrateFilterAliases, routeCommand, accountLoggedIn, routeAccountEmail, quota } from './adapters.js';
 import { nextAccountRoute, prepareWslProfile, prepareNativeAgyProfile } from './accounts.js';
 import { wslPrefix, wslLoginPath } from './profiles.js';
 import { codexControl } from './codex-control.js';
@@ -116,6 +116,13 @@ export function managementOperation(pool, management, body) {
 export function browserUI(pool, management) {
   let folderPicker = null;
   const pendingAccounts = new Map();
+  const liveCatalogAdapters = new Set(['codex', 'claude', 'agy', 'qoder', 'opencode', 'mimo', 'lmstudio', 'ollama']);
+  const prepareCatalogRoute = async route => {
+    if (route.runtime === 'wsl') await prepareWslProfile(route, pool.config.python, management.directory);
+    else if (route.adapter === 'agy' && route.profile) {
+      try { prepareNativeAgyProfile(route, management.directory); } catch {}
+    }
+  };
   const catalogFor = async route => {
     const cwd = management.directory;
     if (route.adapter === 'codex' && !route.api) {
@@ -314,10 +321,22 @@ export function browserUI(pool, management) {
       if (operation === 'scan_import') {
         const view = configView(management.directory);
         const imported = importDiscoveredRoutes(view.config);
+        const targetRoutes = imported.config.routes.filter(route =>
+          !route.api && (payload.routeId ? route.id === payload.routeId : liveCatalogAdapters.has(route.adapter)),
+        );
         const catalogErrors = [];
-        for (const route of imported.config.routes.filter(route => !route.api && (['claude', 'agy'].includes(route.adapter) || route.id === payload.routeId))) {
-          try { imported.addedModels += mergeCatalogModels(route, await catalogFor(route), imported.config.modelFilters); }
-          catch (error) { catalogErrors.push({ routeId: route.id, message: error instanceof PoolError ? error.message : 'Model sürümleri alınamadı.' }); }
+        const fetched = await Promise.all(targetRoutes.map(async route => {
+          try {
+            await prepareCatalogRoute(route);
+            return { route, catalog: await catalogFor(route), error: null };
+          } catch (error) {
+            return { route, catalog: null, error: error instanceof PoolError ? error.message : 'Model sürümleri alınamadı.' };
+          }
+        }));
+        for (const { route, catalog, error } of fetched) {
+          if (error) { catalogErrors.push({ routeId: route.id, message: error }); continue; }
+          migrateFilterAliases(imported.config.modelFilters, route.id, catalog);
+          imported.addedModels += mergeCatalogModels(route, catalog, []);
         }
         pool.config = saveConfig(management.directory, imported.config, view.revision);
         pool.schedule();
@@ -353,16 +372,16 @@ export function browserUI(pool, management) {
       if (operation === 'catalog' || operation === 'refresh_catalog') {
         const route = pool.config.routes.find(r => r.id === payload.routeId);
         if (!route) throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı.');
-        if (route.runtime === 'wsl' && operation === 'refresh_catalog') await prepareWslProfile(route, pool.config.python, management.directory);
-        else if (route.adapter === 'agy' && route.profile && operation === 'refresh_catalog') {
-          try { prepareNativeAgyProfile(route, management.directory); } catch {}
-        }
+        if (operation === 'refresh_catalog') await prepareCatalogRoute(route);
         const catalog = await catalogFor(route);
         if (operation === 'catalog') return catalog;
         const view = configView(management.directory);
-        mergeCatalogModels(view.config.routes.find(item => item.id === route.id), catalog, view.config.modelFilters);
+        const targetRoute = view.config.routes.find(item => item.id === route.id);
+        migrateFilterAliases(view.config.modelFilters, targetRoute.id, catalog);
+        const addedModels = mergeCatalogModels(targetRoute, catalog, []);
         pool.config = saveConfig(management.directory, view.config, view.revision);
-        return annotateView(configView(management.directory), management.directory);
+        pool.schedule();
+        return { ...annotateView(configView(management.directory), management.directory), addedModels, totalModels: targetRoute.models.length };
       }
       throw new PoolError('INVALID_OPERATION', 'Geçersiz panel işlemi.');
     },

@@ -24,7 +24,7 @@ If connection is refused, run `cli-agent-pool ensure` once to auto-start the dae
 
 - MCP: `pool_help`, `pool_list_pools`, `pool_catalog`, `pool_quota_overview`, `pool_get_quotas`, `pool_select`, `pool_submit`, `pool_get_task`.
 - Submit tasks with `pool_submit` (or `cli-agent-pool run` / `POST /api/tasks` with `Authorization: Bearer <access-token>`): `prompt`, absolute `workspace`, `kind` (`write`+`mode:execute` to edit/check, `read` to review, `text` for reasoning), and a durable `idempotencyKey`. `group` selects a category; `routeId`+`modelId` pins a catalog model.
-- Each CLI account is its own route (`routeId`, `account`, and `email` when authenticated via MCP/CLI/Bearer). Disabled/hidden models stay excluded.
+- Each CLI account is its own route (`routeId`, `account`, and `email` when authenticated via MCP/CLI/Bearer). Disabled, hidden, and settings-filtered models stay excluded.
 
 ~~~sh
 cli-agent-pool ensure
