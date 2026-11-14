@@ -60,10 +60,11 @@ export function serviceHelp(code) {
       locksWorkspace: Boolean(flags?.locksWorkspace),
     };
   }
-  return { entries: { pools: 'pool_list_pools {} -> category summaries; {group:id} -> model page', catalog: 'pool_catalog {} -> sources; {billing,adapter,query} or {view:models} -> model page' },
+  return { entries: { pools: 'pool_list_pools {} -> category summaries; {group:id} -> model page', catalog: 'pool_catalog {} -> sources; {billing,adapter,query} or {view:models} -> model page', quotas: 'pool_quota_overview {} -> cached quota per connection (no CLI call)' },
+    httpApi: 'GET /api, /api/catalog, /api/pools, /api/quotas, /api/model?route=R&model=M, /api/select, /api/help (same port, zero MCP overhead)',
     run: 'pool_submit: prompt,workspace,kind,idempotencyKey; group optional; routeId/modelId optional; mode execute for implementation',
     result: 'pool_get_task {taskId}; compact by default; keep the returned ID',
-    errors: 'pool_help {code}; pool_get_quotas {routeId} for live status',
+    errors: 'pool_help {code}; pool_get_quotas {routeId} for live CLI check',
     pagination: 'limit <= 40 (default 12); nextOffset -> offset',
     permissions: 'Caller chooses catalog/category/model. Disabled/hidden entries and native CLI checks still apply.' };
 }

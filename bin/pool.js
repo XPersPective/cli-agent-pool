@@ -13,7 +13,7 @@ import { prepareWslProfile, prepareNativeAgyProfile } from '../src/accounts.js';
 import { stdioBridge } from '../src/stdio.js';
 import { rpcRequest } from '../src/rpc.js';
 import { version } from '../src/version.js';
-import { ensureInitialized, ensureDaemon, managementRequest, openDashboardWindow, withMcpClient, callPoolTool, runTaskFromCli, installDesktopAndSkills } from '../src/daemon.js';
+import { ensureInitialized, ensureDaemon, managementRequest, openDashboardWindow, withMcpClient, apiRequest, callPoolTool, runTaskFromCli, installDesktopAndSkills } from '../src/daemon.js';
 import { waitForTask } from '../src/task-protocol.js';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -70,8 +70,11 @@ export async function main(args = process.argv.slice(2)) {
       '  install                 Set up local pool, scan CLIs, create Desktop shortcut & deploy skill',
       '  open                    Auto-start background service if needed and open desktop app window',
       '  ensure                  Ensure background pool service is running',
-      '  status                  Show active connections, models and policy (auto-starts service)',
+      '  api                     Show local HTTP /api map and base URL (auto-starts service)',
+      '  status                  Show active connections, quotas, pools and catalog (auto-starts service)',
       '  pools                   Categories; --group <id> reads one category model page',
+      '  quotas                  Cached connection quotas; --route <id> [--live] queries one route',
+      '  model                   Single model details and cached quota (--route <id> --model <id>)',
       '  help-code               Recovery guidance (--code AUTH_REQUIRED)',
       '  catalog                 Catalog sources or model page (--billing free --query name --view models)',
       '  rpc                     Call one agent MCP tool using a JSON request on stdin (auto-starts service)',
@@ -113,13 +116,52 @@ export async function main(args = process.argv.slice(2)) {
     print(await ensureDaemon(directory, config));
     return;
   }
+  const apiOrMcp = async (routePath, mcpTool, mcpArgs) => {
+    try { return await apiRequest(directory, routePath); }
+    catch (error) {
+      if (error instanceof PoolError && error.code === 'NOT_FOUND' && mcpTool) {
+        return withMcpClient(directory, client => callPoolTool(client, mcpTool, mcpArgs));
+      }
+      throw error;
+    }
+  };
+  if (command === 'api') {
+    print(await apiRequest(directory, '/api'));
+    return;
+  }
   if (command === 'status') {
-    const out = await withMcpClient(directory, async client => ({
-      service: await callPoolTool(client, 'pool_help'),
-      catalog: await callPoolTool(client, 'pool_catalog'),
-      pools: await callPoolTool(client, 'pool_list_pools'),
-    }));
-    print(out);
+    try {
+      const [service, catalog, pools, quotas] = await Promise.all([
+        apiRequest(directory, '/api/help'),
+        apiRequest(directory, '/api/catalog'),
+        apiRequest(directory, '/api/pools'),
+        apiRequest(directory, '/api/quotas'),
+      ]);
+      print({ service, catalog, pools, quotas });
+    } catch (error) {
+      if (!(error instanceof PoolError) || error.code !== 'NOT_FOUND') throw error;
+      print(await withMcpClient(directory, async client => ({
+        service: await callPoolTool(client, 'pool_help'),
+        catalog: await callPoolTool(client, 'pool_catalog'),
+        pools: await callPoolTool(client, 'pool_list_pools'),
+      })));
+    }
+    return;
+  }
+  if (command === 'quotas') {
+    const { flags } = parseFlags(rest);
+    const routePart = flags.route ? `/${encodeURIComponent(flags.route)}` : '';
+    const livePart = flags.live ? '?live=1' : '';
+    if (flags.live && !flags.route) throw new PoolError('INVALID_REQUEST', '--live requires --route <routeId>.');
+    print(await apiOrMcp(`/api/quotas${routePart}${livePart}`, flags.live ? 'pool_get_quotas' : null, flags.live ? { routeId: flags.route } : {}));
+    return;
+  }
+  if (command === 'model') {
+    const { flags } = parseFlags(rest);
+    const query = new URLSearchParams();
+    if (flags.route) query.set('route', flags.route);
+    if (flags.model) query.set('model', flags.model);
+    print(await apiRequest(directory, `/api/model?${query.toString()}`));
     return;
   }
   if (command === 'rpc') {
@@ -129,7 +171,15 @@ export async function main(args = process.argv.slice(2)) {
   }
   if (command === 'catalog' || command === 'pools' || command === 'help-code') {
     const { flags } = parseFlags(rest);
-    print(await withMcpClient(directory, client => callPoolTool(client, command === 'pools' ? 'pool_list_pools' : command === 'help-code' ? 'pool_help' : 'pool_catalog', {
+    const query = new URLSearchParams();
+    for (const [flag, key] of [['code', 'code'], ['view', 'view'], ['billing', 'billing'], ['adapter', 'adapter'], ['kind', 'kind'], ['route', 'routeId'], ['query', 'query'], ['limit', 'limit'], ['offset', 'offset']]) {
+      if (flags[flag] !== undefined && flags[flag] !== true) query.set(key, String(flags[flag]));
+    }
+    const base = command === 'pools'
+      ? `/api/pools${flags.group ? `/${encodeURIComponent(flags.group)}` : ''}`
+      : command === 'help-code' ? '/api/help' : '/api/catalog';
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    const mcpArgs = {
       ...(flags.group && command === 'pools' ? { group: flags.group } : {}),
       ...(flags.code ? { code: flags.code } : {}),
       ...(flags.view ? { view: flags.view } : {}),
@@ -140,20 +190,25 @@ export async function main(args = process.argv.slice(2)) {
       ...(flags.query ? { query: flags.query } : {}),
       ...(flags.limit ? { limit: Number(flags.limit) } : {}),
       ...(flags.offset ? { offset: Number(flags.offset) } : {}),
-    })));
+    };
+    print(await apiOrMcp(`${base}${suffix}`, command === 'pools' ? 'pool_list_pools' : command === 'help-code' ? 'pool_help' : 'pool_catalog', mcpArgs));
     return;
   }
   if (command === 'select') {
     const { flags } = parseFlags(rest);
-    const out = await withMcpClient(directory, client => callPoolTool(client, 'pool_select', {
-      kind: flags.kind || (flags.mode === 'execute' ? 'write' : flags.mode === 'response' ? 'text' : 'read'),
+    const kind = flags.kind || (flags.mode === 'execute' ? 'write' : flags.mode === 'response' ? 'text' : 'read');
+    const query = new URLSearchParams({ kind });
+    for (const [flag, key] of [['mode', 'mode'], ['route', 'routeId'], ['model', 'modelId'], ['group', 'group'], ['effort', 'effort']]) {
+      if (flags[flag] !== undefined && flags[flag] !== true) query.set(key, String(flags[flag]));
+    }
+    print(await apiOrMcp(`/api/select?${query.toString()}`, 'pool_select', {
+      kind,
       ...(flags.mode ? { mode: flags.mode } : {}),
       ...(flags.route ? { routeId: flags.route } : {}),
       ...(flags.model ? { modelId: flags.model } : {}),
       ...(flags.group ? { group: flags.group } : {}),
       ...(flags.effort ? { effort: flags.effort } : {}),
     }));
-    print(out);
     return;
   }
   if (command === 'run') {

@@ -6,7 +6,10 @@ mode, category access permission or agent/owner selection switch. Category CRUD
 and model membership/default effort are edited in the owner UI. Agents follow
 their caller's instructions when choosing an entrypoint/model/category.
 
-The service starts automatically through CLI, stdio MCP or RPC. RPC accepts one
+The service starts automatically through CLI, stdio MCP or RPC. Fast read-only HTTP
+queries use `http://127.0.0.1:<port>/api/{catalog,pools,quotas,model,select,help,capabilities,connections}`;
+task endpoints (`/api/tasks`, `/api/tools/*`) require `Authorization: Bearer <access-token>`.
+RPC accepts one
 { "tool": "pool_catalog", "arguments": { "query": "flash" } } on stdin. Prompts
 can use pool_submit over RPC without entering command arguments. mcp-config prints
 credential-free stdio settings. Runtime state is in the installed runtime locator,

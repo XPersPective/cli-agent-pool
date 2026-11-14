@@ -109,8 +109,39 @@ export async function openDashboardWindow(url) {
   return { launchRequested:true, mode:windows?'app-window':'default-browser' };
 }
 
+export async function apiRequest(directory, routePath, { method = 'GET', body } = {}) {
+  const config = ensureInitialized(directory, !existsSync(path.join(directory, 'config.json')));
+  const send = () => {
+    const token = readFileSync(path.join(directory, 'access-token'), 'utf8').trim();
+    return fetch(`http://127.0.0.1:${config.port}${routePath}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...taskHeader(),
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+  };
+  let response;
+  try {
+    response = await send();
+  } catch {
+    await ensureDaemon(directory, config);
+    response = await send();
+  }
+  if (response.status === 401) {
+    throw new PoolError('DAEMON_IDENTITY_CONFLICT', 'Bu porttaki servis bu kurulumun veri diziniyle eşleşmiyor. Açık başka havuz örneğini kontrol edin; çalışan servis otomatik kapatılmadı.');
+  }
+  const parsed = await response.json();
+  if (!response.ok) {
+    throw new PoolError(parsed?.error?.code || 'TOOL_FAILED', parsed?.error?.message || `Havuz isteği başarısız (${response.status}).`);
+  }
+  return parsed;
+}
+
 export async function withMcpClient(directory, callback) {
-  const config = ensureInitialized(directory);
+  const config = ensureInitialized(directory, !existsSync(path.join(directory, 'config.json')));
   await ensureDaemon(directory, config);
   const token = readFileSync(path.join(directory, 'access-token'), 'utf8').trim();
   const client = new Client({ name: 'cli-agent-pool-cli', version });

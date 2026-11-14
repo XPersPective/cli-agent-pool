@@ -24,7 +24,10 @@ cli-agent-pool catalog --query flash --kind write --limit 8
 ```
 
 İkinci komut yalnız model kimliği bilinmiyorsa gerekir. MCP'de aynı akış
-`pool_submit` → `pool_get_task(compact:true)`; kısa keşif aracı `pool_catalog`.
+`pool_submit` → `pool_get_task(compact:true)`; kısa keşif araçları `pool_catalog` ve `pool_quota_overview`.
+Ajanlar MCP handshake yükü olmadan doğrudan yerel HTTP API'yi (`http://127.0.0.1:43127/api`) de sorgulayabilir:
+`GET /api/catalog`, `GET /api/pools`, `GET /api/quotas`, `GET /api/model?route=R&model=M`, `GET /api/select`, `GET /api/help`.
+CLI'da `cli-agent-pool quotas`, `cli-agent-pool model`, `cli-agent-pool api` komutları aynı hızlı uç noktaları kullanır.
 Seçim, kota kontrolü ve native araç kapsamı havuz tarafından uygulanır.
 1.9.0 Qoder CLI native giriş, katalog, text/read/write ve execute desteği ekler.
 Ücretsiz/hesap kredili modeller yalnız hesabın gerçek erişimi ve native billing

@@ -11,6 +11,27 @@ export const catalogSchema = z.object({
   query: z.string().trim().max(100).optional(), ...page,
 }).strict();
 export const categoryQuerySchema = z.object({ group: z.string().min(1).max(64).optional(), kind, ...page }).strict();
+export const quotaOverviewSchema = z.object({ routeId: z.string().max(100).optional() }).strict();
+
+// Cached per-connection status for quick agent checks; never invokes a CLI.
+export function quotaOverview(pool, input = {}) {
+  const request = quotaOverviewSchema.parse(input);
+  const routes = pool.config.routes.filter(r => r.enabled && (!request.routeId || r.id === request.routeId));
+  if (request.routeId && !routes.length) throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı veya kapalı.');
+  const models = pool.catalogModels().filter(m => m.enabled);
+  const connections = routes.map(route => {
+    const q = pool.store.quota(route.id);
+    const windows = (q?.windows || []).filter(w => Number.isFinite(w.remainingPercent));
+    const tightest = [...windows].sort((a, b) => a.remainingPercent - b.remainingPercent)[0];
+    return { routeId: route.id, adapter: route.adapter, billing: route.billing,
+      ...(route.profile ? { account: route.profile } : {}), ...(q?.email ? { email: q.email } : {}),
+      models: models.filter(m => m.routeId === route.id).length, status: q?.status || 'unknown',
+      ...(tightest ? { remainingPercent: tightest.remainingPercent, resetsAt: tightest.resetsAt ?? null } : {}),
+      ...(q ? { observedAt: q.observedAt, stale: Date.now() - Date.parse(q.observedAt) >= 60000 } : {}),
+      ...(request.routeId ? { windows: windows.map(w => ({ name: w.name, remainingPercent: w.remainingPercent, resetsAt: w.resetsAt ?? null, ...(w.models?.length ? { models: w.models } : {}) })) } : {}) };
+  });
+  return { total: connections.length, connections, live: 'pool_get_quotas {routeId} or GET /api/quotas/<routeId>?live=1' };
+}
 
 function quotaSummary(pool, model) {
   const q = pool.store.quota(model.routeId);

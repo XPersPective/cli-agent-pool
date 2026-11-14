@@ -3,7 +3,7 @@ import { timingSafeEqual, createHash } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
-import { compactCatalog, catalogSchema, categoryQuerySchema, compactModel } from './catalog.js';
+import { compactCatalog, catalogSchema, categoryQuerySchema, compactModel, quotaOverview, quotaOverviewSchema } from './catalog.js';
 import { PoolError, configView } from './config.js';
 import { routeAccountEmail } from './adapters.js';
 import { browserUI, managementOperation } from './web.js';
@@ -13,30 +13,28 @@ import { compactTask } from './task-protocol.js';
 import { serviceHelp } from './service-help.js';
 import { preflightSchema } from './director.js';
 import { directorFeatures } from './lifecycle.js';
+import { handleApi } from './http-api.js';
 
 const tokenHash = value => createHash('sha256').update(value).digest('hex');
 
-export function mcpServer(pool, caller = {}) {
-  const server = new McpServer({ name: 'cli-agent-pool', version });
+export function errorEnvelope(error) {
+  const known = error instanceof PoolError;
+  const invalid = error instanceof z.ZodError;
+  const invalidDetail = invalid ? error.issues.slice(0, 4).map(issue => issue.path.join('.') || 'input').join(', ') : '';
+  const rawMessage = known ? error.message : invalid ? `İstek alanları geçersiz${invalidDetail ? ` (${invalidDetail})` : ''}.` : 'İşlem tamamlanamadı.';
+  const code = known ? error.code : invalid ? 'INVALID_REQUEST' : 'INTERNAL_ERROR';
+  return { error: { code, message: rawMessage.slice(0, 1200), help: { tool: 'pool_help', arguments: { code } } } };
+}
+
+// One tool table drives MCP, the stdin RPC bridge and the plain HTTP /api surface.
+export function poolTools(pool, caller = {}) {
+  const tools = new Map();
   const parent = () => caller.taskToken ? pool.taskTokens.get(tokenHash(caller.taskToken)) : null;
   const directing = () => parent()?.director && !parent()?.preflight;
   const owner = () => {
     if (caller.taskToken || caller.worker) throw new PoolError('OWNER_ONLY', 'This operation requires an owner session outside a Pool task.');
   };
-  const register = (name, description, inputSchema, callback, readOnly = true) => server.registerTool(name, {
-    description, inputSchema, annotations: { readOnlyHint: readOnly, destructiveHint: !readOnly, idempotentHint: readOnly, openWorldHint: !readOnly },
-  }, async input => {
-    try {
-      const value = await callback(input);
-      return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: { data: value } };
-    } catch (error) {
-      const known = error instanceof PoolError;
-      const invalid = error instanceof z.ZodError;
-      const invalidDetail = invalid ? error.issues.slice(0, 4).map(issue => issue.path.join('.') || 'input').join(', ') : '';
-      const rawMessage = known ? error.message : invalid ? `İstek alanları geçersiz${invalidDetail ? ` (${invalidDetail})` : ''}.` : 'İşlem tamamlanamadı.';
-      return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: { code: known ? error.code : invalid ? 'INVALID_REQUEST' : 'INTERNAL_ERROR', message: rawMessage.slice(0, 1200), help: {tool:'pool_help',arguments:{code:known ? error.code : invalid ? 'INVALID_REQUEST' : 'INTERNAL_ERROR'}} } }) }] };
-    }
-  });
+  const register = (name, description, inputSchema, callback, readOnly = true) => tools.set(name, { name, description, inputSchema, callback, readOnly });
   register('pool_list_connections', 'Enabled connections only; each account is its own connection. Prefer pool_catalog for model discovery.', {}, () => pool.config.routes.filter(r => r.enabled).map(route => {
     const email = pool.store.quota(route.id)?.email || routeAccountEmail(route, pool.directory);
     return { id: route.id, adapter: route.adapter, billing: route.billing, account: route.profile || 'default', ...(email ? { email } : {}), ...(route.runtime === 'wsl' ? { runtime: route.runtime } : {}) };
@@ -53,6 +51,7 @@ export function mcpServer(pool, caller = {}) {
       task = await pool.submitDirector(input);
     } else task = await pool.submitLive(input, false, { taskToken: caller.taskToken }); return compact ? compactTask(task) : task; }, false);
   register('pool_catalog', 'Sources only by default; billing/adapter/query filters return short model pages. No category required; no CLI discovery.', catalogSchema.shape, input => compactCatalog(pool, input));
+  register('pool_quota_overview', 'Cached quota/status for every enabled connection (or one routeId); no CLI calls, no tokens.', quotaOverviewSchema.shape, input => quotaOverview(pool, input));
   register('pool_get_task', 'Read task state and result. compact: true omits prompt/events and bounds the report to reduce tokens. Queued is not failure; inspect queueReason/blockedBy.', { taskId: z.string().uuid(), after: z.number().int().min(0).default(0), compact: z.boolean().default(true) }, ({ taskId, after, compact }) => compact ? compactTask(pool.get(taskId, after)) : pool.get(taskId, after));
   register('pool_list_tasks', 'Read paginated local task history.', { limit: z.number().int().min(1).max(100).default(50), offset: z.number().int().min(0).max(1_000_000).default(0) }, ({ limit, offset }) => pool.list(limit, offset));
   register('pool_cancel_task', 'Request cancellation and wait for subsequent task state to confirm it.', { taskId: z.string().uuid() }, ({ taskId }) => pool.cancel(taskId), false);
@@ -66,6 +65,28 @@ export function mcpServer(pool, caller = {}) {
   }, false);
   register('pool_resolve_task', 'Owner: release an inspected stopped review lock without reverting files.', { taskId: z.string().uuid(), reviewed: z.literal(true), note: z.string().trim().min(1).max(600) }, input => { owner(); return pool.resolveInspected(input); }, false);
   register('pool_get_quotas', 'Query vendor quota through the installed CLI. Unsupported quotas remain unknown.', { routeId: z.string() }, ({ routeId }) => pool.getQuota(routeId));
+  return tools;
+}
+
+// Validates like the MCP SDK does, then runs the shared callback.
+export async function invokeTool(tools, name, input = {}) {
+  const tool = tools.get(name);
+  if (!tool) throw new PoolError('UNKNOWN_TOOL', 'Bilinmeyen araç. GET /api veya pool_help {} araç listesini verir.');
+  return tool.callback(z.object(tool.inputSchema).parse(input ?? {}));
+}
+
+export function mcpServer(pool, caller = {}) {
+  const server = new McpServer({ name: 'cli-agent-pool', version });
+  for (const { name, description, inputSchema, callback, readOnly } of poolTools(pool, caller).values()) server.registerTool(name, {
+    description, inputSchema, annotations: { readOnlyHint: readOnly, destructiveHint: !readOnly, idempotentHint: readOnly, openWorldHint: !readOnly },
+  }, async input => {
+    try {
+      const value = await callback(input);
+      return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: { data: value } };
+    } catch (error) {
+      return { isError: true, content: [{ type: 'text', text: JSON.stringify(errorEnvelope(error)) }] };
+    }
+  });
   return server;
 }
 
@@ -97,6 +118,38 @@ export function createServer(pool, token, port = pool.config.port, management) {
       return res.end();
     }
     const authorization = req.headers.authorization || '';
+    const bearerMatches = expectedToken => Buffer.byteLength(authorization) === Buffer.byteLength(`Bearer ${expectedToken}`) && timingSafeEqual(Buffer.from(authorization), Buffer.from(`Bearer ${expectedToken}`));
+    const pathname = (req.url || '/').split('?')[0];
+    if (!browser && (pathname === '/api' || pathname.startsWith('/api/'))) {
+      if (authorization && !bearerMatches(token)) return fail(401, 'UNAUTHORIZED', 'Bearer anahtarı eşleşmiyor.');
+      if (!['GET', 'POST'].includes(req.method)) return fail(405, 'METHOD_NOT_ALLOWED', 'GET veya POST kullanın.');
+      if (req.method === 'POST' && !/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) return fail(415, 'CONTENT_TYPE', 'JSON isteği gerekli.');
+      if (inflight >= 128) return fail(429, 'BUSY', 'Çok fazla eşzamanlı istek var. Biraz sonra deneyin.');
+      inflight++;
+      res.once('close', () => { inflight--; });
+      let url;
+      try { url = new URL(req.url, `http://127.0.0.1:${actualPort}`); } catch { return fail(400, 'INVALID_URL', 'Geçersiz adres.'); }
+      const readBody = async () => {
+        let size = 0; const parts = [];
+        for await (const chunk of req) { size += chunk.length; if (size > 262_144) throw new PoolError('REQUEST_TOO_LARGE', 'İstek boyutu sınırı aşıldı.'); parts.push(chunk); }
+        const text = Buffer.concat(parts).toString('utf8').trim();
+        if (!text) return {};
+        try { return JSON.parse(text); } catch { throw new PoolError('INVALID_JSON', 'Geçerli JSON gönderin.'); }
+      };
+      const taskHeader = req.headers['x-pool-task'];
+      const tools = poolTools(pool, { worker: req.headers['x-pool-worker'] === '1', taskToken: typeof taskHeader === 'string' && /^[a-f0-9]{64}$/.test(taskHeader) ? taskHeader : null });
+      let status, body;
+      try { ({ status, body } = await handleApi({ pool, tools, invoke: invokeTool, method: req.method, url, authorized: Boolean(authorization), readBody, port: actualPort })); }
+      catch (error) {
+        const envelope = errorEnvelope(error);
+        const code = envelope.error.code;
+        status = code === 'INVALID_REQUEST' || code === 'INVALID_JSON' ? 400 : code === 'REQUEST_TOO_LARGE' ? 413 : /NOT_FOUND|UNKNOWN_TOOL/.test(code) ? 404 : code === 'OWNER_ONLY' ? 403 : code === 'INTERNAL_ERROR' ? 500 : 409;
+        body = envelope;
+      }
+      if (res.writableEnded) return;
+      res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+      return res.end(url.searchParams.get('pretty') === '1' ? JSON.stringify(body, null, 2) : JSON.stringify(body));
+    }
     const manage = req.url === '/manage' && management;
     const expected = `Bearer ${manage ? management.token : token}`;
     if (!browser && (Buffer.byteLength(authorization) !== Buffer.byteLength(expected) || !timingSafeEqual(Buffer.from(authorization), Buffer.from(expected)))) return fail(401, 'UNAUTHORIZED', 'Yerel MCP erişim anahtarı gerekli.');

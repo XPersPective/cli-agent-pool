@@ -152,11 +152,16 @@ export function dataDirectory() {
 export function initialize(directory) {
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   if (lstatSync(directory).isSymbolicLink()) throw new PoolError('UNSAFE_DATA_DIRECTORY', 'Veri klasörü bağlantı olamaz.');
-  if (process.platform === 'win32') {
+  // Hardening re-propagates inherited ACLs through every runtime file (profiles can hold
+  // tens of thousands), so it runs once per directory; the marker lives inside the
+  // already-restricted directory. Deleting it forces the next start to re-apply.
+  const aclMarker = path.join(directory, '.acl-hardened');
+  if (process.platform === 'win32' && !existsSync(aclMarker)) {
     const sid = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value'], { encoding: 'utf8', windowsHide: true });
     if (sid.status !== 0 || !/^S-1-[\d-]+$/.test(sid.stdout.trim())) throw new PoolError('ACL_FAILED', 'Yerel veri klasörü izinleri doğrulanamadı.');
     const acl = spawnSync('icacls.exe', [directory, '/inheritance:r', '/grant:r', `*${sid.stdout.trim()}:(OI)(CI)F`], { windowsHide: true, stdio: 'ignore' });
     if (acl.status !== 0) throw new PoolError('ACL_FAILED', 'Yerel veri klasörü izinleri ayarlanamadı.');
+    writeFileSync(aclMarker, `${sid.stdout.trim()}\n`, { mode: 0o600 });
   }
   const configPath = path.join(directory, 'config.json');
   if (!existsSync(configPath)) writeFileSync(configPath, JSON.stringify({ workspaceRoots: [], routes: [] }, null, 2) + '\n', { mode: 0o600, flag: 'wx' });

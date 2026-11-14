@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>CLI Agent Pool</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/style.css">
@@ -11,7 +12,7 @@
 <body>
   <a class="skip" href="#pool-panel">Modellere geç</a>
   <header class="topbar">
-    <div class="brand"><span class="mark" aria-hidden="true">P</span><div><h1>CLI Agent Pool</h1><span id="app-version" class="hint"></span></div></div>
+    <div class="brand"><span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="2.6"/><circle cx="17" cy="7" r="2.6"/><circle cx="12" cy="17" r="2.6"/><path d="M9.2 8.4 11 14.6M14.8 8.4 13 14.6M9.6 7h4.8"/></svg></span><div><h1>CLI Agent Pool</h1><span id="app-version" class="hint"></span></div></div>
     <div class="header-actions">
       <nav class="main-tabs" aria-label="Ana ekranlar"><button id="pool-tab" type="button" aria-current="page">Modeller</button><button id="calls-tab" type="button">Çağrılar</button><button id="open-settings" type="button">Ayarlar</button></nav>
       <span id="connection-state" class="connection-state" role="status" title="Bağlanıyor">Bağlanıyor</span><button id="refresh" class="quiet-icon" type="button" aria-label="Yenile" title="Bağlantıyı ve kotaları yenile">↻</button><button id="discard-settings" class="quiet-icon" type="button" aria-label="Değişiklikleri geri al" title="Değişiklikleri geri al" hidden>↶</button><button id="save-pool" class="quiet-icon" type="button" aria-label="Değişiklikleri kaydet" title="Değişiklikleri kaydet" hidden disabled>✓</button>

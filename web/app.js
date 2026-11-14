@@ -222,7 +222,7 @@ async function refresh(announce = false) {
       info.append(element('strong', `${cli.label || cli.adapter} (${cli.adapter})`));
       const modelCount = cli.discoveredModels?.length || 0;
       info.append(element('small', cli.status === 'installed' ? `Kurulu · ${modelCount} model bulundu · Giriş: ${cli.loginCommand}` : 'Bilgisayarda bulunamadı'));
-      row.append(info, element('span', cli.status === 'installed' ? 'Kurulu' : 'Bulunamadı', 'provider-state'));
+      row.append(info, element('span', cli.status === 'installed' ? 'Kurulu' : 'Bulunamadı', `provider-state badge ${cli.status === 'installed' ? 'ok' : 'subtle'}`));
       providerRows.push(row);
     }
     $('providers').replaceChildren(...providerRows);
@@ -495,12 +495,14 @@ function updateQuotaToggle() {
   $('toggle-quotas').setAttribute('aria-pressed', String(allOpen));
 }
 
+const quotaLevel = remaining => remaining >= 50 ? 'ok' : remaining >= 20 ? 'mid' : 'low';
 function quotaBody(q, modelId = '', error) {
   const cell = element('div', null, 'quota-body');
   const windows = quotaWindows(q, modelId);
   for (const window of windows) {
     const name = ({ five_hour: '5 saat', seven_day: '7 gün', '5h': '5 saat', '7d': '7 gün', weekly: 'Haftalık', monthly: 'Aylık', opus: 'Opus haftalık', primary: 'Kısa dönem', secondary: 'Haftalık' })[window.name] || (window.windowMinutes ? window.windowMinutes >= 1440 ? `${window.windowMinutes / 1440} gün` : `${window.windowMinutes / 60} saat` : window.name);
     const line = element('div', null, 'usage-line');
+    line.dataset.level = quotaLevel(window.remaining);
     const heading = element('div', null, 'quota-heading'); heading.append(element('span', name), element('strong', `%${window.remaining.toFixed(0)} kalan`));
     const bar = document.createElement('progress'); bar.max = 100; bar.value = window.remaining; bar.setAttribute('aria-label', `${name} kalan kota`);
     line.append(heading, bar, element('small', `%${window.used.toFixed(0)} kullanıldı${window.resetsAt ? ` · Yenilenme: ${new Date(typeof window.resetsAt === 'number' && window.resetsAt < 1e12 ? window.resetsAt * 1000 : window.resetsAt).toLocaleString('tr-TR')}` : ''}`)); cell.append(line);
@@ -513,6 +515,7 @@ function quotaBody(q, modelId = '', error) {
 function quotaCell(route, model) {
   const cell = element('div', null, 'quota-cell'); const q = snapshot?.quotas?.[route.id];
   const windows = quotaWindows(q, model.id); const details = element('details', null, 'quota-details'); const key = JSON.stringify([route.id, model.id]); details.dataset.quotaKey = key;
+  details.dataset.level = windows.length ? quotaLevel(Math.min(...windows.map(window => window.remaining))) : 'unknown';
   details.open = quotaStates.has(key) ? quotaStates.get(key) : quotasOpen;
   const summary = element('summary'); summary.append(element('span', 'Kota'), element('strong', windows.length ? `%${Math.min(...windows.map(window => window.remaining)).toFixed(0)} kalan` : 'Bilinmiyor'));
   details.append(summary, quotaBody(q, model.id, quotaErrors[route.id]));
@@ -918,7 +921,8 @@ function renderCalls() {
   for (const [id, entries, empty] of [['active-calls', active, 'Şu anda çalışan çağrı yok.'], ['recent-calls', recent, 'Henüz tamamlanan çağrı yok.']]) {
     $(id).replaceChildren(...(entries.length ? entries.map(task => {
       const row = element('article', null, `call-row${activeStates.has(task.state) ? ' is-active' : ''}`), title = element('div', null, 'task-title');
-      title.append(element('strong', task.modelId), element('span', labels[task.state] || task.state, `badge ${task.state === 'failed' || task.state === 'timed_out' ? 'warn' : task.state === 'succeeded' ? 'ok' : 'subtle'}`));
+      const stateTone = task.state === 'succeeded' ? 'ok' : ['running', 'starting', 'cancelling'].includes(task.state) ? 'info' : task.state === 'needs_review' ? 'warn' : ['failed', 'timed_out'].includes(task.state) ? 'error' : 'subtle';
+      title.append(element('strong', task.modelId), element('span', labels[task.state] || task.state, `badge ${stateTone}`));
       const info = element('div'); info.append(title, element('small', `${taskModeLabel(task)} · ${task.clientLabel || 'Bilinmeyen istemci'} · ${task.routeId} · ${groupLabel(task.group)} · ${effortLabel(task.effort)}`), element('small', new Date(task.created).toLocaleString('tr-TR')));
       const actions = element('div', null, 'actions'), inspect = button('Ayrıntılar', async () => { await openTask(task.id); }); inspect.id = `result-${task.id}`; actions.append(inspect);
       if (['queued', 'starting', 'running'].includes(task.state)) { const cancel = button('Durdur', async () => { await call('cancel', {taskId:task.id}); await refresh(); }); cancel.id = `cancel-${task.id}`; actions.append(cancel); }

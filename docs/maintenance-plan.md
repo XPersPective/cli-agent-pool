@@ -1099,3 +1099,13 @@ also PASS. No live vendor readiness is claimed by this synthetic-executor test.
 - [x] Varsayılan hesap kotası `agy -p /usage --output-format json` ile okunur (haftalık/5 saatlik, yenilenme saati, Gemini 4 Argon); Cloud Code yedek.
 - [x] Doğrulandı: Windows `agy` profil HOME'una, `ANTIGRAVITY_GEMINI_DIR`/`APP_DATA_DIR`/`EXECUTABLE_DATA_DIR`/`CREDENTIAL_SCOPE` ve `AGY_ACCOUNT` değişkenlerine bakmadan Credential Manager'daki tek girişi kullanır.
 - [ ] Ek hesapların kimlik izolasyonu için WSL (dosya tabanlı token) yolu geri kazanılmalı.
+
+## 2.5.0 Hızlı Agent HTTP API, CLI Gecikme Giderimi ve Modern Arayüz
+
+- [x] `src/config.js`: `.acl-hardened` işaretçisi ile Windows `icacls` / `powershell` özyinelemeli ACL sertleştirmesi dizin başına tek sefere indirildi (~59.9s -> ~0.49s CLI başlangıç gecikmesi).
+- [x] `src/daemon.js`: `withMcpClient` mevcut `config.json` varken gereksiz 16-CLI otomatik taramasını atlıyor ve `apiRequest` ile doğrudan HTTP `/api` erişimi sunuyor.
+- [x] `src/http-api.js`, `src/server.js`, `src/catalog.js`, `src/rpc.js`, `bin/pool.js`: Plain JSON HTTP `/api` yüzeyi (`/api`, `/api/health`, `/api/catalog`, `/api/models`, `/api/pools`, `/api/model`, `/api/quotas`, `/api/select`, `/api/help`, Bearer korumalı `/api/tasks` & `/api/tools/*`), `pool_quota_overview` MCP/RPC aracı (19 araç) ve `cli-agent-pool quotas`, `model`, `api` alt komutları eklendi.
+- [x] `skills/cli-agent-pool/SKILL.md`, `skills/cli-agent-pool/references/operations.md`, `docs/agent-api.md`, `README.md`: Repo taraması gerektirmeyen doğrudan `/api` ve hızlı CLI kullanımı belgelendi.
+- [x] `web/index.html`, `web/style.css`, `web/app.js`: `light-dark()` + `@supports` yedekli koyu-öncelikli modern arayüz, yarı saydam üst çubuk, bağlantı/kota durum rozetleri (`quotaLevel`) ve erişilebilirlik iyileştirmeleri uygulandı.
+- [x] Doğrulama (v2.5.0, `npm audit fix --ignore-scripts` sonrası): `npm run check` (JavaScript syntax checks passed), `npm run secrets` (90 dosya temiz), `npm audit --audit-level=moderate` (0 güvenlik açığı), `npm test` (`166/166` geçti, 0 başarısız / atlanan).
+

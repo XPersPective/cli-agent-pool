@@ -1,19 +1,27 @@
 # Kısa ajan haritası
 
-MCP: cli-agent-pool stdio. CLI ve stdin JSON RPC aynı yerel servisi otomatik açar.
-Normal kullanım repository taraması veya politika sorgusu gerektirmez.
+MCP: `cli-agent-pool stdio`. HTTP API (`http://127.0.0.1:43127/api`), CLI ve stdin JSON RPC aynı yerel servisi paylaşır.
+Normal kullanım repository taraması, `src/`/`docs/` okuması veya politika sorgusu gerektirmez.
 
-| Amaç | Çağrı |
-| --- | --- |
-| Harita | pool_help {} |
-| Kategori adları/sayıları | pool_list_pools {} |
-| Bir kategorinin modelleri | pool_list_pools {group:"research"} |
-| Katalog kaynakları | pool_catalog {} |
-| Ücretsiz katalog | pool_catalog {billing:"free"} |
-| Model arama | pool_catalog {query:"flash",kind:"write"} |
-| Katalog model sayfası | pool_catalog {view:"models",limit:12,offset:0} |
-| Canlı kota/giriş | pool_get_quotas {routeId:"qoder-local"} |
-| Hata yardımı | pool_help {code:"AUTH_REQUIRED"} |
+## Hızlı HTTP API (MCP handshake ve ekstra token maliyeti olmadan)
+
+Servis kapalıysa `cli-agent-pool ensure` komutu arka plan servisini otomatik başlatır.
+Salt-okunur keşif uç noktaları `127.0.0.1` üzerinde ek anahtar gerektirmeden çalışır (hesap e-postası gibi kimlik alanları yalnızca Bearer `access-token` ile döndürülür):
+
+| Amaç | HTTP İsteği | MCP Aracı / CLI |
+| --- | --- | --- |
+| Uç nokta haritası | `GET /api` | `cli-agent-pool api` |
+| Servis sağlığı | `GET /api/health` | — |
+| Katalog kaynakları | `GET /api/catalog` | `pool_catalog {}` / `cli-agent-pool catalog` |
+| Filtreli model sayfası | `GET /api/catalog?billing=free&kind=write&q=flash&limit=12` | `cli-agent-pool catalog --billing free --kind write --query flash` |
+| Kategori özetleri | `GET /api/pools` | `pool_list_pools {}` / `cli-agent-pool pools` |
+| Kategori modelleri | `GET /api/pools/research` | `pool_list_pools {group:"research"}` / `cli-agent-pool pools --group research` |
+| Tek model + cached kota | `GET /api/model?route=qoder-local&model=Qwen3.8-Flash` | `cli-agent-pool model --route qoder-local --model Qwen3.8-Flash` |
+| Tüm cached kotalar | `GET /api/quotas` | `pool_quota_overview {}` / `cli-agent-pool quotas` |
+| Canlı kota / giriş | `GET /api/quotas/qoder-local?live=1` | `pool_get_quotas {routeId:"qoder-local"}` / `cli-agent-pool quotas --route qoder-local --live` |
+| Model önerisi | `GET /api/select?kind=write&mode=execute` | `pool_select` / `cli-agent-pool select --mode execute` |
+| Harita / hata yardımı | `GET /api/help?code=AUTH_REQUIRED` | `pool_help {code:"AUTH_REQUIRED"}` / `cli-agent-pool help-code --code AUTH_REQUIRED` |
+| Görev başlat / izle | `POST /api/tasks` · `GET /api/tasks/<id>` (Bearer token) | `pool_submit` · `pool_get_task` / `cli-agent-pool run` |
 
 Sayfalarda nextOffset varsa sonraki sorgunun offset alanına koyun. Varsayılan
 12, en fazla 40 kayıt; boş sorgular bütün modelleri dökmez. Katalog her modeli
