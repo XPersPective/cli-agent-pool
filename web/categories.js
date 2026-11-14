@@ -2,7 +2,7 @@ export const defaultCategories = [
   { id: 'high', name: 'Yüksek' }, { id: 'medium', name: 'Orta' },
   { id: 'low', name: 'Hafif' }, { id: 'free', name: 'Ücretsiz' },
 ];
-export const isCategoryId = value => typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(value) && !['unassigned', 'catalog'].includes(value);
+export const isCategoryId = value => typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(value) && !['unassigned', 'catalog', 'all', '__all__'].includes(value);
 export const categoriesOf = config => config.categories ?? defaultCategories;
 
 // Only category data migrates. Retired selection/authority switches never govern use.

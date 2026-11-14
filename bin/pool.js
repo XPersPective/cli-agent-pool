@@ -70,6 +70,7 @@ export async function main(args = process.argv.slice(2)) {
       '  install                 Set up local pool, scan CLIs, create Desktop shortcut & deploy skill',
       '  open                    Auto-start background service if needed and open desktop app window',
       '  ensure                  Ensure background pool service is running',
+      '  stop                    Safely stop the background pool service (--force to stop during active tasks)',
       '  api                     Show local HTTP /api map and base URL (auto-starts service)',
       '  status                  Show active connections, quotas, pools and catalog (auto-starts service)',
       '  pools                   Categories; --group <id> reads one category model page',
@@ -114,6 +115,17 @@ export async function main(args = process.argv.slice(2)) {
   if (command === 'ensure' || command === 'start') {
     const config = ensureInitialized(directory, true);
     print(await ensureDaemon(directory, config));
+    return;
+  }
+  if (command === 'stop') {
+    const { flags } = parseFlags(rest);
+    const config = ensureInitialized(directory, false);
+    try {
+      print(await managementRequest(directory, config, { operation: 'shutdown', force: Boolean(flags.force) }));
+    } catch (error) {
+      if (error?.status) throw error;
+      print({ stopped: true, alreadyStopped: true });
+    }
     return;
   }
   const apiOrMcp = async (routePath, mcpTool, mcpArgs) => {
@@ -309,7 +321,6 @@ export async function main(args = process.argv.slice(2)) {
   const token = readFileSync(path.join(directory, 'access-token'), 'utf8').trim();
   const store = new Store(path.join(directory, 'pool.sqlite'));
   const pool = new Pool(config, store, { directory });
-  const app = createServer(pool, token, config.port, { directory, token: readFileSync(path.join(directory, 'management-token'), 'utf8').trim() });
   const pidFile = path.join(directory, 'daemon.pid');
   let stopping = false;
   async function stop() {
@@ -321,6 +332,12 @@ export async function main(args = process.argv.slice(2)) {
     await pool.close();
     store.close();
   }
+  const app = createServer(pool, token, config.port, {
+    directory,
+    token: readFileSync(path.join(directory, 'management-token'), 'utf8').trim(),
+    onShutdown: () => stop(),
+    onUpdate: () => installDesktopAndSkills(directory),
+  });
   try {
     const address = await app.listen();
     writeFileSync(pidFile, String(process.pid), 'utf8');

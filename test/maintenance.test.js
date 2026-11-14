@@ -10,6 +10,7 @@ import { antigravityGroupWindows } from '../src/quotas.js';
 import { quotaWindows } from '../web/pool-state.js';
 import { Pool } from '../src/pool.js';
 import { Store } from '../src/store.js';
+import { runProcess } from '../src/process.js';
 
 test('native effort variants migrate atomically and keep the actual CLI ID and prompt', async t=>{
  const root=mkdtempSync(path.join(tmpdir(),'pool-variants-')),file=path.join(root,'agy.cjs');
@@ -93,4 +94,18 @@ test('Kimi provider subscription refusal is not reported as a generic CLI failur
  const root=mkdtempSync(path.join(tmpdir(),'pool-kimi-plan-')),file=path.join(root,'kimi.cjs');t.after(()=>rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:100}));
  writeFileSync(file,"console.error('provider.auth_error: 403 Your current subscription does not have access to Kimi Code right now.');process.exit(1)");
  assert.equal(await execute({id:'kimi',adapter:'kimi',executable:file},{id:'model'},{kind:'text',workspace:root,prompt:'fixture',timeoutSeconds:5},process.platform==='win32'?'python':'python3',()=>{}).done.then(r=>r.error),'SUBSCRIPTION_REQUIRED');
+});
+
+test('runProcess executes supervised children with hidden windows by default and respects explicit windowsHide override', async t => {
+ const root = mkdtempSync(path.join(tmpdir(), 'pool-hide-'));
+ const script = path.join(root, 'echo.mjs');
+ t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+ writeFileSync(script, "console.log('ok-hidden');");
+ const python = process.platform === 'win32' ? 'python' : 'python3';
+ const hiddenRun = await runProcess({ argv: [process.execPath, script], cwd: root, python, timeoutMs: 5000 }).done;
+ assert.equal(hiddenRun.code, 0);
+ assert.equal(hiddenRun.output.trim(), 'ok-hidden');
+ const visibleRun = await runProcess({ argv: [process.execPath, script], cwd: root, python, timeoutMs: 5000, windowsHide: false }).done;
+ assert.equal(visibleRun.code, 0);
+ assert.equal(visibleRun.output.trim(), 'ok-hidden');
 });

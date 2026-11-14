@@ -15,27 +15,209 @@
     <div class="brand"><span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="2.6"/><circle cx="17" cy="7" r="2.6"/><circle cx="12" cy="17" r="2.6"/><path d="M9.2 8.4 11 14.6M14.8 8.4 13 14.6M9.6 7h4.8"/></svg></span><div><h1>CLI Agent Pool</h1><span id="app-version" class="hint"></span></div></div>
     <div class="header-actions">
       <nav class="main-tabs" aria-label="Ana ekranlar"><button id="pool-tab" type="button" aria-current="page">Modeller</button><button id="calls-tab" type="button">Çağrılar</button><button id="open-settings" type="button">Ayarlar</button></nav>
-      <span id="connection-state" class="connection-state" role="status" title="Bağlanıyor">Bağlanıyor</span><button id="refresh" class="quiet-icon" type="button" aria-label="Yenile" title="Bağlantıyı ve kotaları yenile">↻</button><button id="discard-settings" class="quiet-icon" type="button" aria-label="Değişiklikleri geri al" title="Değişiklikleri geri al" hidden>↶</button><button id="save-pool" class="quiet-icon" type="button" aria-label="Değişiklikleri kaydet" title="Değişiklikleri kaydet" hidden disabled>✓</button>
+      <span id="connection-state" class="connection-state" role="status" title="Bağlanıyor">Bağlanıyor</span>
+      <button id="refresh" class="quiet-icon" type="button" aria-label="Yenile" title="Bağlantıyı ve kotaları yenile">↻</button>
+      <button id="update-app" class="topbar-btn" type="button" title="Kurulumu, kısayolları ve skill dağıtımını yenile">Güncelle</button>
+      <button id="safe-exit" class="topbar-btn danger-soft" type="button" title="Arka plan servisini güvenli şekilde kapat ve çık">Güvenli çıkış</button>
+      <button id="discard-settings" class="quiet-icon" type="button" aria-label="Değişiklikleri geri al" title="Değişiklikleri geri al" hidden>↶</button>
+      <button id="save-pool" class="quiet-icon" type="button" aria-label="Değişiklikleri kaydet" title="Değişiklikleri kaydet" hidden disabled>✓</button>
     </div>
   </header>
   <main>
     <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
     <section id="pool-panel" aria-label="Ajan havuzu">
-      <div class="pool-view-tools"><span class="hint">Görünüm</span><select id="quota-filter" aria-label="Kota bilgisine göre filtrele"><option value="all">Tüm kotalar</option><option value="known">Kotası bilinen</option><option value="unknown">Kotası bilinmeyen</option></select><button id="toggle-quotas" type="button" aria-pressed="true">Kotaları gizle</button><button id="open-filters" type="button">Gizlenenler <span id="filter-count">0</span></button></div>
-      <section class="pool-area" id="pool-area" aria-labelledby="toggle-pool"><div class="panel-heading"><button id="toggle-pool" class="panel-toggle" type="button" aria-expanded="true" aria-controls="pool-content"><span class="panel-chevron" aria-hidden="true">▾</span>Havuzlarım</button><select id="member-view" aria-label="Havuz görünümü"><option value="route">Araçlara göre</option><option value="family">Model ailesine göre</option></select><button id="manage-categories" type="button">Kategorileri düzenle</button></div><div id="pool-content">
-      <details id="category-editor" class="settings-section"><summary>Kategoriler</summary><div class="settings-body"><div class="actions"><input id="category-name" maxlength="100" aria-label="Yeni kategori adı" placeholder="Kategori adı"><button id="add-category" type="button">Kategori ekle</button></div><div id="category-list"></div></div></details><div class="pool-toolbar"><div id="group-summary" class="group-summary" aria-label="Havuzlar"></div><div id="pool-batch-bar" class="batch-bar" aria-label="Havuz toplu işlemleri"></div></div>
-      <section class="membership-panel" aria-labelledby="members-heading"><h2 id="members-heading" class="sr-only">Havuz üyeleri</h2><div id="pool-members"></div></section></div></section>
-      <section class="card catalog-panel" id="catalog-area" aria-labelledby="toggle-catalog"><div class="panel-heading"><button id="toggle-catalog" class="panel-toggle" type="button" aria-expanded="true" aria-controls="catalog-content"><span class="panel-chevron" aria-hidden="true">▾</span>Model kataloğu</button><span id="catalog-count" class="hint"></span><div class="catalog-controls"><select id="catalog-view" aria-label="Katalog görünümü"><option value="route">Araçlara göre</option><option value="family">Model ailesine göre</option></select><select id="billing-filter" aria-label="Ücretsiz veya ücretli modelleri filtrele"><option value="all">Tüm ödeme türleri</option><option value="free">Ücretsiz modeller</option><option value="paid">Ücretli API modelleri</option></select><select id="catalog-sort" aria-label="Model sıralaması"><option value="az">A → Z</option><option value="za">Z → A</option></select></div></div><div id="catalog-content"><div class="catalog-search-row"><input id="pool-search" type="search" aria-label="Katalogda model ara" placeholder="Model, sürüm veya e-posta ara…"><div id="catalog-batch-bar" class="batch-bar" aria-label="Katalog toplu işlemleri"></div></div><div id="route-nav" class="route-nav" aria-label="Katalog grupları"></div><div id="catalog-status" class="catalog-status"></div><div id="pool-models" class="catalog-models" tabindex="0" aria-label="Kaydırılabilir model kataloğu"></div></div></section>
+      <div class="pool-view-tools">
+        <span class="hint">Görünüm</span>
+        <select id="quota-filter" aria-label="Kota ve durum filtresi">
+          <option value="all">Tüm durumlar / kotalar</option>
+          <option value="healthy">Hazır (kotası bilinen)</option>
+          <option value="known">Kotası bilinen (tümü)</option>
+          <option value="quota_high">Kotası ≥ %50</option>
+          <option value="quota_low">Kotası &lt; %20</option>
+          <option value="5h_high">5 saatlik kotası ≥ %50</option>
+          <option value="weekly_high">Haftalık kotası ≥ %50</option>
+          <option value="unknown">Kotası okunamıyor</option>
+          <option value="issues">Sorunlular (Giriş / Abonelik / Kota %0)</option>
+          <option value="auth_error">Giriş / Abonelik sorunu olanlar</option>
+          <option value="enabled">Yalnızca etkin modeller</option>
+          <option value="disabled">Devre dışı modeller</option>
+        </select>
+        <button id="toggle-disabled-routes" type="button" aria-pressed="false" title="Devre dışı bırakılan bağlantı ve modelleri listede göster/gizle">Kapalıları da göster</button>
+        <button id="toggle-quotas" type="button" aria-pressed="true">Kotaları gizle</button>
+        <button id="open-filters" type="button">Gizlenenler <span id="filter-count">0</span></button>
+      </div>
+      <section class="pool-area" id="pool-area" aria-labelledby="toggle-pool">
+        <div class="panel-heading">
+          <button id="toggle-pool" class="panel-toggle" type="button" aria-expanded="true" aria-controls="pool-content"><span class="panel-chevron" aria-hidden="true">▾</span>Havuzlarım</button>
+          <span id="pool-member-count" class="hint"></span>
+          <div class="catalog-controls pool-controls">
+            <select id="member-view" aria-label="Havuz görünümü">
+              <option value="all">Tümünü bir arada</option>
+              <option value="route">Araçlara göre</option>
+              <option value="family">Model ailesine göre</option>
+              <option value="email">E-postaya göre</option>
+            </select>
+            <select id="member-billing-filter" aria-label="Havuz ödeme türü filtresi">
+              <option value="all">Tüm ödeme türleri</option>
+              <option value="subscription">Abonelik</option>
+              <option value="token_plan">Token planı</option>
+              <option value="free">Ücretsiz / Kredi</option>
+              <option value="paid">Ücretli API</option>
+            </select>
+            <select id="member-sort" aria-label="Havuz sıralaması">
+              <option value="az">A → Z</option>
+              <option value="za">Z → A</option>
+              <option value="manual">Özel sıra (Elle ↑/↓)</option>
+              <option value="family">Model ailesi (Argon…)</option>
+              <option value="provider">Sağlayıcı yan yana</option>
+              <option value="email">E-posta yan yana</option>
+              <option value="quota_desc">Kota % (Yüksek → Düşük)</option>
+              <option value="quota_asc">Kota % (Düşük → Yüksek)</option>
+              <option value="quota_5h">5 saatlik kota %</option>
+              <option value="quota_weekly">Haftalık kota %</option>
+              <option value="status">Sorunlular önce</option>
+            </select>
+            <button id="manage-categories" type="button">Kategorileri düzenle</button>
+          </div>
+        </div>
+        <div id="pool-content">
+          <details id="category-editor" class="settings-section">
+            <summary>Kategori yönetimi · Ekle, yeniden adlandır ve sırala</summary>
+            <div class="settings-body">
+              <div class="category-create-row">
+                <input id="category-name" maxlength="100" aria-label="Yeni kategori adı" placeholder="Kategori adı (ör. Argon Hızlı, Kodlama)">
+                <button id="add-category" type="button" class="primary">Kategori ekle</button>
+              </div>
+              <div id="category-presets" class="category-presets" aria-label="Hazır kategori önerileri"></div>
+              <div id="category-list" class="category-grid"></div>
+            </div>
+          </details>
+          <div class="pool-toolbar">
+            <div id="group-summary" class="group-summary" aria-label="Havuzlar"></div>
+          </div>
+          <div class="catalog-search-row pool-search-row">
+            <input id="pool-member-search" type="search" aria-label="Havuzda model ara" placeholder="Havuzda model, sağlayıcı veya e-posta ara…">
+            <div id="pool-batch-bar" class="batch-bar" aria-label="Havuz toplu işlemleri"></div>
+          </div>
+          <div id="pool-sub-nav" class="route-nav" aria-label="Havuz alt grupları"></div>
+          <section class="membership-panel" aria-labelledby="members-heading">
+            <h2 id="members-heading" class="sr-only">Havuz üyeleri</h2>
+            <div id="pool-members"></div>
+          </section>
+        </div>
+      </section>
+      <section class="card catalog-panel" id="catalog-area" aria-labelledby="toggle-catalog">
+        <div class="panel-heading">
+          <button id="toggle-catalog" class="panel-toggle" type="button" aria-expanded="true" aria-controls="catalog-content"><span class="panel-chevron" aria-hidden="true">▾</span>Model kataloğu</button>
+          <span id="catalog-count" class="hint"></span>
+          <div class="catalog-controls">
+            <select id="catalog-view" aria-label="Katalog görünümü">
+              <option value="route">Araçlara göre</option>
+              <option value="family">Model ailesine göre</option>
+              <option value="email">E-postaya göre</option>
+              <option value="all">Tümünü bir arada</option>
+            </select>
+            <select id="billing-filter" aria-label="Ücretsiz veya ücretli modelleri filtrele">
+              <option value="all">Tüm ödeme türleri</option>
+              <option value="subscription">Abonelik</option>
+              <option value="token_plan">Token planı</option>
+              <option value="free">Ücretsiz modeller</option>
+              <option value="paid">Ücretli API modelleri</option>
+            </select>
+            <select id="catalog-sort" aria-label="Model sıralaması">
+              <option value="az">A → Z</option>
+              <option value="za">Z → A</option>
+              <option value="manual">Özel sıra (Elle ↑/↓)</option>
+              <option value="family">Model ailesi (Argon…)</option>
+              <option value="provider">Sağlayıcı yan yana</option>
+              <option value="email">E-posta yan yana</option>
+              <option value="quota_desc">Kota % (Yüksek → Düşük)</option>
+              <option value="quota_asc">Kota % (Düşük → Yüksek)</option>
+              <option value="quota_5h">5 saatlik kota %</option>
+              <option value="quota_weekly">Haftalık kota %</option>
+              <option value="category">Havuz kategorisine göre</option>
+              <option value="status">Sorunlular önce</option>
+            </select>
+          </div>
+        </div>
+        <div id="catalog-content">
+          <div class="catalog-search-row">
+            <input id="pool-search" type="search" aria-label="Katalogda model ara" placeholder="Model, sürüm veya e-posta ara…">
+            <div id="catalog-batch-bar" class="batch-bar" aria-label="Katalog toplu işlemleri"></div>
+          </div>
+          <div id="route-nav" class="route-nav" aria-label="Katalog grupları"></div>
+          <div id="catalog-status" class="catalog-status"></div>
+          <div id="pool-models" class="catalog-models" tabindex="0" aria-label="Kaydırılabilir model kataloğu"></div>
+        </div>
+      </section>
+      <section class="card catalog-panel hidden-panel" id="hidden-area" aria-labelledby="toggle-hidden">
+        <div class="panel-heading">
+          <button id="toggle-hidden" class="panel-toggle" type="button" aria-expanded="true" aria-controls="hidden-content"><span class="panel-chevron" aria-hidden="true">▾</span>Gizlenenler</button>
+          <span id="hidden-panel-count" class="hint">0</span>
+          <div class="catalog-controls">
+            <select id="hidden-view" aria-label="Gizlenenler görünümü">
+              <option value="reason">Gizlenme / sorun nedenine göre</option>
+              <option value="all">Tümünü bir arada</option>
+              <option value="family">Model ailesine göre</option>
+              <option value="route">Araçlara göre</option>
+              <option value="email">E-postaya göre</option>
+            </select>
+            <select id="hidden-sort" aria-label="Gizlenenler sıralaması">
+              <option value="status">Sorunlular önce</option>
+              <option value="az">A → Z</option>
+              <option value="za">Z → A</option>
+              <option value="family">Model ailesi (Argon…)</option>
+              <option value="provider">Sağlayıcı yan yana</option>
+              <option value="email">E-posta yan yana</option>
+              <option value="quota_desc">Kota % (Yüksek → Düşük)</option>
+            </select>
+          </div>
+        </div>
+        <div id="hidden-content">
+          <div class="catalog-search-row">
+            <input id="hidden-search" type="search" aria-label="Gizlenenlerde model ara" placeholder="Gizlenen modellerde model, e-posta veya araç ara…">
+            <div id="hidden-batch-bar" class="batch-bar" aria-label="Gizlenenler toplu işlemleri"></div>
+          </div>
+          <div id="hidden-nav" class="route-nav" aria-label="Gizlenen model grupları"></div>
+          <div id="hidden-rules-bar" class="catalog-status"></div>
+          <div id="hidden-models" class="catalog-models" tabindex="0" aria-label="Gizlenen modeller"></div>
+        </div>
+      </section>
     </section>
     <section id="calls-panel" class="calls-page" aria-labelledby="calls-heading" hidden>
       <div class="section-heading"><h2 id="calls-heading">Model çağrıları</h2><span class="hint">Her 5 saniyede güncellenir</span></div>
+      <div class="calls-toolbar">
+        <div id="calls-kpi" class="calls-kpi" aria-label="Çağrı özeti"></div>
+        <div class="calls-filters">
+          <input id="calls-search" type="search" aria-label="Çağrılarda ara" placeholder="Model, istemci veya araç ara…">
+          <select id="calls-state-filter" aria-label="Çağrı durumu filtresi">
+            <option value="all">Tüm durumlar</option>
+            <option value="active">Çalışanlar</option>
+            <option value="succeeded">Tamamlananlar</option>
+            <option value="failed">Başarısız / Zaman aşımı</option>
+            <option value="needs_review">İnceleme bekleyenler</option>
+          </select>
+        </div>
+      </div>
       <section class="calls-section" aria-labelledby="active-heading"><div class="section-heading"><h3 id="active-heading">Çalışan çağrılar</h3><span id="active-call-count" class="badge subtle">0</span></div><div id="active-calls"></div></section>
       <section class="calls-section" aria-labelledby="recent-heading"><div class="section-heading"><h3 id="recent-heading">Son çağrılar</h3><span id="recent-call-count" class="badge subtle">0</span><div class="actions"><button id="clear-history" type="button">Tamamlanan ve başarısızları temizle</button><button id="clear-all-history" type="button" class="danger-soft">İnceleme bekleyenler dahil tümünü temizle</button></div></div><p class="hint">Tamamlanan, başarısız, zaman aşımına uğrayan veya iptal edilen çağrıları tek tek ya da topluca silebilirsiniz.</p><div id="recent-calls"></div></section>
     </section>
     <section id="settings" class="settings-page" aria-labelledby="settings-heading" hidden>
-      <div class="section-heading"><h2 id="settings-heading">Ayarlar</h2><label class="theme-field"><span>Tema</span><select id="theme" aria-label="Tema"><option value="system">Sistem</option><option value="light">Açık</option><option value="dark" selected>Koyu</option></select></label></div>
+      <div class="section-heading"><h2 id="settings-heading">Ayarlar</h2><label class="theme-field" for="theme"><span>Tema</span><select id="theme" aria-label="Tema"><option value="system">Sistem</option><option value="light">Açık</option><option value="dark" selected>Koyu</option></select></label></div>
       <details class="settings-section"><summary>Web sohbetleri</summary><div class="settings-body"><p class="hint">Resmî sohbeti tarayıcıda açar. Web oturumu CLI/API erişimi sağlamaz ve otomatik model havuzuna eklenmez.</p><div class="actions"><a href="https://chat.deepseek.com/" target="_blank" rel="noopener noreferrer">DeepSeek</a><a href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer">ChatGPT</a><a href="https://chat.qwen.ai/" target="_blank" rel="noopener noreferrer">Qwen</a><a href="https://www.kimi.com/" target="_blank" rel="noopener noreferrer">Kimi</a></div></div></details>
-      <details class="settings-section" open><summary>Keşif, hesaplar ve kullanım özeti</summary><div class="settings-body"><div class="actions"><button id="scan-import" type="button" class="primary">Modelleri tara ve aktar</button><button id="refresh-quotas" type="button">Kotaları yenile</button><button id="sync-all-permissions" type="button">Antigravity izinlerini eşitle</button></div><p class="hint">Kurulu CLI araçlarının modellerini ve mevcut oturumlarını kullanır. Birden fazla Antigravity, Codex veya Claude hesabını WSL gerekmeden doğrudan ekleyebilirsiniz.</p><div class="overview" aria-label="Servis durumu"><div class="metric">Kurulu araç <strong id="installed-count">—</strong></div><div class="metric">Etkin model <strong id="model-count">—</strong></div><div class="metric">Çalışan görev <strong id="running-count">—</strong></div><div class="metric">İnceleme bekleyen <strong id="review-count">—</strong></div></div><div id="providers"></div></div></details>
+      <details class="settings-section" open><summary>Keşif, hesaplar, güncelleme ve kullanım özeti</summary><div class="settings-body"><div class="actions"><button id="scan-import" type="button" class="primary">Modelleri tara ve aktar</button><button id="refresh-quotas" type="button">Kotaları yenile</button><button id="sync-all-permissions" type="button">Antigravity izinlerini eşitle</button><button id="settings-update" type="button">Kurulumu / Skilli güncelle</button><button id="settings-shutdown" type="button" class="danger-soft">Güvenli çıkış</button></div><p class="hint">Kurulu CLI araçlarının modellerini ve mevcut oturumlarını kullanır. Birden fazla Antigravity, Codex veya Claude hesabını WSL gerekmeden doğrudan ekleyebilirsiniz.</p><div class="overview" aria-label="Servis durumu"><div class="metric">Kurulu araç <strong id="installed-count">—</strong></div><div class="metric">Etkin model <strong id="model-count">—</strong></div><div class="metric">Çalışan görev <strong id="running-count">—</strong></div><div class="metric">İnceleme bekleyen <strong id="review-count">—</strong></div></div><div id="providers"></div></div></details>
+      <div class="routes-toolbar">
+        <h3>Bağlantı ve hesap ayarları</h3>
+        <div class="routes-filters">
+          <input id="routes-search" type="search" aria-label="Bağlantılarda ara" placeholder="Bağlantı, CLI veya e-posta ara…">
+          <select id="routes-filter" aria-label="Bağlantı durumu filtresi">
+            <option value="all">Tüm bağlantılar</option>
+            <option value="enabled">Etkin bağlantılar</option>
+            <option value="issues">Giriş / kota sorunlular</option>
+            <option value="disabled">Kapalı bağlantılar</option>
+          </select>
+        </div>
+      </div>
       <div id="settings-routes"></div>
       <details class="settings-section"><summary>Kurulu CLI bağlantısı ekle</summary><fieldset class="settings-body"><legend class="sr-only">Kurulu CLI bağlantısı ekle</legend>
         <label class="setting-field" for="new-adapter">Kurulu CLI<select id="new-adapter"><option value="">CLI seçin</option></select></label>
@@ -65,7 +247,7 @@
       </fieldset></details>
     </section>
     <dialog id="detail" class="card" aria-labelledby="detail-heading" hidden><div class="section-heading"><h2 id="detail-heading">Görev / kota ayrıntısı</h2><button id="close-detail" type="button">Kapat</button></div><div id="detail-content" tabindex="0"></div></dialog>
-    <dialog id="model-filter-dialog" aria-labelledby="filter-heading"><div class="section-heading"><h2 id="filter-heading">Model filtresi</h2><button id="close-filters" type="button" aria-label="Filtreleri kapat">×</button></div><div id="filter-actions"></div><p class="hint">Gizlenen modeller katalogda ve ajan seçiminde kullanılmaz. Tarama onları geri eklemez. Kaldırarak yeniden gösterebilirsiniz.</p><div id="filter-list"></div></dialog>
+    <dialog id="model-filter-dialog" aria-labelledby="filter-heading"><div class="section-heading"><h2 id="filter-heading">Model filtresi</h2><button id="close-filters" type="button" aria-label="Filtreleri kapat">×</button></div><div id="filter-actions"></div><p class="hint">Gizlenen modeller katalogda ve ajan seçiminde kullanılmaz. Tarama onları geri eklemez. Kaldırarak veya aşağıdaki Gizlenenler panelinden geri yükleyebilirsiniz.</p><div id="filter-list"></div></dialog>
     <dialog id="add-pool-dialog" aria-labelledby="add-pool-heading"><div class="section-heading"><h2 id="add-pool-heading">Havuza ekle</h2><button id="close-add-pool" type="button" aria-label="Havuz seçimini kapat">×</button></div><p id="add-pool-model"></p><label class="setting-field" for="add-pool-effort">Efor<select id="add-pool-effort"></select></label><p class="hint">Eklemek istediğiniz havuzu seçin. Üstteki görünüm değişmez.</p><div id="add-pool-targets" class="actions"></div></dialog>
     <footer>Kimlik bilgileri ve API anahtarları yalnızca bilgisayarınızdaki yerel veri klasöründe tutulur.</footer>
   </main>

@@ -56,7 +56,7 @@ export const configSchema = z.object({
   groupingMode: z.unknown().optional(),
   selectionMode: z.unknown().optional(),
   categories: z.array(z.object({ id: label.refine(isCategoryId), name: label }).strict()).max(64).optional(),
-  modelFilters: z.array(z.object({ match: z.enum(['model', 'family']), value: label, routeId: label.optional() }).strict()).max(500).default([]),
+  modelFilters: z.array(z.object({ match: z.enum(['model', 'family']), value: label, routeId: label.optional(), reason: z.enum(['manual', 'auth_error', 'quota_unknown', 'subscription']).optional() }).strict()).max(500).default([]),
   // Owner-approved roots that director tasks may read outside their workspace (e.g. the skills library).
   directorReadRoots: z.array(z.string().min(1).max(4096).refine(value => path.isAbsolute(value), 'Okuma kökü mutlak olmalı.')).max(20).default(() => [path.join(homedir(), '.skills-manager', 'skills')]),
   routes: z.array(z.object({
@@ -87,10 +87,11 @@ export const configSchema = z.object({
       id: label, alias: label, group: label,
       billing: z.enum(['free', 'paid_api']).optional(),
       enabled: z.boolean().default(true),
+      order: z.number().int().min(0).max(10000).optional(),
       efforts: z.array(label).max(10).default([]),
       variants: z.record(label, label).optional(),
       defaultEffort: label.optional(),
-      memberships: z.array(z.object({ group: label.refine(isCategoryId), effort: label.optional() }).strict()).max(64).optional(),
+      memberships: z.array(z.object({ group: label.refine(isCategoryId), effort: label.optional(), order: z.number().int().min(0).max(10000).optional() }).strict()).max(64).optional(),
       kinds: z.array(z.enum(['text', 'read', 'write'])).min(1),
     }).strict()).max(100),
   }).strict()).max(50),

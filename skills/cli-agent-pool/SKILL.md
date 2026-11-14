@@ -34,6 +34,7 @@ cli-agent-pool pools --group research
 cli-agent-pool catalog --billing free --kind write --limit 8
 cli-agent-pool model --route qoder-local --model Qwen3.8-Flash
 cli-agent-pool run --mode execute --workspace "/absolute/project" --route qoder-local --model Qwen3.8-Flash --prompt "Implement the requested change and run relevant checks"
+cli-agent-pool stop
 ~~~
 
 Poll `pool_get_task {taskId}` (or `GET /api/tasks/<id>`); results default to `compact:true`.

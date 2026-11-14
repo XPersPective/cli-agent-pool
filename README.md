@@ -88,6 +88,7 @@ web yönetim ekranından bağlantı ekleyebilirsiniz:
 node bin/pool.js refresh-models codex-local
 node bin/pool.js validate
 node bin/pool.js serve
+cli-agent-pool stop            # Güvenli çıkış (--force ile aktif görevler varken kapatır)
 ```
 
 `refresh-models <route>` komutu tüm adaptörlerde yerel/canlı model kataloğunu yeniler;
@@ -444,3 +445,11 @@ izin düzeltmesini gösterir. Ardından aynı kapsamla `profile:"director"`,
 devralma/kuyruk/boşta kalma süreleri ve bellekte tutulan `secretEnv` desteklenir.
 Relay yönetimi ve halef seçimi çağırana aittir; Pool ikinci relay oluşturmaz.
 Ayrıntılar: [director tasarımı](docs/director-tasks.md).
+
+### Yönetim ekranı düzeni, çok boyutlu sıralama, iki tonlu uyarılar ve Gizlenenler (2.6.0)
+
+- **Yalnızca UI "Tümünü Göster"**: Havuzlarım özet şeridindeki **Tümünü Göster** kartı, havuza alınmış tüm kategorilerdeki modelleri tek ekranda filtreleyip yönetmenizi sağlar; dış ajanlara (`/api/pools` ve MCP `pool_list_pools`) hiçbir zaman kategori olarak sunulmaz (`isCategoryId` `all`/`__all__` reddeder).
+- **Çok boyutlu sıralama ve elle özel sıra**: Hem Havuzlarım hem Model kataloğu `A → Z`, `Z → A`, `Özel sıra (Elle ↑/↓)` (kart üzerindeki `↑`/`↓` ve tutamaçtan sürükle-bırak ile kalıcı `order`/`member.order`), `Model ailesi (Argon…)`, `Sağlayıcı yan yana`, `E-posta yan yana`, `Kota % (Yüksek/Düşük)`, `5 saatlik kota %`, `Haftalık kota %`, `Havuz kategorisine göre` ve `Sorunlular önce` seçeneklerini destekler.
+- **Görünür e-posta ve iki tonlu durum vurgusu**: Her kartta bağlı hesabın tam e-posta adresi (`model-email-badge`) kesilmeden ve büyük puntoyla gösterilir. Giriş/abonelik hatası veya %0 kotası olan modeller **kırmızı**, giriş sorunu olmayıp kotası okunamayanlar **sarı** kart rengi + açık metin rozetiyle ayrılır; tek tıkla **Devre dışı bırak / Etkinleştir** yapılabilir ve **Kapalıları da göster** düğmesiyle kapalı bağlantılar denetlenebilir.
+- **Kategorize Gizlenenler ve seçici geri yükleme**: Katalog altındaki katlanabilir **Gizlenenler** paneli nedenine göre (`Giriş / Abonelik sorunlu`, `Kotası okunamayan`, `Elle gizlenen`), aileye, araca veya e-postaya göre gruplar; aile/genel kurallar bölünerek yalnızca seçili modeller tekil ya da topluca (`Kotası bilinmeyenleri geri yükle`, `Giriş sorunluları geri yükle`) geri yüklenebilir.
+- **Arka plan penceresi yok, Tek Tık Güncelle & Güvenli Çıkış**: `src/supervisor.py` ve `src/preflight.js` Windows arka plan çağrılarında terminal penceresi açmaz; üst çubuktaki **Güncelle** kurulumu ve skill dağıtımını yeniler, **Güvenli çıkış** (ve `cli-agent-pool stop`) aktif görev kontrolüyle servisi kapatır.

@@ -99,6 +99,7 @@ export class Pool {
       permissionAuthority: 'native-cli',
       group: member.group,
       defaultEffort: member.effort,
+      ...(member.order !== undefined ? { order: member.order } : model.order !== undefined ? { order: model.order } : {}),
 
       suggestedGroup: suggestGroup(`${model.id} ${model.alias}`),
       routeId: route.id,
@@ -119,7 +120,7 @@ export class Pool {
       const key = JSON.stringify([model.routeId, model.id]);
       if (unique.has(key)) continue;
       const source = this.config.routes.find(route => route.id === model.routeId).models.find(item => item.id === model.id);
-      unique.set(key, { ...model, group: undefined, defaultEffort: source.defaultEffort,
+      unique.set(key, { ...model, group: undefined, defaultEffort: source.defaultEffort, order: source.order,
         categories: (source.memberships || []).map(member => member.group) });
     }
     return [...unique.values()];
@@ -159,6 +160,9 @@ export class Pool {
         const loadA = activeByRoute.get(a.routeId) || 0;
         const loadB = activeByRoute.get(b.routeId) || 0;
         if (loadA !== loadB) return loadA - loadB;
+        const orderA = Number.isInteger(a.order) ? a.order : 999999;
+        const orderB = Number.isInteger(b.order) ? b.order : 999999;
+        if (orderA !== orderB) return orderA - orderB;
         return a.routeId.localeCompare(b.routeId) || a.id.localeCompare(b.id);
       });
     if (!matches.length) throw new PoolError('NO_ROUTE', noRouteMessage(request, rejected));

@@ -11,9 +11,10 @@ import { wslPrefix, wslLoginPath } from './profiles.js';
 import { codexControl } from './codex-control.js';
 import { saveSecret, hasSecret } from './secrets-store.js';
 import { childEnvironment, runProcess } from './process.js';
+import { installDesktopAndSkills } from './daemon.js';
 
 const execPicker = async (file, args, options) => {
-  const result = await runProcess({ argv: [file, ...args], cwd: process.cwd(), extraEnv: options.env, timeoutMs: options.timeout, maxBytes: options.maxBuffer }).done;
+  const result = await runProcess({ argv: [file, ...args], cwd: process.cwd(), extraEnv: options.env, timeoutMs: options.timeout, maxBytes: options.maxBuffer, windowsHide: options.windowsHide }).done;
   if (result.code !== 0 || result.stopReason) throw new Error('Picker process failed');
   return { stdout: result.output };
 };
@@ -91,6 +92,14 @@ export function managementOperation(pool, management, body) {
   if (ownerDirectorOperations[body.operation]) return ownerDirectorOperations[body.operation](pool, body);
   if (body.operation === 'clear_history') return pool.store.clearHistory();
   if (body.operation === 'resolve') return pool.resolveInspected({ taskId: body.taskId, reviewed: body.reviewed, note: body.note });
+  if (body.operation === 'shutdown') {
+    const activeCount = pool.active?.size || 0;
+    if (activeCount > 0 && !body.force) {
+      return { stopping: false, confirmRequired: true, activeCount, message: `${activeCount} çalışan görev var.` };
+    }
+    setTimeout(() => { void management.onShutdown?.(); }, 100).unref?.();
+    return { stopping: true, activeCount, message: 'CLI Agent Pool servisi güvenli şekilde kapatıldı.' };
+  }
   if (body.operation === 'save') {
     if (body.config?.port !== pool.config.port || body.config?.python !== pool.config.python) throw new PoolError('RESTART_REQUIRED', 'Port veya Python yolunu değiştirmek için servisi durdurup yerel ayarları değiştirin.');
     if (body.secrets && typeof body.secrets === 'object') {
@@ -331,6 +340,15 @@ export function browserUI(pool, management) {
           catch (error) { errors[route.id] = error instanceof PoolError ? error.message : 'Kota sorgulanamadı'; }
         }));
         return { quotas, errors };
+      }
+      if (operation === 'shutdown') {
+        return managementOperation(pool, management, { operation: 'shutdown', force: Boolean(payload.force) });
+      }
+      if (operation === 'update_service') {
+        const res = management.onUpdate
+          ? await management.onUpdate()
+          : await installDesktopAndSkills(management.directory);
+        return { updated: true, version, ...res };
       }
       if (operation === 'catalog' || operation === 'refresh_catalog') {
         const route = pool.config.routes.find(r => r.id === payload.routeId);

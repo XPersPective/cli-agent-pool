@@ -50,8 +50,17 @@ def windows_job():
 def main():
     request = json.loads(sys.stdin.buffer.readline(2_000_000))
     job = windows_job() if os.name == "nt" else None
+    startupinfo = None
+    creationflags = 0
+    if os.name == "nt":
+        if request.get("hide", True):
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
     child = subprocess.Popen(request["argv"], cwd=request["cwd"], stdin=subprocess.PIPE,
-                             start_new_session=os.name != "nt")
+                             start_new_session=os.name != "nt", startupinfo=startupinfo,
+                             creationflags=creationflags)
     finished = threading.Event()
 
     def cancel():

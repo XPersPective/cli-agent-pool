@@ -12,7 +12,8 @@ import { claudeCatalog, routeCatalog, mergeCatalogModels, execute } from '../src
 import { claudeWindows, antigravityGroupWindows } from '../src/quotas.js';
 import { browserUI, openCliLogin } from '../src/web.js';
 import { ensureInitialized } from '../src/daemon.js';
-import { memberships, mergeScanDraft, addMembership, quotaWindows, quotaMatches, effortLabel, modelFamily, modelIdentity, modelFiltered, sortModels, initialTaskGroup, restoredWorkspace } from '../web/pool-state.js';
+import { isCategoryId } from '../web/categories.js';
+import { memberships, mergeScanDraft, addMembership, quotaWindows, quotaWindowPercent, modelIssueInfo, quotaMatches, effortLabel, modelFamily, modelIdentity, modelFiltered, unhideModels, sortModels, initialTaskGroup, restoredWorkspace } from '../web/pool-state.js';
 
 test('adding to an explicit target pool preserves other memberships and validates effort before mutation', () => {
   const model = { group: 'high', defaultEffort: 'high', efforts: ['low', 'medium', 'high'] };
@@ -362,4 +363,132 @@ test('project skill picker confines reads to authorized project and central skil
  assert.equal(workspaceSkills(root,[],library).length,1);
  assert.equal(workspaceSkills('',[project],library).length,1);assert.equal(workspaceSkills('',[project],library)[0].description,'Shared instructions across lines');
  assert.equal(restoredWorkspace(project,[project]),project);assert.equal(restoredWorkspace(root,[project]),root);assert.equal(restoredWorkspace(null,[project]),'');
+});
+
+test('Argon grouping, multi-dimensional sortModels, issue highlights, UI-only __all__ guard, and selective unhideModels work consistently', () => {
+  assert.equal(modelFamily('gemini-4-argon'), 'argon');
+  assert.equal(modelFamily('gemini-4-argon-low'), 'argon');
+  assert.equal(isCategoryId('all'), false);
+  assert.equal(isCategoryId('__all__'), false);
+  assert.equal(isCategoryId('high'), true);
+
+  const authSnapshot = { status: 'auth_required', windows: [] };
+  const unsubSnapshot = { status: 'available', subscription: 'none', windows: [{ name: '5h', remainingPercent: 80 }] };
+  const exhaustedSnapshot = { status: 'rate_limited', windows: [{ name: '5h', remainingPercent: 0 }] };
+  const unknownSnapshot = { status: 'available', windows: [] };
+  const healthySnapshot = { status: 'available', windows: [{ name: 'five_hour', remainingPercent: 75 }, { name: 'weekly', remainingPercent: 40 }] };
+
+  const subRoute = { id: 'sub-a', adapter: 'agy', billing: 'subscription', enabled: true };
+  const zaiRoute = { id: 'zai-b', adapter: 'zcode', billing: 'token_plan', enabled: true };
+  const disRoute = { id: 'dis-c', adapter: 'codex', billing: 'subscription', enabled: false };
+
+  assert.equal(modelIssueInfo(subRoute, { id: 'm1', enabled: true }, authSnapshot).isError, true);
+  assert.equal(modelIssueInfo(subRoute, { id: 'm1', enabled: true }, unsubSnapshot).state, 'subscription_error');
+  assert.equal(modelIssueInfo(subRoute, { id: 'm1', enabled: true }, exhaustedSnapshot).state, 'quota_exhausted');
+  assert.equal(modelIssueInfo(subRoute, { id: 'm1', enabled: true }, unknownSnapshot).isUnknown, true);
+  assert.equal(modelIssueInfo(disRoute, { id: 'm1', enabled: true }, healthySnapshot).isDisabled, true);
+  assert.equal(modelIssueInfo(subRoute, { id: 'm1', enabled: true }, healthySnapshot).level, 'ok');
+
+  assert.equal(quotaWindowPercent(healthySnapshot, 'm1', 'min'), 40);
+  assert.equal(quotaWindowPercent(healthySnapshot, 'm1', '5h'), 75);
+  assert.equal(quotaWindowPercent(healthySnapshot, 'm1', 'weekly'), 40);
+  assert.equal(quotaMatches(healthySnapshot, 'm1', '5h_high', subRoute), true);
+  assert.equal(quotaMatches(healthySnapshot, 'm1', 'weekly_high', subRoute), false);
+  assert.equal(quotaMatches(healthySnapshot, 'm1', 'healthy', subRoute), true);
+  assert.equal(quotaMatches(authSnapshot, 'm1', 'auth_error', subRoute), true);
+  assert.equal(quotaMatches(exhaustedSnapshot, 'm1', 'issues', subRoute), true);
+  assert.equal(quotaMatches(healthySnapshot, 'm1', 'disabled', disRoute), true);
+
+  const entries = [
+    { route: zaiRoute, model: { id: 'glm-5-turbo', enabled: true, order: 2, memberships: [{ group: 'low', order: 2 }] } },
+    { route: subRoute, model: { id: 'gemini-4-argon', enabled: true, order: 1, memberships: [{ group: 'high', order: 1 }] } },
+    { route: { id: 'agy-acc2', adapter: 'agy', billing: 'subscription', enabled: true }, model: { id: 'claude-opus-5', enabled: true, order: 0, memberships: [{ group: 'high', order: 0 }] } },
+  ];
+  const ctx = {
+    quotas: {
+      'sub-a': healthySnapshot,
+      'zai-b': { status: 'available', windows: [{ name: '5h', remainingPercent: 90 }, { name: 'weekly', remainingPercent: 90 }] },
+      'agy-acc2': authSnapshot,
+    },
+    emails: { 'sub-a': 'z@example.com', 'zai-b': 'b@example.com', 'agy-acc2': 'a@example.com' },
+    group: 'high',
+    categoryNames: { high: 'Yüksek', low: 'Hafif' },
+  };
+  assert.deepEqual(sortModels(entries, 'manual', false, ctx).map(e => e.model.id), ['claude-opus-5', 'gemini-4-argon', 'glm-5-turbo']);
+  assert.deepEqual(sortModels(entries, 'email', false, ctx).map(e => e.route.id), ['agy-acc2', 'zai-b', 'sub-a']);
+  assert.deepEqual(sortModels(entries, 'provider', false, ctx).map(e => e.route.adapter), ['agy', 'agy', 'zcode']);
+  assert.deepEqual(sortModels(entries, 'family', false, ctx).map(e => modelFamily(e.model.id)), ['argon', 'glm', 'opus']);
+  assert.deepEqual(sortModels(entries, 'quota_desc', false, ctx).map(e => e.route.id), ['zai-b', 'sub-a', 'agy-acc2']);
+  assert.deepEqual(sortModels(entries, 'quota_asc', false, ctx).map(e => e.route.id), ['sub-a', 'zai-b', 'agy-acc2']);
+  assert.deepEqual(sortModels(entries, 'quota_5h', false, ctx).map(e => e.route.id), ['zai-b', 'sub-a', 'agy-acc2']);
+  assert.deepEqual(sortModels(entries, 'quota_weekly', false, ctx).map(e => e.route.id), ['zai-b', 'sub-a', 'agy-acc2']);
+  assert.deepEqual(sortModels(entries, 'category', false, ctx).map(e => e.model.id), ['glm-5-turbo', 'claude-opus-5', 'gemini-4-argon']);
+  assert.deepEqual(sortModels(entries, 'status', false, ctx).map(e => e.route.id), ['agy-acc2', 'sub-a', 'zai-b']);
+
+  const routesForUnhide = [
+    { id: 'agy-1', models: [{ id: 'gemini-4-argon' }, { id: 'claude-opus-5-5-high' }] },
+    { id: 'agy-2', models: [{ id: 'gemini-4-argon' }] },
+  ];
+  const nextFilters = unhideModels(
+    [{ match: 'family', value: 'argon', reason: 'unknown_quota' }],
+    routesForUnhide,
+    [{ routeId: 'agy-1', modelId: 'gemini-4-argon' }],
+  );
+  assert.equal(modelFiltered(nextFilters, 'agy-1', 'gemini-4-argon'), false);
+  assert.equal(modelFiltered(nextFilters, 'agy-2', 'gemini-4-argon'), true);
+  assert.equal(nextFilters[0].reason, 'unknown_quota');
+});
+
+test('Pool.select uses manual order tie-breaker and browserUI supports safe shutdown and service updates', async t => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pool-order-shutdown-'));
+  const config = configSchema.parse({
+    workspaceRoots: [root],
+    routes: [
+      {
+        id: 'route-a',
+        adapter: 'custom',
+        executable: process.execPath,
+        argsTemplate: ['--version'],
+        billing: 'free',
+        priority: 100,
+        enabled: true,
+        models: [
+          { id: 'first-added', alias: 'First', group: 'medium', memberships: [{ group: 'medium', order: 5 }], enabled: true, kinds: ['text'] },
+          { id: 'prioritized', alias: 'Prioritized', group: 'medium', memberships: [{ group: 'medium', order: 1 }], enabled: true, kinds: ['text'] },
+        ],
+      },
+    ],
+  });
+  writeFileSync(path.join(root, 'config.json'), JSON.stringify(config));
+  const store = new Store(':memory:');
+  const pool = new Pool(config, store, { directory: root });
+  t.after(async () => { await pool.close(); store.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
+
+  assert.equal(pool.select({ kind: 'text', group: 'medium' }).selected.id, 'prioritized');
+
+  let shutdownCalled = 0;
+  let updateCalled = 0;
+  pool.active.set('running-1', { cancel() {} });
+  const ui = browserUI(pool, {
+    directory: root,
+    token: 'a'.repeat(64),
+    onShutdown: () => { shutdownCalled += 1; },
+    onUpdate: async () => { updateCalled += 1; return { shortcut: true, skill: true }; },
+  });
+
+  const confirmNeeded = await ui.operation({ operation: 'shutdown', payload: { force: false } });
+  assert.equal(confirmNeeded.stopping, false);
+  assert.equal(confirmNeeded.confirmRequired, true);
+  assert.equal(confirmNeeded.activeCount, 1);
+
+  const forced = await ui.operation({ operation: 'shutdown', payload: { force: true } });
+  assert.equal(forced.stopping, true);
+  await new Promise(resolve => setTimeout(resolve, 160));
+  assert.equal(shutdownCalled, 1);
+  pool.active.clear();
+
+  const updated = await ui.operation({ operation: 'update_service' });
+  assert.equal(updated.updated, true);
+  assert.equal(updated.shortcut, true);
+  assert.equal(updateCalled, 1);
 });

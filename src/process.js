@@ -11,7 +11,7 @@ export function childEnvironment(extraEnv = {}) {
   return { ...env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1', NO_COLOR: '1', FORCE_COLOR: '0', ...extraEnv };
 }
 
-export function runProcess({ argv, cwd, input = '', relay = false, extraEnv = {}, python = process.platform === 'win32' ? 'python' : 'python3', timeoutMs = 30_000, onLine = () => {}, maxBytes = 1_048_576, retainBytes = maxBytes }) {
+export function runProcess({ argv, cwd, input = '', relay = false, extraEnv = {}, python = process.platform === 'win32' ? 'python' : 'python3', timeoutMs = 30_000, onLine = () => {}, maxBytes = 1_048_576, retainBytes = maxBytes, windowsHide = true }) {
   let stopReason = null;
   let bytes = 0;
   let output = '';
@@ -50,7 +50,7 @@ export function runProcess({ argv, cwd, input = '', relay = false, extraEnv = {}
       resolve({ code, output, stderr, stopReason: stopReason || (lineFailure ? 'PROTOCOL_ERROR' : null) });
     });
   });
-  child.stdin.write(JSON.stringify({ argv, cwd, input, relay }) + '\n');
+  child.stdin.write(JSON.stringify({ argv, cwd, input, relay, hide: windowsHide !== false }) + '\n');
   return { done, cancel, send: input => child.stdin.write(JSON.stringify({ input }) + '\n') };
 }
 

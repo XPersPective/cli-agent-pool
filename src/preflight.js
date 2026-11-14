@@ -151,9 +151,9 @@ const out = (name, value) => writeFileSync(path.join(dir, name), JSON.stringify(
 const step = process.argv[2] || '';
 const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' };
 if (/^shell-[abc]$/.test(step)) out(step + '.json', { mac: createHmac('sha256', S.shell).update(step).digest('hex') });
-else if (step === 'commit') out('commit.json', { id: execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: S.workspace, input: S.commit }).toString().trim() });
+else if (step === 'commit') out('commit.json', { id: execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: S.workspace, input: S.commit, windowsHide: true }).toString().trim() });
 else if (step === 'remote') {
-  const listing = execFileSync('git', ['ls-remote', 'origin'], { cwd: S.workspace, env: gitEnv, timeout: 60000 }).toString();
+  const listing = execFileSync('git', ['ls-remote', 'origin'], { cwd: S.workspace, env: gitEnv, timeout: 60000, windowsHide: true }).toString();
   out('remote.json', { digest: createHash('sha256').update(listing.split(/\\r?\\n/).map(l => l.trim()).filter(Boolean).sort().join('\\n')).digest('hex') });
 } else if (step === 'service') {
   const response = await fetch('http://127.0.0.1:' + S.port + '/preflight/' + S.serviceNonce, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ secret: S.service }) });
