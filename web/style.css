@@ -815,7 +815,7 @@
     .main-tabs button { flex: 1; padding: 0 var(--s-2); }
     main { padding: var(--s-3) var(--s-3) var(--s-2); gap: 10px; }
     .pool-area, .catalog-panel { padding: var(--s-3); border-radius: var(--r-md); }
-    .catalog-panel > .panel-heading { margin: calc(-1 * var(--s-3)) calc(-1 * var(--s-3)) 0; padding: var(--s-3); border-radius: var(--r-md) var(--r-md) 0 0; }
+    .catalog-panel > .panel-heading { position: static; margin: 0; padding: 0; border-radius: 0; background: transparent; backdrop-filter: none; }
     .panel-heading select, .catalog-controls select { max-width: 150px; }
     .pool-view-tools { gap: 6px; }
     .group-card { min-width: 120px; }
