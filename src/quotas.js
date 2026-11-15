@@ -477,9 +477,8 @@ export function opencodeStatsNote(stats) {
   if (!stats) return null;
   const parts = [];
   if (Number.isFinite(stats.sessions)) parts.push(`${stats.sessions} oturum`);
-  if (Number.isFinite(stats.messages)) parts.push(`${stats.messages} mesaj`);
   if (Number.isFinite(stats.costUsd)) parts.push(`$${stats.costUsd.toFixed(2)}`);
-  return parts.length ? `Yerel kullanım (son 1 gün): ${parts.join(' · ')}` : null;
+  return parts.length ? `Bugün: ${parts.join(' · ')}` : null;
 }
 
 // ---- User-added API / token-plan routes ------------------------------------

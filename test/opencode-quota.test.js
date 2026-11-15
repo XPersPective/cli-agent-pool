@@ -104,6 +104,7 @@ test('istatistik çıktısı günlük oturum/mesaj/maliyet olarak okunur', () =>
   assert.equal(stats.costUsd, 0.06);
   assert.match(opencodeStatsNote(stats), /9 oturum/);
   assert.match(opencodeStatsNote(stats), /\$0\.06/);
+  assert.match(opencodeStatsNote(stats), /^Bugün:/);
   assert.equal(parseOpenCodeStats('nothing here'), null);
 });
 
