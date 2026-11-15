@@ -49,6 +49,7 @@
 - [x] **Kaydırma, odak ve açık panel korunuyor (`web/app.js`)**: `withStableView` sarmalayıcısı sayfa kaydırma konumunu, odaklı kontrolü (id veya erişilebilirlik etiketiyle) ve açık `<details>` panellerini yeniden çizimden sonra geri yüklüyor; Ayarlar, Havuzlarım ve Model kataloğu listeleri bu sarmalayıcıdan geçiyor.
 - [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.14.0`.
 - [x] **Doğrulama kanıtı (2.14.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate`, `npm test` ve yeni `test/settings-stability.test.js` (4 test) + canlı panel doğrulaması.
+- [x] **Canlı kaydırma kanıtı (2.14.0)**: Ayarlar'da model listesi 600 px aşağı kaydırıldıktan sonra `GLM (2)` ailesi seçildi; liste yalnız GLM modellerine süzüldü, kaydırma konumu ve görünür alan korundu (üst satırlar sayfa başına dönmedi), tarayıcı konsolunda hata/uyarı yok.
 
 ## 2.13.0 — Düz Hiyerarşi Satırları ve Net Aç/Kapalı Anahtarı
 - [x] **Hiyerarşi ağaç yerine düz ve eşit hizada (`web/app.js`, `web/style.css`)**: Araçlar / Abonelikler / Model aileleri satırları artık üçü de aynı sol hizada, aynı başlık ve aynı çip görünümüyle sıralanır; önceki ray/dirsek iç içe yapım ve yol (breadcrumb) satırı kaldırıldı. Her düğmenin yanında model sayısı korunur.
