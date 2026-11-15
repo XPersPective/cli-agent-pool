@@ -290,7 +290,7 @@ export async function main(args = process.argv.slice(2)) {
       catch { catalogErrors.push(route.id); }
     }
     saveConfig(directory, imported.config, view.revision);
-    print({ catalogErrors, discoveredCLIs: imported.discoveredCount, addedRoutes: imported.addedRoutes, addedModels: imported.addedModels, totalRoutes: imported.config.routes.length });
+    print({ catalogErrors, discoveredCLIs: imported.discoveredCount, addedRoutes: imported.addedRoutes, addedModels: imported.addedModels, refreshedModels: imported.refreshedModels, totalRoutes: imported.config.routes.length });
     return;
   }
   const config = ensureInitialized(directory, false);

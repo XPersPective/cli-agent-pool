@@ -340,7 +340,7 @@ export function browserUI(pool, management) {
         }
         pool.config = saveConfig(management.directory, imported.config, view.revision);
         pool.schedule();
-        return { ...annotateView(configView(management.directory), management.directory), addedRoutes: imported.addedRoutes, addedModels: imported.addedModels, discoveredCount: imported.discoveredCount, catalogErrors };
+        return { ...annotateView(configView(management.directory), management.directory), addedRoutes: imported.addedRoutes, addedModels: imported.addedModels, refreshedModels: imported.refreshedModels, discoveredCount: imported.discoveredCount, catalogErrors };
       }
       if (operation === 'secret') {
         saveSecret(management.directory, payload.secretRef, payload.secret);

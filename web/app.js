@@ -430,8 +430,11 @@ async function autoSyncCatalogs({ showErrors = false, refreshAfter = true, ignor
     updateSave();
     renderPool();
     if (!$('settings').hidden) renderSettings();
-    if (res.addedModels > 0 || res.addedRoutes > 0) {
-      notice(`${res.addedModels} yeni model otomatik çekildi.${showErrors && res.catalogErrors?.length ? ` (${res.catalogErrors.length} bağlantı hata verdi)` : ''}`);
+    if (res.addedModels > 0 || res.addedRoutes > 0 || res.refreshedModels > 0) {
+      const parts = [];
+      if (res.addedModels > 0) parts.push(`${res.addedModels} yeni model`);
+      if (res.refreshedModels > 0) parts.push(`${res.refreshedModels} model güncellendi`);
+      notice(`${parts.join(' · ')} otomatik çekildi.${showErrors && res.catalogErrors?.length ? ` (${res.catalogErrors.length} bağlantı hata verdi)` : ''}`);
       if (refreshAfter) {
         await refresh();
         void refreshQuotas();
@@ -457,7 +460,7 @@ async function runScanImport(routeId) {
   renderPool();
   if (!$('settings').hidden) renderSettings();
   await refresh();
-  notice(`Tarama: ${res.discoveredCount} araç, ${res.addedModels} yeni model. ${draft ? 'Kaydetmediğiniz seçimler korundu.' : 'Katalog güncellendi.'}${res.catalogErrors?.length ? ` ${res.catalogErrors.map(error => `${error.routeId}: ${error.message}`).join(' ')}` : ''}`, Boolean(res.catalogErrors?.length));
+  notice(`Tarama: ${res.discoveredCount} araç, ${res.addedModels} yeni model${res.refreshedModels ? `, ${res.refreshedModels} model güncellendi` : ''}. ${draft ? 'Kaydetmediğiniz seçimler korundu.' : 'Katalog güncellendi.'}${res.catalogErrors?.length ? ` ${res.catalogErrors.map(error => `${error.routeId}: ${error.message}`).join(' ')}` : ''}`, Boolean(res.catalogErrors?.length));
   void refreshQuotas();
 }
 
@@ -1308,24 +1311,36 @@ function entryMatchesQuotaFilter(route, model) {
   );
 }
 
-function makeHierarchyRow(labelText, items, selectedVal, onPick, isSubRow = false, rowClass = '') {
-  const row = element('div', null, `hierarchy-row${isSubRow ? ' sub-row' : ''}${rowClass ? ` ${rowClass}` : ''}`);
-  row.append(element('span', labelText, 'hierarchy-label'));
+function makeHierarchyLevel(labelText, items, selectedVal, onPick, variant = 'nested') {
+  const level = element('div', null, `hierarchy-level level-${variant}`);
+  const head = element('div', null, 'hierarchy-level-head');
+  head.append(element('span', labelText, 'hierarchy-level-title'));
   const pills = element('div', null, 'hierarchy-pills');
   for (const item of items) {
-    const disabledSuffix = isSubRow && item.enabled === false ? ' (Kapalı)' : '';
+    const disabledSuffix = variant !== 'tool' && item.enabled === false ? ' (Kapalı)' : '';
     const btn = element('button', `${item.label}${disabledSuffix} (${item.count})`);
     btn.type = 'button';
     btn.title = `${item.label}${disabledSuffix}`;
     const isSelected = item.id === selectedVal;
     btn.classList.toggle('selected', isSelected);
-    if (isSubRow && item.enabled === false) btn.classList.add('is-disabled');
+    if (variant !== 'tool' && item.enabled === false) btn.classList.add('is-disabled');
     btn.setAttribute('aria-pressed', String(isSelected));
     btn.addEventListener('click', () => onPick(item.id));
     pills.append(btn);
   }
-  row.append(pills);
-  return row;
+  level.append(head, pills);
+  return level;
+}
+
+function makeHierarchyPath(crumbs) {
+  const path = element('div', null, 'hierarchy-path');
+  for (const crumb of crumbs) {
+    if (crumb.separator) path.append(element('span', '›', 'hierarchy-separator'));
+    const node = element('span', crumb.value, 'hierarchy-crumb');
+    if (crumb.current) node.classList.add('is-current');
+    path.append(node);
+  }
+  return path;
 }
 
 function renderHierarchyNav(container, entries, navState, onChange, extraTopRow = null) {
@@ -1337,21 +1352,30 @@ function renderHierarchyNav(container, entries, navState, onChange, extraTopRow 
 
   const rows = [];
   if (extraTopRow && extraTopRow.items?.length) {
-    rows.push(makeHierarchyRow(extraTopRow.label, extraTopRow.items, extraTopRow.value, extraTopRow.onSelect));
+    rows.push(makeHierarchyLevel(extraTopRow.label, extraTopRow.items, extraTopRow.value, extraTopRow.onSelect, 'subscription'));
   }
   if (entries.length) {
-    rows.push(makeHierarchyRow('Araç', result.tools, result.tool, toolId => {
+    const toolItem = result.tools.find(item => item.id === result.tool);
+    const subscriptionItem = result.subscriptions.find(item => item.id === result.routeId);
+    const familyItem = result.families.find(item => item.id === result.family);
+    rows.push(makeHierarchyPath([
+      { value: toolItem?.label || 'Tüm araçlar' },
+      { separator: true, value: result.routeId === '__all__' ? 'Tüm abonelikler' : (subscriptionItem?.label || 'Abonelik') },
+      { separator: true, value: result.family === '__all__' ? 'Tüm model aileleri' : (familyItem?.label || 'Model ailesi') },
+      { separator: true, value: `${result.filtered.length} model`, current: true },
+    ]));
+    rows.push(makeHierarchyLevel('Araçlar', result.tools, result.tool, toolId => {
       onChange({ tool: toolId, routeId: '__all__', family: '__all__' });
-    }, false, 'tool-row'));
+    }, 'tool'));
     if (result.subscriptions.length > 1) {
-      rows.push(makeHierarchyRow('Abonelik', result.subscriptions, result.routeId, subId => {
+      rows.push(makeHierarchyLevel('Abonelikler', result.subscriptions, result.routeId, subId => {
         onChange({ tool: result.tool, routeId: subId, family: '__all__' });
-      }, true, 'subscription-row'));
+      }, 'subscription'));
     }
     if (result.families.length > 1) {
-      rows.push(makeHierarchyRow('Model ailesi', result.families, result.family, famId => {
+      rows.push(makeHierarchyLevel('Model aileleri', result.families, result.family, famId => {
         onChange({ tool: result.tool, routeId: result.routeId, family: famId });
-      }, false, 'family-row'));
+      }, 'family'));
     }
   }
   container.replaceChildren(...rows);
@@ -1379,12 +1403,19 @@ function renderEmailHierarchyNav(container, entries, currentEmail, onSelectEmail
   const subResult = filterHierarchy(emailFiltered, { tool: '__all__', routeId: '__all__', family: currentFamily }, emailsMap(), adapterLabels, familyLabel);
   const rows = [];
   if (extraTopRow && extraTopRow.items?.length) {
-    rows.push(makeHierarchyRow(extraTopRow.label, extraTopRow.items, extraTopRow.value, extraTopRow.onSelect));
+    rows.push(makeHierarchyLevel(extraTopRow.label, extraTopRow.items, extraTopRow.value, extraTopRow.onSelect, 'subscription'));
   }
   if (entries.length) {
-    rows.push(makeHierarchyRow('Hesap', mailItems, validEmail, id => onSelectEmail(id), false, 'account-row'));
+    const mailItem = mailItems.find(item => item.id === validEmail);
+    const familyItem = subResult.families.find(item => item.id === subResult.family);
+    rows.push(makeHierarchyPath([
+      { value: validEmail === '__all__' ? 'Tüm hesaplar' : (mailItem?.label || 'Hesap') },
+      { separator: true, value: subResult.family === '__all__' ? 'Tüm model aileleri' : (familyItem?.label || 'Model ailesi') },
+      { separator: true, value: `${subResult.filtered.length} model`, current: true },
+    ]));
+    rows.push(makeHierarchyLevel('Hesaplar', mailItems, validEmail, id => onSelectEmail(id), 'subscription'));
     if (subResult.families.length > 1) {
-      rows.push(makeHierarchyRow('Model ailesi', subResult.families, subResult.family, famId => onSelectFamily(famId), false, 'family-row'));
+      rows.push(makeHierarchyLevel('Model aileleri', subResult.families, subResult.family, famId => onSelectFamily(famId), 'family'));
     }
   }
   container.replaceChildren(...rows);

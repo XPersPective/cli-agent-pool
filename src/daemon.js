@@ -23,7 +23,7 @@ export function ensureInitialized(directory, autoImport = true) {
   if (autoImport) {
     const view = configView(directory);
     const imported = importDiscoveredRoutes(view.config);
-    const changed = imported.addedRoutes > 0 || imported.addedModels > 0;
+    const changed = imported.addedRoutes > 0 || imported.addedModels > 0 || imported.refreshedModels > 0;
     if (changed) {
       saveConfig(directory, imported.config, view.revision);
     }

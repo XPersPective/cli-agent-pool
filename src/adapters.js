@@ -422,37 +422,22 @@ export function applyDiscoveredModels(route, discoveredModels = [], adapter = ro
   return { added, refreshed };
 }
 
+// Tarama yalnızca kullanıcının eklediği bağlantıları tazeler: yeni bağlantı otomatik kurulmaz,
+// böylece silinen bir abonelik (ör. Hermes, Kimi) taramadan sonra geri gelmez. Bağlantı ekleme
+// yalnızca paneldeki "Kurulu CLI bağlantısı ekle" akışı ile olur.
 export function importDiscoveredRoutes(config) {
   const cloned = structuredClone(config);
   const discovered = discover().filter(cli => cli.status === 'installed' && cli.executable);
-  let addedRoutes = 0;
   let addedModels = 0;
+  let refreshedModels = 0;
   for (const cli of discovered) {
-    let targetRoutes = cloned.routes.filter(r => r.adapter === cli.adapter && !r.api);
-    if (!targetRoutes.length) {
-      let id = `${cli.adapter}-local`;
-      let suffix = 2;
-      while (cloned.routes.some(r => r.id === id)) id = `${cli.adapter}-local-${suffix++}`;
-      const created = {
-        id,
-        adapter: cli.adapter,
-        executable: cli.executable,
-        enabled: false,
-        billing: cli.defaultBilling || 'token_plan',
-        trustedSettings: cli.defaultBilling === 'free',
-        priority: 100,
-        minRemainingPercent: 0,
-        models: [],
-      };
-      cloned.routes.push(created);
-      targetRoutes = [created];
-      addedRoutes++;
-    }
-    for (const route of targetRoutes) {
-      addedModels += applyDiscoveredModels(route, cli.discoveredModels || [], cli.adapter).added;
+    for (const route of cloned.routes.filter(r => r.adapter === cli.adapter && !r.api)) {
+      const result = applyDiscoveredModels(route, cli.discoveredModels || [], cli.adapter);
+      addedModels += result.added;
+      refreshedModels += result.refreshed;
     }
   }
-  return { config: cloned, addedRoutes, addedModels, discoveredCount: discovered.length };
+  return { config: cloned, addedRoutes: 0, addedModels, refreshedModels, discoveredCount: discovered.length };
 }
 
 export function discover() {

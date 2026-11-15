@@ -38,8 +38,12 @@ test('paneldeki uzun toplu işlem açıklamaları kaldırıldı', () => {
 
 test('hiyerarşi satırları görsel sınıflarla ayrılır', () => {
   const app = readFileSync(path.join(root, 'web', 'app.js'), 'utf8');
-  assert.match(app, /'tool-row'/);
-  assert.match(app, /'subscription-row'/);
-  assert.match(app, /'family-row'/);
-  assert.match(app, /'account-row'/);
+  const css = readFileSync(path.join(root, 'web', 'style.css'), 'utf8');
+  assert.match(app, /makeHierarchyLevel/);
+  assert.match(app, /makeHierarchyPath/);
+  assert.match(app, /hierarchy-path/);
+  assert.match(css, /\.hierarchy-level\.level-tool/);
+  assert.match(css, /\.hierarchy-level\.level-subscription/);
+  assert.match(css, /\.hierarchy-level\.level-family/);
+  assert.match(css, /\.hierarchy-path/);
 });
