@@ -17,7 +17,7 @@ export function taskKinds(route, model) {
 
 export function capabilityLabel(route, model) {
   const kinds = taskKinds(route, model);
-  if (kinds.includes('write')) return 'Dosya okuma / yazma · istek kapsamı ve CLI izinleri geçerli';
-  if (kinds.includes('read')) return 'Dosya okuma · bağlantı kapsamı yazmayı kısıtlıyor';
-  return toolSupport(route) === 'chat-cli' ? 'Sohbet CLI’ı · yerel dosya aracı sunmuyor' : 'Bağlantı kapsamı · dosya araçları kapalı';
+  if (kinds.includes('write')) return 'okuma / yazma';
+  if (kinds.includes('read')) return 'okuma';
+  return toolSupport(route) === 'chat-cli' ? 'sohbet' : 'metin';
 }

@@ -604,6 +604,16 @@
     color: var(--accent); font-weight: 650; box-shadow: none;
   }
   .catalog-status { flex-shrink: 0; }
+
+  /* API rehberi */
+  .settings-body.guide h4 { display: flex; align-items: center; gap: 8px; margin: 12px 0 6px; font-size: 11.5px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+  .settings-body.guide h4:first-of-type { margin-top: 4px; }
+  .guide-list { list-style: none; display: flex; flex-direction: column; gap: 5px; margin: 0; padding: 0; }
+  .guide-list li { font-size: 12.5px; line-height: 1.6; color: var(--muted); }
+  .guide-list code, .settings-body.guide code {
+    font-family: var(--font-mono); font-size: 12px; padding: 1px 6px; border-radius: 6px;
+    background: var(--sunken); border: 1px solid var(--border); color: var(--text);
+  }
   .catalog-status:empty { display: none; }
   .catalog-status small { font-size: 12px; }
   .catalog-status .actions > small { overflow: hidden; text-overflow: ellipsis; }
@@ -688,6 +698,7 @@
   .model-status-row { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
   .model-card .model-info small { font-size: 11.5px; line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .model-card .model-info small.capability-note { white-space: normal; color: color-mix(in oklab, var(--muted) 85%, transparent); }
+  .model-card .model-info .capability-badge { font-size: 10.5px; padding: 0 7px; text-transform: lowercase; }
   .version-unknown { color: var(--warning) !important; }
 
   .model-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); margin-top: auto; min-height: var(--control-h-sm); }

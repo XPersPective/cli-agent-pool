@@ -201,7 +201,6 @@
     <section id="settings" class="settings-page" aria-labelledby="settings-heading" hidden>
       <div class="section-heading"><h2 id="settings-heading">Ayarlar</h2><label class="theme-field" for="theme"><span>Tema</span><select id="theme" aria-label="Tema"><option value="system">Sistem</option><option value="light">Açık</option><option value="dark" selected>Koyu</option></select></label></div>
       <details class="settings-section"><summary>Web sohbetleri</summary><div class="settings-body"><p class="hint">Web oturumu CLI/API erişimi sağlamaz.</p><div class="actions"><a href="https://chat.deepseek.com/" target="_blank" rel="noopener noreferrer">DeepSeek</a><a href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer">ChatGPT</a><a href="https://chat.qwen.ai/" target="_blank" rel="noopener noreferrer">Qwen</a><a href="https://www.kimi.com/" target="_blank" rel="noopener noreferrer">Kimi</a></div></div></details>
-      <details class="settings-section" open><summary>Keşif, hesaplar, güncelleme ve kullanım özeti</summary><div class="settings-body"><div class="actions"><button id="scan-import" type="button" class="primary">Modelleri tara ve aktar</button><button id="refresh-quotas" type="button">Kotaları yenile</button><button id="sync-all-permissions" type="button">Antigravity izinlerini eşitle</button><button id="settings-update" type="button">Kurulumu / Skilli güncelle</button><button id="settings-shutdown" type="button" class="danger-soft">Güvenli çıkış</button></div><div class="overview" aria-label="Servis durumu"><div class="metric">Kurulu araç <strong id="installed-count">—</strong></div><div class="metric">Etkin model <strong id="model-count">—</strong></div><div class="metric">Çalışan görev <strong id="running-count">—</strong></div><div class="metric">İnceleme bekleyen <strong id="review-count">—</strong></div></div><div id="providers"></div></div></details>
       <div class="routes-toolbar">
         <h3>Bağlantı ve hesap ayarları</h3>
         <div class="routes-filters">
@@ -213,8 +212,41 @@
             <option value="disabled">Kapalı bağlantılar</option>
           </select>
         </div>
+        <div class="actions">
+          <button id="scan-import" type="button" class="primary">Modelleri tara ve aktar</button>
+          <button id="refresh-quotas" type="button">Kotaları yenile</button>
+          <button id="sync-all-permissions" type="button">Antigravity izinlerini eşitle</button>
+        </div>
       </div>
       <div id="settings-routes"></div>
+      <details class="settings-section"><summary>API rehberi</summary><div class="settings-body guide">
+        <p class="hint">Ajana verilecek en kısa yol: okuma uçları token istemez.</p>
+        <h4>Okuma uçları <span class="badge subtle">token gerekmez</span></h4>
+        <ul class="guide-list">
+          <li><code>GET <span data-origin>/api/health</span></code> — servis durumu, model ve görev sayıları</li>
+          <li><code>GET <span data-origin>/api/catalog?view=models&amp;limit=40</span></code> — model kataloğu</li>
+          <li><code>GET <span data-origin>/api/pools</span></code> — havuz kategorileri, <code>/api/pools/&lt;id&gt;</code> — bir kategorinin modelleri</li>
+          <li><code>GET <span data-origin>/api/quotas</span></code> — bağlantı başına önbelleklenmiş kota, <code>?live=1</code> CLI'dan sorar</li>
+          <li><code>GET <span data-origin>/api/select?kind=write&amp;mode=execute</span></code> — görev için model önerisi (göndermeden)</li>
+          <li><code>GET <span data-origin>/api/help[?code=X]</span></code> — servis haritası veya tek hata kodunun açıklaması</li>
+          <li><code>GET <span data-origin>/api/capabilities</span></code>, <code>GET <span data-origin>/api/connections</span></code></li>
+        </ul>
+        <h4>Görev uçları <span class="badge subtle">Bearer token</span></h4>
+        <ul class="guide-list">
+          <li><code>POST <span data-origin>/api/tasks</span></code> — gövde: <code>{prompt, workspace, kind, mode?, routeId?, modelId?, group?, effort?}</code></li>
+          <li><code>GET <span data-origin>/api/tasks/&lt;id&gt;</span></code> — görev durumu/sonucu, <code>POST <span data-origin>/api/tasks/&lt;id&gt;/cancel</span></code></li>
+          <li><code>POST <span data-origin>/api/tools/&lt;tool&gt;</span></code> — herhangi bir havuz aracı (gövde = argümanlar)</li>
+        </ul>
+        <h4>CLI <span class="badge subtle">tokenu kendi yönetir</span></h4>
+        <ul class="guide-list">
+          <li><code>cli-agent-pool status</code> — bağlantılar, kotalar, havuzlar, katalog</li>
+          <li><code>cli-agent-pool quotas [--route &lt;id&gt;] [--live]</code> — tek bağlantının kotası</li>
+          <li><code>cli-agent-pool pools --group &lt;id&gt;</code> · <code>cli-agent-pool catalog --view models</code></li>
+          <li><code>cli-agent-pool model --route &lt;id&gt; --model &lt;id&gt;</code> · <code>cli-agent-pool help-code &lt;KOD&gt;</code></li>
+        </ul>
+        <h4>MCP</h4>
+        <ul class="guide-list"><li><code>POST <span data-origin>/mcp</span></code> — <code>havuz_*</code> araçları</li></ul>
+      </div></details>
       <details class="settings-section"><summary>Kurulu CLI bağlantısı ekle</summary><fieldset class="settings-body"><legend class="sr-only">Kurulu CLI bağlantısı ekle</legend>
         <label class="setting-field" for="new-adapter">Kurulu CLI<select id="new-adapter"><option value="">CLI seçin</option></select></label>
         <label class="setting-field" for="new-billing">Ödeme / plan türü<select id="new-billing"><option value="subscription">Abonelik (ChatGPT / Claude Pro-Max / Antigravity)</option><option value="token_plan">Token planı (Z.AI GLM / Qwen / MiniMax / Kimi / Coding Plan)</option><option value="free_credits">Günlük / ücretsiz kredi (MiniMax Code mcode hesabı)</option><option value="free">Ücretsiz modeller (ör. OpenCode free / Yerel LM Studio / Ollama)</option><option value="paid_api">Ücretli API (kullandıkça öde)</option></select></label>

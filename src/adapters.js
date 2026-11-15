@@ -389,6 +389,39 @@ export function localModelsFor(adapter, home = homedir()) {
   return models.slice(0, 100);
 }
 
+// Yeni çekilen model listesini mevcut rotanın modellerine uygular: yeni model ekler, mevcut
+// modelin gösterilen adını (ör. ZCode varsayılan modeli) ve effort listesini tazeler.
+// Kullanıcının sahiplendiği alanlar (enabled, memberships, order, group) korunur.
+export function applyDiscoveredModels(route, discoveredModels = [], adapter = route?.adapter) {
+  let added = 0;
+  let refreshed = 0;
+  for (const model of discoveredModels) {
+    if (!model?.id) continue;
+    if (adapter === 'claude' && ['opus', 'sonnet', 'haiku'].includes(model.id) && route.models.some(existing => existing.id.startsWith(`claude-${model.id}-`))) continue;
+    const existing = route.models.find(item => item.id === model.id);
+    if (!existing) {
+      if (route.models.length < 100) {
+        const { free, ...cleanModel } = model;
+        route.models.push({ ...cleanModel, ...(free === true ? { billing: 'free' } : {}) });
+        added++;
+      }
+      continue;
+    }
+    if (typeof model.alias === 'string' && model.alias && model.alias !== existing.alias) {
+      existing.alias = model.alias;
+      refreshed++;
+    }
+    if (Array.isArray(model.efforts) && model.efforts.length && (existing.efforts || []).join('|') !== model.efforts.join('|')) {
+      existing.efforts = [...model.efforts];
+      refreshed++;
+    }
+  }
+  if (['lmstudio', 'ollama'].includes(adapter)) {
+    route.models = route.models.filter(model => model.id !== 'default' || model.memberships?.length || ['high', 'medium', 'low'].includes(model.group));
+  }
+  return { added, refreshed };
+}
+
 export function importDiscoveredRoutes(config) {
   const cloned = structuredClone(config);
   const discovered = discover().filter(cli => cli.status === 'installed' && cli.executable);
@@ -416,15 +449,7 @@ export function importDiscoveredRoutes(config) {
       addedRoutes++;
     }
     for (const route of targetRoutes) {
-      for (const model of cli.discoveredModels || []) {
-        if (cli.adapter === 'claude' && ['opus', 'sonnet', 'haiku'].includes(model.id) && route.models.some(existing => existing.id.startsWith(`claude-${model.id}-`))) continue;
-        if (!route.models.some(existing => existing.id === model.id) && route.models.length < 100) {
-          const { free, ...cleanModel } = model;
-          route.models.push({ ...cleanModel, ...(free === true ? { billing: 'free' } : {}) });
-          addedModels++;
-        }
-      }
-      if (['lmstudio', 'ollama'].includes(cli.adapter)) route.models = route.models.filter(model => model.id !== 'default' || model.memberships?.length || ['high', 'medium', 'low'].includes(model.group));
+      addedModels += applyDiscoveredModels(route, cli.discoveredModels || [], cli.adapter).added;
     }
   }
   return { config: cloned, addedRoutes, addedModels, discoveredCount: discovered.length };

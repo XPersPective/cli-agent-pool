@@ -574,40 +574,7 @@ async function refresh() {
     $('connection-state').textContent = 'Bağlı';
     $('connection-state').dataset.connected = 'true';
     $('connection-state').title = 'Bağlı';
-    $('installed-count').textContent = snapshot.installed.filter(cli => cli.status === 'installed').length;
-    $('model-count').textContent = new Set(snapshot.models.filter(model => model.enabled).map(model => `${model.routeId}/${model.id}`)).size;
-    $('running-count').textContent = snapshot.tasks.filter(task => ['starting', 'running', 'cancelling'].includes(task.state)).length;
-    $('review-count').textContent = snapshot.tasks.filter(task => task.state === 'needs_review').length;
 
-    const providerRows = [];
-    for (const conn of snapshot.connections.filter(conn => conn.enabled)) {
-      const row = element('div', null, 'provider');
-      const info = element('div');
-      const titleLine = element('div', null, 'task-title');
-      const email = routeEmail(conn.id);
-      const subLabel = cleanRouteLabel(conn, email);
-      titleLine.append(
-        element('strong', `${adapterLabels[conn.adapter] || conn.adapter}${conn.protocol ? ` · ${conn.protocol.toUpperCase()} API` : ''}`),
-        ...(email ? [element('span', email, 'badge email-badge')] : [element('span', subLabel, 'badge subtle')]),
-        element('span', billingLabels[conn.billing] || conn.billing, 'badge subtle'),
-      );
-      info.append(titleLine, element('small', formatQuotaSummary(conn, snapshot.quotas?.[conn.id])));
-      const right = element('div', null, 'actions');
-      right.append(element('span', conn.enabled ? 'Etkin' : 'Kapalı', 'badge ok'));
-      row.append(info, right);
-      providerRows.push(row);
-    }
-    for (const cli of snapshot.installed) {
-      if (snapshot.connections.some(c => c.adapter === cli.adapter && !c.protocol)) continue;
-      const row = element('div', null, 'provider');
-      const info = element('div');
-      info.append(element('strong', `${cli.label || cli.adapter} (${cli.adapter})`));
-      const modelCount = cli.discoveredModels?.length || 0;
-      info.append(element('small', cli.status === 'installed' ? `Kurulu · ${modelCount} model bulundu · Giriş: ${cli.loginCommand}` : 'Bilgisayarda bulunamadı'));
-      row.append(info, element('span', cli.status === 'installed' ? 'Kurulu' : 'Bulunamadı', `provider-state badge ${cli.status === 'installed' ? 'ok' : 'subtle'}`));
-      providerRows.push(row);
-    }
-    $('providers').replaceChildren(...providerRows);
     renderCalls();
     updateCardActivity();
     if (selectedTask && $('detail').open) await openTask(selectedTask, false);
@@ -942,6 +909,7 @@ function renderSettingsSubscriptionPane(route, sub, email, issue) {
 
 function renderSettings() {
   if (!settings || !snapshot) return;
+  fillOriginPlaceholders();
   const previousAdapter = $('new-adapter').value;
   const adapters = snapshot.installed.filter(cli => cli.status === 'installed');
   $('new-adapter').replaceChildren(new Option('CLI seçin', ''), ...adapters.map(cli => new Option(`${cli.label || cli.adapter} (${cli.discoveredModels?.length || 0} model)`, cli.adapter)));
@@ -2155,9 +2123,9 @@ function modelCard(route, model, member, options = {}) {
   }
 
   info.title = `${model.id} · ${adapterLabels[route.adapter] || route.adapter} · ${subLabel}`;
+  accountRow.append(element('span', capabilityLabel(route, model), 'badge subtle capability-badge'));
   info.append(titleRow, accountRow);
   if (statusRow.children.length) info.append(statusRow);
-  info.append(element('small', capabilityLabel(route, model), 'capability-note'));
 
   if (model.enabled === false || !route.enabled) {
     const state = element('div', null, 'model-connection');
@@ -2748,7 +2716,13 @@ window.addEventListener('beforeunload', event => {
   if (poolDirty) { event.preventDefault(); event.returnValue = ''; }
 });
 
+function fillOriginPlaceholders() {
+  const origin = location.origin;
+  for (const node of document.querySelectorAll('[data-origin]')) node.textContent = origin;
+}
+
 void refresh().then(() => {
+  fillOriginPlaceholders();
   if (snapshot) {
     void refreshQuotas();
     void autoSyncCatalogs();
