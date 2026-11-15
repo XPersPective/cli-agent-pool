@@ -349,37 +349,47 @@ export function filterHierarchy(entries = [], selection = {}, emails = {}, adapt
     ...toolRows,
   ];
 
-  const tool = selection?.tool && selection.tool !== '__all__' && tools.some(t => t.id === selection.tool)
+  // Geçersiz bir araç seçimi "Tümü"ye döner ve o abonelik seçimi de sıfırlanır.
+  const toolValid = !selection?.tool
+    || selection.tool === '__all__'
+    || tools.some(t => t.id === selection.tool);
+  const tool = toolValid && selection?.tool !== '__all__' && selection?.tool
     ? selection.tool
     : '__all__';
   const toolFiltered = tool === '__all__'
     ? [...(entries || [])]
     : (entries || []).filter(item => item?.route?.adapter === tool);
 
-  let subscriptions = [];
-  if (tool !== '__all__') {
-    const uniqueRoutes = new Map();
-    for (const item of toolFiltered) {
-      if (item?.route?.id && !uniqueRoutes.has(item.route.id)) uniqueRoutes.set(item.route.id, item.route);
-    }
-    if (Array.isArray(selection?.routes)) {
-      for (const r of selection.routes) {
-        if (r?.adapter === tool && r.id && !uniqueRoutes.has(r.id)) uniqueRoutes.set(r.id, r);
-      }
-    }
-    const grouped = toolGroupsForRoutes([...uniqueRoutes.values()], emails, adapterLabels)[0];
-    const subRows = (grouped?.routes || []).map(w => ({
-      id: w.id,
-      label: w.subscriptionLabel,
-      email: w.email,
-      isApi: w.isApi,
-      enabled: w.enabled,
-      count: toolFiltered.filter(item => item?.route?.id === w.id).length,
-    }));
-    subscriptions = [{ id: '__all__', label: 'Tümü', count: toolFiltered.length }, ...subRows];
+  // Abonelik şeridi her zaman görünür: "Tümü" seçiliyken tüm araçların abonelikleri,
+  // tek bir araç seçiliyken o aracın abonelikleri listelenir.
+  const uniqueRoutes = new Map();
+  for (const item of toolFiltered) {
+    if (item?.route?.id && !uniqueRoutes.has(item.route.id)) uniqueRoutes.set(item.route.id, item.route);
   }
+  if (Array.isArray(selection?.routes)) {
+    for (const r of selection.routes) {
+      if (!r?.id || uniqueRoutes.has(r.id)) continue;
+      if (tool === '__all__' || r?.adapter === tool) uniqueRoutes.set(r.id, r);
+    }
+  }
+  const subscriptionGroups = toolGroupsForRoutes([...uniqueRoutes.values()], emails, adapterLabels);
+  const subRows = [];
+  for (const group of subscriptionGroups) {
+    for (const w of group.routes) {
+      subRows.push({
+        id: w.id,
+        label: tool === '__all__' ? `${group.label} · ${w.subscriptionLabel}` : w.subscriptionLabel,
+        tool: group.adapter,
+        email: w.email,
+        isApi: w.isApi,
+        enabled: w.enabled,
+        count: toolFiltered.filter(item => item?.route?.id === w.id).length,
+      });
+    }
+  }
+  const subscriptions = [{ id: '__all__', label: 'Tümü', count: toolFiltered.length }, ...subRows];
 
-  const routeId = tool !== '__all__' && selection?.routeId && selection.routeId !== '__all__' && subscriptions.some(s => s.id === selection.routeId)
+  const routeId = toolValid && selection?.routeId && selection.routeId !== '__all__' && subscriptions.some(s => s.id === selection.routeId)
     ? selection.routeId
     : '__all__';
   const routeFiltered = routeId === '__all__'

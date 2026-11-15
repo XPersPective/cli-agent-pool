@@ -11,7 +11,7 @@ import { wslPrefix, wslLoginPath } from './profiles.js';
 import { codexControl } from './codex-control.js';
 import { saveSecret, hasSecret } from './secrets-store.js';
 import { childEnvironment, runProcess } from './process.js';
-import { installDesktopAndSkills } from './daemon.js';
+import { installDesktopAndSkills, scheduleServiceRestart } from './daemon.js';
 
 const execPicker = async (file, args, options) => {
   const result = await runProcess({ argv: [file, ...args], cwd: process.cwd(), extraEnv: options.env, timeoutMs: options.timeout, maxBytes: options.maxBuffer, windowsHide: options.windowsHide }).done;
@@ -367,7 +367,17 @@ export function browserUI(pool, management) {
         const res = management.onUpdate
           ? await management.onUpdate()
           : await installDesktopAndSkills(management.directory);
-        return { updated: true, version, ...res };
+        const restartScheduled = Boolean(res.restartRequired);
+        // Yeni sürüm kurulduysa çalışan servis eski varlıkları sunmaya devam eder; servisi yeniden başlat.
+        if (restartScheduled) scheduleServiceRestart(management.directory);
+        return {
+          updated: true,
+          version,
+          runningVersion: version,
+          installedVersion: res.installedVersion || version,
+          restartScheduled,
+          ...res,
+        };
       }
       if (operation === 'catalog' || operation === 'refresh_catalog') {
         const route = pool.config.routes.find(r => r.id === payload.routeId);

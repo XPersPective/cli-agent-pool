@@ -1,0 +1,45 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { updateNeedsRestart } from '../src/daemon.js';
+
+const root = fileURLToPath(new URL('..', import.meta.url));
+
+test('kurulu sürüm çalışan sürümden farklıysa servis yeniden başlatılır', () => {
+  assert.equal(updateNeedsRestart('2.9.0', '2.9.0'), false);
+  assert.equal(updateNeedsRestart('2.8.0', '2.9.0'), true);
+  assert.equal(updateNeedsRestart('2.9.0', ''), false);
+  assert.equal(updateNeedsRestart('', '2.9.0'), true);
+});
+
+test('CLI yeniden başlatma komutunu sunar', () => {
+  const result = spawnSync(process.execPath, [path.join(root, 'bin', 'pool.js'), '--help'], { encoding: 'utf8' });
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /restart\s+Stop the background service/);
+});
+
+test('paneldeki uzun toplu işlem açıklamaları kaldırıldı', () => {
+  const app = readFileSync(path.join(root, 'web', 'app.js'), 'utf8');
+  const html = readFileSync(path.join(root, 'web', 'index.html'), 'utf8');
+  const removed = [
+    'toplu işlem için işaretleyin',
+    'toplu havuza ekleme / devre dışı bırakma / gizleme için seçin',
+    'Kataloğa ve havuzlara hiç girmesini istemediğiniz modelleri işaretleyebilirsiniz.',
+    'tek tek ya da topluca silebilirsiniz.',
+  ];
+  for (const text of removed) {
+    assert.equal(app.includes(text), false, `app.js: ${text}`);
+    assert.equal(html.includes(text), false, `index.html: ${text}`);
+  }
+});
+
+test('hiyerarşi satırları görsel sınıflarla ayrılır', () => {
+  const app = readFileSync(path.join(root, 'web', 'app.js'), 'utf8');
+  assert.match(app, /'tool-row'/);
+  assert.match(app, /'subscription-row'/);
+  assert.match(app, /'family-row'/);
+  assert.match(app, /'account-row'/);
+});

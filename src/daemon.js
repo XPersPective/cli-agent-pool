@@ -197,6 +197,24 @@ export async function runTaskFromCli(directory, options) {
   });
 }
 
+export function updateNeedsRestart(runningVersion, installedVersion) {
+  if (typeof installedVersion !== 'string' || !installedVersion) return false;
+  if (typeof runningVersion !== 'string' || !runningVersion) return true;
+  return installedVersion !== runningVersion;
+}
+
+export function scheduleServiceRestart(directory) {
+  const child = spawn(process.execPath, [poolBinPath, 'restart'], {
+    cwd: directory,
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+    env: { ...process.env, CLI_AGENT_POOL_HOME: directory },
+  });
+  child.unref();
+  return { scheduled: true };
+}
+
 export async function installDesktopAndSkills(directory, installedRoot = null) {
   const config = ensureInitialized(directory, true);
   const daemonInfo = await ensureDaemon(directory, config);
@@ -204,13 +222,19 @@ export async function installDesktopAndSkills(directory, installedRoot = null) {
   const globalPoolBin = path.join(appData, 'npm', 'node_modules', 'cli-agent-pool', 'bin', 'pool.js');
   const activeRoot = installedRoot ? path.resolve(installedRoot) : existsSync(globalPoolBin) ? path.resolve(path.dirname(globalPoolBin), '..') : repoRootPath;
   const activePoolBin = path.join(activeRoot, 'bin', 'pool.js');
+  let installedVersion = null;
+  try {
+    installedVersion = JSON.parse(readFileSync(path.join(activeRoot, 'package.json'), 'utf8')).version || null;
+  } catch { /* An unreadable manifest simply cannot request a restart. */ }
 
   const results = {
     dataDirectory: directory,
     runtimePath: activeRoot,
     endpoint: daemonInfo.endpoint,
     routesConfigured: config.routes.length,
-    restartRequired: daemonInfo.version !== version,
+    runningVersion: version,
+    installedVersion,
+    restartRequired: updateNeedsRestart(version, installedVersion),
     desktopShortcut: null,
     startMenuShortcut: null,
     skillsManager: null,

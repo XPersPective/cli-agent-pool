@@ -490,13 +490,35 @@ async function addAccount(routeId) {
   })();
 }
 
+async function waitForServiceVersion(target, timeoutMs = 45000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 700));
+    try {
+      const snap = await call('snapshot');
+      if (snap?.version && snap.version === target) return true;
+    } catch { /* Servis yeniden başlıyor; tekrar dene. */ }
+  }
+  return false;
+}
+
 async function triggerUpdate() {
   const res = await call('update_service');
   const details = [];
-  if (res.version) details.push(`v${res.version}`);
+  if (res.installedVersion) details.push(`v${res.installedVersion}`);
   if (res.shortcut) details.push('masaüstü kısayolu güncellendi');
   if (res.skill) details.push('skill dağıtımı yenilendi');
   notice(`Güncelleme tamamlandı${details.length ? ` (${details.join(' · ')})` : ''}.`);
+  if (res.restartScheduled) {
+    notice('Yeni sürüm kuruldu; servis yeniden başlatılıyor…');
+    const ready = await waitForServiceVersion(res.installedVersion);
+    if (ready) {
+      location.reload();
+      return;
+    }
+    notice('Servis yeniden başlatılamadı. "Güncelle" düğmesini tekrar deneyin.', true);
+    return;
+  }
   await refresh();
 }
 
@@ -756,7 +778,6 @@ function renderSettingsSubscriptionPane(route, sub, email, issue) {
 
   const panelHeader = element('div', null, 'route-models-header');
   panelHeader.append(element('strong', `Hesaba bağlı modeller (${route.models.length} model · ${activeCount} aktif${filteredCount ? ` · ${filteredCount} filtreli` : ''})`));
-  panelHeader.append(element('p', 'Yeni çekilen modeller varsayılan olarak aktiftir. Kataloğa ve havuzlara hiç girmesini istemediğiniz modelleri işaretleyebilirsiniz.', 'hint'));
 
   const modelsToolbar = element('div', null, 'route-models-toolbar actions');
   if (!route.api && route.adapter !== 'custom') {
@@ -1319,8 +1340,8 @@ function entryMatchesQuotaFilter(route, model) {
   );
 }
 
-function makeHierarchyRow(labelText, items, selectedVal, onPick, isSubRow = false) {
-  const row = element('div', null, `hierarchy-row${isSubRow ? ' sub-row' : ''}`);
+function makeHierarchyRow(labelText, items, selectedVal, onPick, isSubRow = false, rowClass = '') {
+  const row = element('div', null, `hierarchy-row${isSubRow ? ' sub-row' : ''}${rowClass ? ` ${rowClass}` : ''}`);
   row.append(element('span', labelText, 'hierarchy-label'));
   const pills = element('div', null, 'hierarchy-pills');
   for (const item of items) {
@@ -1353,16 +1374,16 @@ function renderHierarchyNav(container, entries, navState, onChange, extraTopRow 
   if (entries.length) {
     rows.push(makeHierarchyRow('Araç', result.tools, result.tool, toolId => {
       onChange({ tool: toolId, routeId: '__all__', family: '__all__' });
-    }));
-    if (result.tool !== '__all__' && result.subscriptions.length) {
+    }, false, 'tool-row'));
+    if (result.subscriptions.length > 1) {
       rows.push(makeHierarchyRow('Abonelik', result.subscriptions, result.routeId, subId => {
         onChange({ tool: result.tool, routeId: subId, family: '__all__' });
-      }, true));
+      }, true, 'subscription-row'));
     }
     if (result.families.length > 1) {
       rows.push(makeHierarchyRow('Model ailesi', result.families, result.family, famId => {
         onChange({ tool: result.tool, routeId: result.routeId, family: famId });
-      }));
+      }, false, 'family-row'));
     }
   }
   container.replaceChildren(...rows);
@@ -1393,9 +1414,9 @@ function renderEmailHierarchyNav(container, entries, currentEmail, onSelectEmail
     rows.push(makeHierarchyRow(extraTopRow.label, extraTopRow.items, extraTopRow.value, extraTopRow.onSelect));
   }
   if (entries.length) {
-    rows.push(makeHierarchyRow('Hesap', mailItems, validEmail, id => onSelectEmail(id)));
+    rows.push(makeHierarchyRow('Hesap', mailItems, validEmail, id => onSelectEmail(id), false, 'account-row'));
     if (subResult.families.length > 1) {
-      rows.push(makeHierarchyRow('Model ailesi', subResult.families, subResult.family, famId => onSelectFamily(famId)));
+      rows.push(makeHierarchyRow('Model ailesi', subResult.families, subResult.family, famId => onSelectFamily(famId), false, 'family-row'));
     }
   }
   container.replaceChildren(...rows);
@@ -1579,7 +1600,7 @@ function renderPoolBatchBar(visibleItems) {
   }
   bar.hidden = false;
   const selectedCount = selectedPoolItems.size;
-  const info = element('span', selectedCount ? `${selectedCount} model seçildi` : `${visibleItems.length} model · toplu işlem için işaretleyin`);
+  const info = element('span', selectedCount ? `${selectedCount} model seçildi` : `${visibleItems.length} model`);
   const actions = element('div', null, 'actions');
   actions.append(button(selectedCount === visibleItems.length ? 'Seçimi temizle' : 'Tümünü seç', async () => {
     if (selectedCount === visibleItems.length) selectedPoolItems.clear();
@@ -1741,11 +1762,9 @@ function renderCatalog() {
     const selectedToolObj = hierarchy.tools.find(t => t.id === hierarchy.tool);
     const route = hierarchy.routeId !== '__all__' ? routes.find(r => r.id === hierarchy.routeId) : null;
     const toolText = hierarchy.tool === '__all__' ? 'Tüm araçlar' : (selectedToolObj?.label || hierarchy.tool);
-    const subText = hierarchy.tool === '__all__'
-      ? ''
-      : hierarchy.routeId === '__all__'
-        ? ` · Tüm abonelikler (${Math.max(0, hierarchy.subscriptions.length - 1)} hesap)`
-        : ` · ${cleanRouteLabel(route, routeEmail(route?.id))}`;
+    const subText = hierarchy.routeId === '__all__'
+      ? ` · Tüm abonelikler (${Math.max(0, hierarchy.subscriptions.length - 1)} hesap)`
+      : ` · ${route ? `${adapterLabels[route.adapter] || route.adapter} · ${cleanRouteLabel(route, routeEmail(route.id))}` : cleanRouteLabel(route, routeEmail(route?.id))}`;
     const famText = hierarchy.family === '__all__' ? '' : ` · ${familyLabel(hierarchy.family)}`;
     const routeMeta = route
       ? ` · ${billingLabels[route.billing]}${route.api ? ` · ${route.api.baseUrl}` : ''}${route.enabled ? '' : ' · Devre dışı'}`
@@ -1796,7 +1815,7 @@ function renderCatalogBatchBar(entries) {
   }
   bar.hidden = false;
   const selectedCount = selectedCatalogItems.size;
-  const info = element('span', selectedCount ? `${selectedCount} model seçildi` : `${entries.length} model · toplu havuza ekleme / devre dışı bırakma / gizleme için seçin`);
+  const info = element('span', selectedCount ? `${selectedCount} model seçildi` : `${entries.length} model`);
   const actions = element('div', null, 'actions');
   actions.append(button(selectedCount === entries.length ? 'Seçimi temizle' : 'Tümünü seç', async () => {
     if (selectedCount === entries.length) selectedCatalogItems.clear();

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { dataDirectory, initialize, loadConfig, configView, saveConfig, PoolError } from '../src/config.js';
@@ -71,6 +72,7 @@ export async function main(args = process.argv.slice(2)) {
       '  open                    Auto-start background service if needed and open desktop app window',
       '  ensure                  Ensure background pool service is running',
       '  stop                    Safely stop the background pool service (--force to stop during active tasks)',
+      '  restart                 Stop the background service and start a fresh one (used after an update)',
       '  api                     Show local HTTP /api map and base URL (auto-starts service)',
       '  status                  Show active connections, quotas, pools and catalog (auto-starts service)',
       '  pools                   Categories; --group <id> reads one category model page',
@@ -126,6 +128,38 @@ export async function main(args = process.argv.slice(2)) {
       if (error?.status) throw error;
       print({ stopped: true, alreadyStopped: true });
     }
+    return;
+  }
+  if (command === 'restart') {
+    // Servisi durdurup aynı veri diziniyle yeni bir arka plan servisi başlatır.
+    const config = ensureInitialized(directory, false);
+    await delay(Number(rest.find(a => a.startsWith('--delay='))?.split('=')[1] || 900));
+    try {
+      const res = await managementRequest(directory, config, { operation: 'shutdown', force: false });
+      if (res.confirmRequired) {
+        print({ restarted: false, reason: 'ACTIVE_TASKS', activeCount: res.activeCount });
+        return;
+      }
+    } catch {
+      // Servis zaten kapalı olabilir; yine de yeni örnek başlatılır.
+    }
+    for (let attempt = 0; attempt < 80; attempt++) {
+      await delay(150);
+      try {
+        await managementRequest(directory, config, { operation: 'pair_ui' });
+      } catch {
+        break; // Port boşaldı.
+      }
+    }
+    const child = spawn(process.execPath, [fileURLToPath(import.meta.url), 'serve'], {
+      cwd: directory,
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      env: { ...process.env, CLI_AGENT_POOL_HOME: directory },
+    });
+    child.unref();
+    print({ restarted: true, endpoint: `http://127.0.0.1:${config.port}/mcp` });
     return;
   }
   const apiOrMcp = async (routePath, mcpTool, mcpArgs) => {
