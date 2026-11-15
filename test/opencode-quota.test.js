@@ -1,0 +1,95 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { opencodeAuthKeys, parseOpenCodeGoUsage, parseOpenCodeStats, opencodeStatsNote } from '../src/quotas.js';
+import { modelIssueInfo } from '../web/pool-state.js';
+
+const root = fileURLToPath(new URL('..', import.meta.url));
+
+const statsSample = `
+┌────────────────────────────┐
+│          OVERVIEW          │
+├────────────────────────────┤
+│Sessions                    9 │
+│Messages                   22 │
+│Days                        1 │
+└────────────────────────────┘
+┌────────────────────────────┐
+│      COST & TOKENS         │
+├────────────────────────────┤
+│Total Cost               $0.06 │
+│Avg Cost/Day             $0.02 │
+└────────────────────────────┘
+`;
+
+test('opencode auth store: yalnız api türündeki anahtarlar okunur', () => {
+  const base = mkdtempSync(path.join(tmpdir(), 'pool-oc-'));
+  const dir = path.join(base, 'opencode');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({
+    opencode: { type: 'api', key: 'sk-zen' },
+    'opencode-go': { type: 'api', key: 'sk-go' },
+    'opencode-extra': { type: 'oauth', key: 'not-an-api-key' },
+  }));
+  const previous = process.env.XDG_DATA_HOME;
+  process.env.XDG_DATA_HOME = base;
+  try {
+    const keys = opencodeAuthKeys(base);
+    assert.equal(keys.opencode, 'sk-zen');
+    assert.equal(keys['opencode-go'], 'sk-go');
+    assert.equal(keys['opencode-extra'], undefined);
+  } finally {
+    if (previous === undefined) delete process.env.XDG_DATA_HOME;
+    else process.env.XDG_DATA_HOME = previous;
+  }
+});
+
+test('go kullanımı: farklı pencere yazımları yüzdeye çevrilir', () => {
+  const windows = parseOpenCodeGoUsage({ windows: [{ name: '5h', remaining: 80, resets_at: '2026-11-15T12:00:00Z' }, { name: 'weekly', limit: 100, used: 25 }] });
+  assert.equal(windows.length, 2);
+  const five = windows.find(window => window.name === 'five_hour');
+  assert.equal(five.remainingPercent, 80);
+  assert.equal(five.windowMinutes, 300);
+  assert.equal(five.resetsAt, '2026-11-15T12:00:00.000Z');
+  const weekly = windows.find(window => window.name === 'seven_day');
+  assert.equal(weekly.remainingPercent, 75);
+  assert.equal(weekly.windowMinutes, 10_080);
+});
+
+test('go kullanımı: bilinmeyen gövde sessizce boş döner', () => {
+  assert.deepEqual(parseOpenCodeGoUsage(null), []);
+  assert.deepEqual(parseOpenCodeGoUsage({ hello: 'world' }), []);
+});
+
+test('istatistik çıktısı günlük oturum/mesaj/maliyet olarak okunur', () => {
+  const stats = parseOpenCodeStats(statsSample);
+  assert.equal(stats.sessions, 9);
+  assert.equal(stats.messages, 22);
+  assert.equal(stats.costUsd, 0.06);
+  assert.match(opencodeStatsNote(stats), /9 oturum/);
+  assert.match(opencodeStatsNote(stats), /\$0\.06/);
+  assert.equal(parseOpenCodeStats('nothing here'), null);
+});
+
+test('hesap düzeyi bilgi veren sağlayıcı uyarı rozeti göstermez', () => {
+  const route = { id: 'opencode-local', adapter: 'opencode', billing: 'free', enabled: true };
+  const model = { id: 'opencode/minimax-m3.1-flash-free', enabled: true };
+  const known = modelIssueInfo(route, model, { status: 'available', windows: [], informational: true, note: 'Yerel kullanım (son 1 gün): 9 oturum' });
+  assert.equal(known.isUnknown, false);
+  assert.equal(known.badge, 'Hazır');
+  const unknown = modelIssueInfo(route, model, { status: 'unknown', windows: [] });
+  assert.equal(unknown.isUnknown, true);
+  assert.equal(unknown.badge, 'Kota okunamıyor');
+  const plain = modelIssueInfo(route, model, { status: 'available', windows: [] });
+  assert.equal(plain.isUnknown, true);
+});
+
+test('panel: yüzde penceresi yoksa açılır ok satırı kurulmaz', () => {
+  const app = readFileSync(path.join(root, 'web', 'app.js'), 'utf8');
+  assert.match(app, /function quotaFlatText\(/);
+  assert.match(app, /element\('small', text, 'quota-flat'\)/);
+  assert.doesNotMatch(app, /'Bilinmiyor'/);
+});

@@ -374,6 +374,102 @@ async function openrouterInfo(key) {
   return { auth: 'api_key', note: openrouterNote(info.status === 200 ? info.data?.data : null, credits.status === 200 ? credits.data?.data : null), ...(Number.isFinite(balance) ? { balanceUsd: balance } : {}) };
 }
 
+// ---- OpenCode (Zen / Go / OpenRouter) ---------------------------------------
+// OpenCode keeps every provider credential in its own auth store. Keys are read
+// in memory for one request, never written and never returned to the panel.
+export function opencodeAuthKeys(home = homedir()) {
+  const base = process.env.XDG_DATA_HOME || path.join(home, '.local', 'share');
+  const store = readJson(path.join(base, 'opencode', 'auth.json'));
+  const keys = {};
+  for (const [id, entry] of Object.entries(store)) {
+    if (entry?.type === 'api' && typeof entry.key === 'string' && entry.key.trim()) keys[id] = entry.key;
+  }
+  return keys;
+}
+
+const GO_WINDOW_LABELS = {
+  five_hour: ['five_hour', 300], '5h': ['five_hour', 300], hour: ['five_hour', 300],
+  seven_day: ['seven_day', 10_080], '7d': ['seven_day', 10_080], week: ['seven_day', 10_080], weekly: ['seven_day', 10_080],
+  thirty_day: ['thirty_day', 43_200], '30d': ['thirty_day', 43_200], month: ['thirty_day', 43_200], monthly: ['thirty_day', 43_200],
+};
+
+function goWindowLabel(key) {
+  const normalized = String(key || '').toLowerCase().replace(/[\s-]+/g, '_');
+  const known = GO_WINDOW_LABELS[normalized];
+  if (known) return { name: known[0], windowMinutes: known[1] };
+  if (/^(five|5)[_\s-]?hour/.test(normalized)) return { name: 'five_hour', windowMinutes: 300 };
+  if (/^(seven|7|week)/.test(normalized)) return { name: 'seven_day', windowMinutes: 10_080 };
+  if (/^(month|30)/.test(normalized)) return { name: 'thirty_day', windowMinutes: 43_200 };
+  return { name: normalized || 'pencere', windowMinutes: null };
+}
+
+// The Go usage endpoint is the only documented window source for OpenCode Go
+// subscriptions. Its exact shape is not pinned down, so every plausible window
+// spelling is accepted and anything unrecognised is ignored.
+export function parseOpenCodeGoUsage(body) {
+  const root = body?.data ?? body ?? {};
+  const found = [];
+  const windowFrom = value => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const direct = percent(value.remaining ?? value.remaining_percent ?? value.remainingPercent ?? value.percent_remaining ?? value.percentRemaining);
+    const limit = Number(value.limit ?? value.total ?? value.quota);
+    const used = Number(value.used ?? value.consumed);
+    const computed = direct == null && Number.isFinite(limit) && limit > 0 && Number.isFinite(used) ? ((limit - used) / limit) * 100 : null;
+    const remaining = direct ?? computed;
+    if (remaining == null) return null;
+    return { remaining, label: typeof value.name === 'string' ? value.name : null, resetsAt: isoTime(value.resets_at ?? value.resetsAt ?? value.reset_at ?? value.resetAt) };
+  };
+  const visit = (node, key, depth) => {
+    if (!node || typeof node !== 'object' || depth > 4) return;
+    if (Array.isArray(node)) { node.forEach(item => visit(item, key, depth + 1)); return; }
+    const window = windowFrom(node);
+    if (window) {
+      const { name, windowMinutes } = goWindowLabel(window.label || key);
+      found.push({ name, remainingPercent: window.remaining, resetsAt: window.resetsAt, ...(windowMinutes ? { windowMinutes } : {}) });
+      return;
+    }
+    for (const [childKey, value] of Object.entries(node)) {
+      if (value && typeof value === 'object') visit(value, childKey, depth + 1);
+    }
+  };
+  visit(root, null, 0);
+  const unique = new Map();
+  for (const window of found) unique.set(`${window.name}:${window.windowMinutes ?? ''}`, window);
+  return [...unique.values()];
+}
+
+export async function opencodeGoWindows(home = homedir()) {
+  const key = opencodeAuthKeys(home)['opencode-go'];
+  if (!key) return [];
+  const { status, data } = await request('https://opencode.ai/zen/go/v1/usage', { headers: { Authorization: `Bearer ${key}` } });
+  if (status !== 200) return [];
+  return parseOpenCodeGoUsage(data);
+}
+
+// `opencode stats` computes cost locally from the CLI's own database, so it is
+// the only daily signal a Zen (pay-as-you-go) key can offer.
+export function parseOpenCodeStats(output) {
+  const text = String(output || '');
+  const sessions = /Sessions\s+(\d+)/i.exec(text)?.[1];
+  const messages = /Messages\s+(\d+)/i.exec(text)?.[1];
+  const cost = /Total\s+Cost\s+\$([0-9]+(?:\.[0-9]+)?)/i.exec(text)?.[1];
+  if (!sessions && !messages && !cost) return null;
+  return {
+    sessions: sessions ? Number(sessions) : null,
+    messages: messages ? Number(messages) : null,
+    costUsd: cost ? Number(cost) : null,
+  };
+}
+
+export function opencodeStatsNote(stats) {
+  if (!stats) return null;
+  const parts = [];
+  if (Number.isFinite(stats.sessions)) parts.push(`${stats.sessions} oturum`);
+  if (Number.isFinite(stats.messages)) parts.push(`${stats.messages} mesaj`);
+  if (Number.isFinite(stats.costUsd)) parts.push(`$${stats.costUsd.toFixed(2)}`);
+  return parts.length ? `Yerel kullanım (son 1 gün): ${parts.join(' · ')}` : null;
+}
+
 // ---- User-added API / token-plan routes ------------------------------------
 // Only vendors with a documented key-based usage endpoint are queried; others stay unknown.
 export function apiQuotaVendor(baseUrl) {

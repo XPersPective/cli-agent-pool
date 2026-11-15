@@ -767,6 +767,7 @@
   .usage-line small { font-size: 11px; line-height: 1.45; white-space: normal; }
   .quota-stamp { display: block; font-size: 10.5px !important; color: var(--muted); }
   .quota-note { font-size: 11px; color: var(--muted); line-height: 1.45; overflow-wrap: anywhere; }
+  .quota-flat { display: block; font-size: 11px; color: var(--muted); line-height: 1.45; overflow-wrap: anywhere; }
 
   /* Calls */
   .calls-toolbar, .routes-toolbar { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); flex-wrap: wrap; margin-bottom: var(--s-3); }

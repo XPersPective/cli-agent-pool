@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { capture, runProcess } from './process.js';
 import { PoolError, redact, activeBillings, dataDirectory } from './config.js';
 import { loadSecret, hasSecret } from './secrets-store.js';
-import { claudeQuota, zaiQuota, zaiKeys, kimiLoggedIn, antigravityQuota, agyUsageWindows, kimiQuota, minimaxQuota, minimaxWindows, openrouterQuota, apiRouteQuota, codexAccountEmail, claudeAccountEmail, antigravityAccountEmail } from './quotas.js';
+import { claudeQuota, zaiQuota, zaiKeys, kimiLoggedIn, antigravityQuota, agyUsageWindows, kimiQuota, minimaxQuota, minimaxWindows, openrouterQuota, opencodeGoWindows, parseOpenCodeStats, opencodeStatsNote, apiRouteQuota, codexAccountEmail, claudeAccountEmail, antigravityAccountEmail } from './quotas.js';
 import { profileDirectory, profileEnvironment, profileHome, claudeConfigDirectory, wslPrefix, wslProfileHome, wslWindowsPath, wslUriToWindows } from './profiles.js';
 
 export function routeAccountEmail(route, directory = dataDirectory(), home = homedir()) {
@@ -1198,9 +1198,29 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
       const count = /(\d+)\s+credentials?/i.exec(result.output)?.[1];
       if (result.code === 0 && count !== undefined) snapshot = { status: Number(count) === 0 && route.billing !== 'free' ? 'auth_required' : 'unknown', auth: Number(count) > 0 ? 'credentials_present' : 'unverified', windows: [], source: 'native-provider-list' };
     } catch { /* A failed inspection is not proof that the user is logged out. */ }
-    if (route.adapter === 'opencode' && route.models.some(model => model.id.startsWith('openrouter/'))) {
-      const openrouter = await openrouterQuota(profileHome(route, directory));
-      if (openrouter) snapshot = { ...snapshot, ...openrouter, auth: openrouter.auth === 'missing' ? snapshot.auth : 'credentials_present', status: snapshot.status === 'unknown' ? 'available' : snapshot.status };
+    if (route.adapter === 'opencode') {
+      // OpenCode mixes a pay-as-you-go Zen key, an optional Go subscription and
+      // free provider models in one route. Each source is read on its own so a
+      // missing one never hides the others.
+      const home = profileHome(route, directory);
+      const [goWindows, openrouter, stats] = await Promise.all([
+        opencodeGoWindows(home),
+        openrouterQuota(home),
+        capture([...argv, 'stats', '--days', '1'], cwd, python, env, 20_000).then(result => parseOpenCodeStats(result.output)).catch(() => null),
+      ]);
+      const notes = [];
+      if (openrouter?.note) notes.push(openrouter.note);
+      const statsNote = opencodeStatsNote(stats);
+      if (statsNote) notes.push(statsNote);
+      if (!goWindows.length) notes.push('Zen bakiyesi yalnız konsoldan görünür: opencode.ai/console → Overview → Credits');
+      snapshot = {
+        ...snapshot,
+        status: snapshot.status === 'auth_required' ? 'auth_required' : 'available',
+        ...(goWindows.length ? { scope: 'account', windows: goWindows } : { windows: [], informational: true }),
+        ...(openrouter?.balanceUsd != null ? { balanceUsd: openrouter.balanceUsd } : {}),
+        note: notes.join(' · '),
+      };
+      if (openrouter?.auth === 'missing') snapshot.auth = 'credentials_present';
     }
     return { ...base, ...snapshot };
   }

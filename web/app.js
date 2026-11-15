@@ -414,6 +414,7 @@ function formatQuotaText(conn, q) {
   if (q.subscription === 'none' && conn.billing === 'free_credits') return 'Token planı yok · Günlük / ücretsiz kredi modu etkin';
   if (q.subscription === 'none') return 'Etkin token planı yok (günlük kredi için free_credits seçin)';
   if (q.endpoint) return `Uç nokta: ${q.endpoint}`;
+  if (q.status === 'available' && q.note) return q.note;
   return `Durum: ${q.status}${q.auth ? ` (${q.auth})` : ''}`;
 }
 
@@ -1361,13 +1362,20 @@ function quotaCell(route, model) {
   const cell = element('div', null, 'quota-cell');
   const q = snapshot?.quotas?.[route.id];
   const windows = quotaWindows(q, model.id);
+  if (!windows.length) {
+    // Without a percentage window there is nothing to expand. A disclosure row
+    // would only add an arrow and an empty "Bilinmiyor" pill to every card.
+    const text = quotaFlatText(q, quotaErrors[route.id]);
+    if (text) cell.append(element('small', text, 'quota-flat'));
+    return cell;
+  }
   const details = element('details', null, 'quota-details');
   const key = JSON.stringify([route.id, model.id]);
   details.dataset.quotaKey = key;
-  details.dataset.level = windows.length ? quotaLevel(Math.min(...windows.map(window => window.remaining))) : 'unknown';
+  details.dataset.level = quotaLevel(Math.min(...windows.map(window => window.remaining)));
   details.open = quotaStates.has(key) ? quotaStates.get(key) : quotasOpen;
   const summary = element('summary');
-  summary.append(element('span', 'Kota'), element('strong', windows.length ? `%${Math.min(...windows.map(window => window.remaining)).toFixed(0)} kalan` : 'Bilinmiyor'));
+  summary.append(element('span', 'Kota'), element('strong', `%${Math.min(...windows.map(window => window.remaining)).toFixed(0)} kalan`));
   details.append(summary, quotaBody(q, model.id, quotaErrors[route.id]));
   details.addEventListener('toggle', () => {
     if (!details.isConnected) return;
@@ -1380,6 +1388,16 @@ function quotaCell(route, model) {
   });
   cell.append(details);
   return cell;
+}
+
+function quotaFlatText(q, error = '') {
+  if (error) return `Kota sorgusu başarısız: ${error}`;
+  if (q?.note) return q.note;
+  if (!q) return quotasRefreshing ? 'Kota sorgulanıyor…' : 'Kota henüz sorgulanmadı';
+  if (q.status === 'auth_required') return 'Giriş gerekli';
+  if (q.status === 'rate_limited') return 'Son çağrı kota nedeniyle reddedildi';
+  if (q.status === 'available') return 'Kota yüzdesi bildirilmiyor';
+  return 'Kota yüzdesi bildirilmiyor';
 }
 
 function entryMatchesQuotaFilter(route, model) {
@@ -2538,7 +2556,10 @@ function loginNotice(route, compact = false) {
     return box;
   }
   const configured = q?.auth === 'credentials_present' || Boolean(email);
-  box.append(element('span', q?.status === 'auth_required' ? 'Giriş gerekli' : configured ? 'Kimlik bilgisi kayıtlı · kota henüz doğrulanmadı' : 'Oturum doğrulanmadı'));
+  const statusLine = q?.status === 'auth_required' ? 'Giriş gerekli'
+    : q?.status === 'available' && q?.note ? q.note
+    : configured ? 'Kimlik bilgisi kayıtlı' : 'Oturum doğrulanmadı';
+  box.append(element('span', statusLine));
   if (native) box.append(button(configured ? 'Yeniden giriş yap' : 'Giriş yap', async () => { const result = await call('login', { routeId: route.id }); notice(result.message); }));
   if (route.api || (route.adapter !== 'codex' && !route.trustedSettings)) box.append(button('Ayarlar', async () => routeSettings(route)));
   const check = button(compact ? '↻' : 'Kontrol et', async () => { await refreshQuotas(route.id); await refresh(); renderPool(); if (!$('settings').hidden) renderSettings(); });

@@ -149,6 +149,9 @@ export function modelIssueInfo(route, model, snapshot, quotaError = '') {
     return { state: 'quota_exhausted', level: 'error', badge: 'Kota tükendi (%0)', isError: true, isUnknown: false, isDisabled: false };
   }
   if (wins.length === 0) {
+    // A provider that answers with account-level information (OpenCode Zen/Go,
+    // free provider models) is healthy even without a percentage window.
+    if (snapshot?.informational) return { state: 'healthy', level: 'ok', badge: 'Hazır', isError: false, isUnknown: false, isDisabled: false };
     return { state: 'quota_unknown', level: 'unknown', badge: 'Kota okunamıyor', isError: false, isUnknown: true, isDisabled: false };
   }
   return { state: 'healthy', level: 'ok', badge: 'Hazır', isError: false, isUnknown: false, isDisabled: false };
