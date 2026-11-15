@@ -22,6 +22,7 @@ import {
   cleanRouteLabel,
   toolGroupsForRoutes,
   filterHierarchy,
+  settingsViewSignature,
 } from '/pool-state.js';
 import { dismissOnBackdrop } from '/dialogs.js';
 import { capabilityLabel } from '/capabilities.js';
@@ -923,7 +924,55 @@ function renderSettingsSubscriptionPane(route, sub, email, issue) {
   return pane;
 }
 
-function renderSettings() {
+// Bir liste yeniden kurulurken sayfa kaydırma konumu, odak ve açık paneller korunur;
+// kullanıcı yerini kaybetmez.
+function withStableView(render) {
+  const scrollY = window.scrollY;
+  const active = document.activeElement;
+  const activeId = active?.id || '';
+  const activeLabel = active?.getAttribute?.('aria-label') || '';
+  const openDetails = new Set();
+  for (const node of document.querySelectorAll('details')) {
+    if (node.open) openDetails.add(`${node.querySelector('summary')?.textContent?.trim() || ''}`);
+  }
+  try {
+    render();
+  } finally {
+    window.scrollTo({ top: scrollY });
+    if (activeId) {
+      $(activeId)?.focus?.({ preventScroll: true });
+    } else if (activeLabel) {
+      const match = [...document.querySelectorAll('[aria-label]')].find(node => node.getAttribute('aria-label') === activeLabel);
+      match?.focus?.({ preventScroll: true });
+    }
+    for (const node of document.querySelectorAll('details')) {
+      const key = node.querySelector('summary')?.textContent?.trim() || '';
+      if (openDetails.has(key)) node.open = true;
+    }
+  }
+}
+
+// Ayarlar sayfasının görüntülenen verisinin imzası: değişmediyse liste yeniden kurulmaz.
+let settingsRenderSignature = '';
+function settingsSignature() {
+  const uiSig = [
+    selectedSettingsTool,
+    [...selectedSettingsRoute.entries()].map(([key, value]) => `${key}=${value}`).join(','),
+    $('routes-search')?.value || '',
+    $('routes-filter')?.value || '',
+  ].join('|');
+  return settingsViewSignature(settings?.config, snapshot?.quotas || {}, uiSig);
+}
+
+function renderSettings(force = false) {
+  if (!settings || !snapshot) return;
+  const signature = settingsSignature();
+  if (!force && signature === settingsRenderSignature) return;
+  settingsRenderSignature = signature;
+  withStableView(() => renderSettingsBody());
+}
+
+function renderSettingsBody() {
   if (!settings || !snapshot) return;
   fillOriginPlaceholders();
   const previousAdapter = $('new-adapter').value;
@@ -1462,6 +1511,10 @@ async function moveEntryOrder(entries, fromIndex, toIndex, scopeGroup, sortSelec
 
 function renderPool() {
   if (!settings) return;
+  withStableView(() => renderPoolBody());
+}
+
+function renderPoolBody() {
   if (!isAllGroup(selectedGroup) && !poolGroups().includes(selectedGroup)) {
     selectedGroup = poolGroups()[0] || '__all__';
   }
@@ -1705,6 +1758,10 @@ function familyLabel(value) {
 
 function renderCatalog() {
   if (!settings) return;
+  withStableView(() => renderCatalogBody());
+}
+
+function renderCatalogBody() {
   const scroll = $('pool-models').scrollTop;
   const routes = activeRoutesForDisplay();
   const billingFilter = $('billing-filter').value;

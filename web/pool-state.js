@@ -5,6 +5,26 @@ export function memberships(model) {
 
 // Disabling a connection hides its catalog and memberships without deleting them.
 // A model served by another enabled connection remains independently visible.
+// Ayarlar sayfasının görüntülenen verisinin imzası. İmza değişmediyse liste yeniden
+// kurulmaz; böylece seçim yaparken sayfa zıplamaz, liste karışmaz.
+export function settingsViewSignature(config, quotas = {}, ui = '') {
+  if (!config) return '';
+  // Revizyon kota önbelleği yazımlarında da değişir; imzaya katılmaz, yoksa liste her yoklamada yeniden kurulur.
+  const { routes = [], revision, ...rest } = config;
+  const routeSig = routes.map(route => [
+    route.id,
+    route.enabled ? 1 : 0,
+    route.billing,
+    route.profile || '',
+    (route.models || []).map(model => `${model.id}:${model.enabled ? 1 : 0}:${(model.memberships || []).map(item => item.group).join('+')}`).join(','),
+  ].join('~')).join('|');
+  const quotaSig = Object.keys(quotas || {}).sort().map(id => {
+    const q = quotas[id];
+    return `${id}:${q?.status || ''}:${q?.remaining ?? ''}:${q?.used ?? ''}`;
+  }).join(',');
+  return `${JSON.stringify(rest)}|${routeSig}|${quotaSig}|${ui}`;
+}
+
 export function visibleRoutes(config) {
   return config.routes.filter(route => route.enabled);
 }
