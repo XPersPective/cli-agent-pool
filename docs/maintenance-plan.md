@@ -61,6 +61,12 @@
 - [x] **2.15.2 rötuş**: Kota notları kısaltıldı (`Bugün: 9 oturum · $0.00`, `OpenRouter ücretsiz: günlük 50 istek`, `Zen bakiyesi konsolda: opencode.ai/console`); kartlarda uzun açıklama tekrarı azaltıldı. `npm test` 197/197.
 - [x] **2.15.3 düzeltme — Kota düğmesi artık yalan söylemiyor (`web/app.js`, `web/pool-state.js`, `web/style.css`)**: Düğmenin durumu sayfadaki gerçek ayrıntı durumundan hesaplanır (`quotaToggleState`, `quotaToggleTarget`): açılabilir kota bloğu yoksa düğme devre dışı kalır ve "Kota ayrıntısı yok" der; hepsi açıkken "Kotaları gizle", kapalıyken "Kotaları göster" yazar. "Kotaları gizle" artık tüm kota bloklarını gizler (yüzde hapı + açılır gövde + düz kota satırı), "Kotaları göster" hepsini açar. `npm test` 199/199.
 
+## 2.16.0 — Sistem Güncellemesi, Güvenlik ve Dağıtım
+- [x] **Bağımlılıklar güncel (`package.json`, `package-lock.json`)**: `@modelcontextprotocol/sdk` `1.32.1` → `1.32.2` (kütüphanenin güncel sürümü), `zod` `4.6.7` (güncel). `npm update` ve `npm install --save-exact` ile kilit dosyası yeniden üretildi.
+- [x] **Güvenlik taraması temiz**: `npm audit` → 0 açık (düzeltilecek açık yok), `npm run secrets` → 96 dosya temiz, `npm run check` → sözdizimi kontrolü geçti, `npm test` → 199/199.
+- [x] **Dağıtım**: `git push origin main` (global kurulum junction olarak kaldı; böylece push edilen kod canlıda anında çalışır), `node bin/pool.js install` ile masaüstü/başlat menüsü kısayolları yenilendi ve skill Skills Manager ile 42 ajana dağıtıldı, servis `node bin/pool.js restart` ile yeniden başlatıldı (`/api/health` → `2.16.0`).
+- [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.16.0`.
+
 ## 2.13.0 — Düz Hiyerarşi Satırları ve Net Aç/Kapalı Anahtarı
 - [x] **Hiyerarşi ağaç yerine düz ve eşit hizada (`web/app.js`, `web/style.css`)**: Araçlar / Abonelikler / Model aileleri satırları artık üçü de aynı sol hizada, aynı başlık ve aynı çip görünümüyle sıralanır; önceki ray/dirsek iç içe yapım ve yol (breadcrumb) satırı kaldırıldı. Her düğmenin yanında model sayısı korunur.
 - [x] **Bağlantı aç/kapalı anahtarı (`web/app.js`, `web/style.css`)**: Ayarlar'daki bağlantı satırındaki "Devre dışı" etiketli kutu yerine gerçek bir anahtar (slider) geldi: solda kaydırıcı, sağda **Etkin** / **Kapalı** durumu. Anahtar çevrilince değişiklik **anında kaydedilir** (taslakta bırakılmaz) ve bağlantı etkinleştiğinde araç ve modelleri ana sayfada (Model kataloğu) görünür; durum rozeti "Kapalı" / "Etkin" olarak netleştirildi.

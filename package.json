@@ -1,6 +1,6 @@
 {
   "name": "cli-agent-pool",
-  "version": "2.15.3",
+  "version": "2.16.0",
   "private": false,
   "type": "module",
   "files": [
@@ -29,7 +29,7 @@
   },
   "license": "UNLICENSED",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.32.1",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "zod": "4.6.7"
   }
 }
