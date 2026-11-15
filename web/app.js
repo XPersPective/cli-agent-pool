@@ -620,21 +620,34 @@ function renderSettingsSubscriptionPane(route, sub, email, issue) {
     element('span', billingLabels[route.billing] || route.billing, 'badge subtle'),
     element(
       'span',
-      issue.isDisabled ? 'Kapalı' : issue.isError ? issue.badge : issue.isUnknown ? issue.badge : 'Hazır',
+      issue.isDisabled ? 'Kapalı' : issue.isError ? issue.badge : issue.isUnknown ? issue.badge : 'Etkin',
       `badge ${issue.isDisabled ? 'subtle' : issue.isError ? 'error' : issue.isUnknown ? 'warn' : 'ok'}`,
     ),
   );
 
   const sessionActions = element('div', null, 'actions subscription-session-actions');
-  const enabledToggleLabel = element('label', null, 'subscription-enable-toggle');
-  const enabled = document.createElement('input');
-  enabled.type = 'checkbox';
-  enabled.checked = route.enabled;
-  enabled.disabled = !activeBillings.has(route.billing);
-  enabled.dataset.locked = String(!activeBillings.has(route.billing));
-  enabled.addEventListener('change', () => { route.enabled = enabled.checked; });
-  enabledToggleLabel.append(enabled, element('span', route.enabled ? 'Etkin' : 'Devre dışı'));
-  sessionActions.append(enabledToggleLabel);
+  const locked = !activeBillings.has(route.billing);
+  const enabledToggle = makeSwitch({
+    checked: route.enabled,
+    disabled: locked,
+    onChange: async value => {
+      route.enabled = value;
+      dirty();
+      // Anahtar anında kaydedilir: bağlantı etkinleşince aracı ve modelleri ana sayfada görünür.
+      settings = await call('save', settings);
+      poolDirty = false;
+      baseConfig = structuredClone(settings.config);
+      updateSave();
+      renderSettings();
+      renderPool();
+      await refresh();
+      notice(`${adapterLabels[route.adapter] || route.adapter} bağlantısı ${value ? 'etkinleştirildi' : 'kapatıldı'}.`);
+    },
+  });
+  enabledToggle.wrap.title = locked
+    ? 'Ödeme / plan türü doğrulanmadan bağlantı etkinleştirilemez.'
+    : 'Bağlantıyı etkinleştirir veya kapatır; değişiklik anında kaydedilir.';
+  sessionActions.append(enabledToggle.wrap);
 
   if (!route.api && !['custom', 'lmstudio', 'ollama'].includes(route.adapter)) {
     const q = snapshot?.quotas?.[route.id];
@@ -1060,6 +1073,26 @@ $('detail').addEventListener('close', () => {
 });
 $('open-settings').addEventListener('click', () => switchPage('settings'));
 
+function makeSwitch({ checked = false, disabled = false, onChange, onLabel = 'Etkin', offLabel = 'Kapalı' } = {}) {
+  const wrap = element('label', null, 'switch');
+  const input = document.createElement('input');
+  input.type = 'checkbox';
+  input.checked = checked;
+  input.disabled = disabled;
+  input.setAttribute('role', 'switch');
+  input.setAttribute('aria-checked', String(checked));
+  const state = element('span', checked ? onLabel : offLabel, 'switch-state');
+  const track = element('span', null, 'switch-track');
+  track.append(element('span', null, 'switch-thumb'));
+  input.addEventListener('change', () => {
+    state.textContent = input.checked ? onLabel : offLabel;
+    input.setAttribute('aria-checked', String(input.checked));
+    onChange?.(input.checked);
+  });
+  wrap.append(input, track, state);
+  return { wrap, input };
+}
+
 async function saveSettings() {
   settings = await call('save', settings);
   poolDirty = false;
@@ -1311,7 +1344,7 @@ function entryMatchesQuotaFilter(route, model) {
   );
 }
 
-function makeHierarchyLevel(labelText, items, selectedVal, onPick, variant = 'nested') {
+function makeHierarchyLevel(labelText, items, selectedVal, onPick, variant = 'flat') {
   const level = element('div', null, `hierarchy-level level-${variant}`);
   const head = element('div', null, 'hierarchy-level-head');
   head.append(element('span', labelText, 'hierarchy-level-title'));
@@ -1332,17 +1365,6 @@ function makeHierarchyLevel(labelText, items, selectedVal, onPick, variant = 'ne
   return level;
 }
 
-function makeHierarchyPath(crumbs) {
-  const path = element('div', null, 'hierarchy-path');
-  for (const crumb of crumbs) {
-    if (crumb.separator) path.append(element('span', '›', 'hierarchy-separator'));
-    const node = element('span', crumb.value, 'hierarchy-crumb');
-    if (crumb.current) node.classList.add('is-current');
-    path.append(node);
-  }
-  return path;
-}
-
 function renderHierarchyNav(container, entries, navState, onChange, extraTopRow = null) {
   if (!container) return { tool: '__all__', routeId: '__all__', family: '__all__', filtered: entries, tools: [], subscriptions: [], families: [] };
   const result = filterHierarchy(entries, navState, emailsMap(), adapterLabels, familyLabel);
@@ -1352,30 +1374,21 @@ function renderHierarchyNav(container, entries, navState, onChange, extraTopRow 
 
   const rows = [];
   if (extraTopRow && extraTopRow.items?.length) {
-    rows.push(makeHierarchyLevel(extraTopRow.label, extraTopRow.items, extraTopRow.value, extraTopRow.onSelect, 'subscription'));
+    rows.push(makeHierarchyLevel(extraTopRow.label, extraTopRow.items, extraTopRow.value, extraTopRow.onSelect, 'flat'));
   }
   if (entries.length) {
-    const toolItem = result.tools.find(item => item.id === result.tool);
-    const subscriptionItem = result.subscriptions.find(item => item.id === result.routeId);
-    const familyItem = result.families.find(item => item.id === result.family);
-    rows.push(makeHierarchyPath([
-      { value: toolItem?.label || 'Tüm araçlar' },
-      { separator: true, value: result.routeId === '__all__' ? 'Tüm abonelikler' : (subscriptionItem?.label || 'Abonelik') },
-      { separator: true, value: result.family === '__all__' ? 'Tüm model aileleri' : (familyItem?.label || 'Model ailesi') },
-      { separator: true, value: `${result.filtered.length} model`, current: true },
-    ]));
     rows.push(makeHierarchyLevel('Araçlar', result.tools, result.tool, toolId => {
       onChange({ tool: toolId, routeId: '__all__', family: '__all__' });
     }, 'tool'));
     if (result.subscriptions.length > 1) {
       rows.push(makeHierarchyLevel('Abonelikler', result.subscriptions, result.routeId, subId => {
         onChange({ tool: result.tool, routeId: subId, family: '__all__' });
-      }, 'subscription'));
+      }, 'flat'));
     }
     if (result.families.length > 1) {
       rows.push(makeHierarchyLevel('Model aileleri', result.families, result.family, famId => {
         onChange({ tool: result.tool, routeId: result.routeId, family: famId });
-      }, 'family'));
+      }, 'flat'));
     }
   }
   container.replaceChildren(...rows);
@@ -1403,19 +1416,12 @@ function renderEmailHierarchyNav(container, entries, currentEmail, onSelectEmail
   const subResult = filterHierarchy(emailFiltered, { tool: '__all__', routeId: '__all__', family: currentFamily }, emailsMap(), adapterLabels, familyLabel);
   const rows = [];
   if (extraTopRow && extraTopRow.items?.length) {
-    rows.push(makeHierarchyLevel(extraTopRow.label, extraTopRow.items, extraTopRow.value, extraTopRow.onSelect, 'subscription'));
+    rows.push(makeHierarchyLevel(extraTopRow.label, extraTopRow.items, extraTopRow.value, extraTopRow.onSelect, 'flat'));
   }
   if (entries.length) {
-    const mailItem = mailItems.find(item => item.id === validEmail);
-    const familyItem = subResult.families.find(item => item.id === subResult.family);
-    rows.push(makeHierarchyPath([
-      { value: validEmail === '__all__' ? 'Tüm hesaplar' : (mailItem?.label || 'Hesap') },
-      { separator: true, value: subResult.family === '__all__' ? 'Tüm model aileleri' : (familyItem?.label || 'Model ailesi') },
-      { separator: true, value: `${subResult.filtered.length} model`, current: true },
-    ]));
-    rows.push(makeHierarchyLevel('Hesaplar', mailItems, validEmail, id => onSelectEmail(id), 'subscription'));
+    rows.push(makeHierarchyLevel('Hesaplar', mailItems, validEmail, id => onSelectEmail(id), 'flat'));
     if (subResult.families.length > 1) {
-      rows.push(makeHierarchyLevel('Model aileleri', subResult.families, subResult.family, famId => onSelectFamily(famId), 'family'));
+      rows.push(makeHierarchyLevel('Model aileleri', subResult.families, subResult.family, famId => onSelectFamily(famId), 'flat'));
     }
   }
   container.replaceChildren(...rows);

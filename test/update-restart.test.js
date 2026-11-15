@@ -36,14 +36,29 @@ test('paneldeki uzun toplu işlem açıklamaları kaldırıldı', () => {
   }
 });
 
-test('hiyerarşi satırları görsel sınıflarla ayrılır', () => {
+test('hiyerarşi satırları aynı hizada ve aynı görünümde', () => {
   const app = readFileSync(path.join(root, 'web', 'app.js'), 'utf8');
   const css = readFileSync(path.join(root, 'web', 'style.css'), 'utf8');
   assert.match(app, /makeHierarchyLevel/);
-  assert.match(app, /makeHierarchyPath/);
-  assert.match(app, /hierarchy-path/);
-  assert.match(css, /\.hierarchy-level\.level-tool/);
-  assert.match(css, /\.hierarchy-level\.level-subscription/);
-  assert.match(css, /\.hierarchy-level\.level-family/);
-  assert.match(css, /\.hierarchy-path/);
+  assert.match(app, /'Araçlar'/);
+  assert.match(app, /'Abonelikler'/);
+  assert.match(app, /'Model aileleri'/);
+  // Ağaç/ray göstergesi kalmadı: her satır aynı hizada.
+  assert.equal(/hierarchy-path/.test(app), false);
+  assert.equal(/hierarchy-crumb/.test(app), false);
+  assert.equal(/\.hierarchy-level\.level-subscription/.test(css), false);
+  assert.equal(/\.hierarchy-level\.level-family/.test(css), false);
+  assert.match(css, /\.hierarchy-level \.hierarchy-pills button/);
+});
+
+test('ayarlarda bağlantı açma anahtarı anında kaydedilir', () => {
+  const app = readFileSync(path.join(root, 'web', 'app.js'), 'utf8');
+  const css = readFileSync(path.join(root, 'web', 'style.css'), 'utf8');
+  assert.match(app, /makeSwitch/);
+  assert.match(app, /role', 'switch'/);
+  assert.match(app, /onLabel = 'Etkin', offLabel = 'Kapalı'/);
+  // Anahtar değişimi kaydeder (yalnız taslakta bırakılmaz).
+  assert.match(app, /route\.enabled = value;[\s\S]{0,400}call\('save', settings\)/);
+  assert.match(css, /\.switch-track/);
+  assert.match(css, /\.switch-state/);
 });
