@@ -57,6 +57,7 @@
 - [x] **Açılır ok kalabalığı temizlendi (`web/app.js`, `web/style.css`)**: Yüzde penceresi olmayan model kartlarında "▸ Kota · Bilinmiyor" açılır satırı kaldırıldı; yerine tek satırlık bilgi metni (`.quota-flat`) gösteriliyor. Böylece menü/filtre arkasında ok yığını görünmüyor.
 - [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.15.0`.
 - [x] **Doğrulama kanıtı (2.15.0)**: `npm run check`, `npm run secrets` (96 dosya), `npm audit` (0 açık), `npm test` (196/196) ve yeni `test/opencode-quota.test.js` (6 test) + canlı panel doğrulaması.
+- [x] **2.15.1 düzeltme**: `opencode.json` içindeki sağlayıcı anahtarları (`options.apiKey`, `{env:...}` çözümlemesiyle) da okunuyor; OpenRouter anahtarı yoksa ücretsiz modeller için belgelenmiş günlük istek sınırı (50 istek/gün) not olarak veriliyor. `npm test` 197/197.
 
 ## 2.13.0 — Düz Hiyerarşi Satırları ve Net Aç/Kapalı Anahtarı
 - [x] **Hiyerarşi ağaç yerine düz ve eşit hizada (`web/app.js`, `web/style.css`)**: Araçlar / Abonelikler / Model aileleri satırları artık üçü de aynı sol hizada, aynı başlık ve aynı çip görünümüyle sıralanır; önceki ray/dirsek iç içe yapım ve yol (breadcrumb) satırı kaldırıldı. Her düğmenin yanında model sayısı korunur.

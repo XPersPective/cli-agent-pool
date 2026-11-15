@@ -378,11 +378,23 @@ async function openrouterInfo(key) {
 // OpenCode keeps every provider credential in its own auth store. Keys are read
 // in memory for one request, never written and never returned to the panel.
 export function opencodeAuthKeys(home = homedir()) {
-  const base = process.env.XDG_DATA_HOME || path.join(home, '.local', 'share');
-  const store = readJson(path.join(base, 'opencode', 'auth.json'));
+  const dataBase = process.env.XDG_DATA_HOME || path.join(home, '.local', 'share');
+  const configBase = process.env.XDG_CONFIG_HOME || path.join(home, '.config');
+  const store = readJson(path.join(dataBase, 'opencode', 'auth.json'));
   const keys = {};
   for (const [id, entry] of Object.entries(store)) {
     if (entry?.type === 'api' && typeof entry.key === 'string' && entry.key.trim()) keys[id] = entry.key;
+  }
+  // Providers configured in opencode.json carry their own key; `{env:NAME}`
+  // is resolved here, other indirections are left to the CLI itself.
+  const config = readJson(path.join(configBase, 'opencode', 'opencode.json'));
+  for (const [id, provider] of Object.entries(config.provider || {})) {
+    if (keys[id]) continue;
+    const value = provider?.options?.apiKey;
+    if (typeof value !== 'string' || !value.trim()) continue;
+    const env = /^\{env:([^}]+)\}$/.exec(value.trim());
+    const resolved = env ? process.env[env[1]] : (/^\{/.test(value.trim()) ? null : value.trim());
+    if (resolved && resolved.trim()) keys[id] = resolved.trim();
   }
   return keys;
 }

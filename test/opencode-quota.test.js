@@ -47,6 +47,39 @@ test('opencode auth store: yalnız api türündeki anahtarlar okunur', () => {
   }
 });
 
+test('opencode.json içindeki sağlayıcı anahtarları da okunur', () => {
+  const base = mkdtempSync(path.join(tmpdir(), 'pool-oc-cfg-'));
+  const dataDir = path.join(base, 'data', 'opencode');
+  const configDir = path.join(base, 'config', 'opencode');
+  mkdirSync(dataDir, { recursive: true });
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(path.join(dataDir, 'auth.json'), JSON.stringify({ opencode: { type: 'api', key: 'sk-zen' } }));
+  writeFileSync(path.join(configDir, 'opencode.json'), JSON.stringify({
+    provider: {
+      openrouter: { options: { apiKey: 'sk-openrouter' } },
+      respan: { options: { apiKey: '{env:POOL_TEST_SPAN_KEY}' } },
+      nim: { options: { apiKey: '{file:./key.txt}' } },
+    },
+  }));
+  const previousData = process.env.XDG_DATA_HOME;
+  const previousConfig = process.env.XDG_CONFIG_HOME;
+  const previousEnv = process.env.POOL_TEST_SPAN_KEY;
+  process.env.XDG_DATA_HOME = path.join(base, 'data');
+  process.env.XDG_CONFIG_HOME = path.join(base, 'config');
+  process.env.POOL_TEST_SPAN_KEY = 'sk-respan';
+  try {
+    const keys = opencodeAuthKeys(base);
+    assert.equal(keys.opencode, 'sk-zen');
+    assert.equal(keys.openrouter, 'sk-openrouter');
+    assert.equal(keys.respan, 'sk-respan');
+    assert.equal(keys.nim, undefined);
+  } finally {
+    if (previousData === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = previousData;
+    if (previousConfig === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = previousConfig;
+    if (previousEnv === undefined) delete process.env.POOL_TEST_SPAN_KEY; else process.env.POOL_TEST_SPAN_KEY = previousEnv;
+  }
+});
+
 test('go kullanımı: farklı pencere yazımları yüzdeye çevrilir', () => {
   const windows = parseOpenCodeGoUsage({ windows: [{ name: '5h', remaining: 80, resets_at: '2026-11-15T12:00:00Z' }, { name: 'weekly', limit: 100, used: 25 }] });
   assert.equal(windows.length, 2);

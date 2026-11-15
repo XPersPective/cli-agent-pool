@@ -1210,6 +1210,7 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
       ]);
       const notes = [];
       if (openrouter?.note) notes.push(openrouter.note);
+      else if (route.models.some(model => model.id.startsWith('openrouter/'))) notes.push('OpenRouter ücretsiz modeller günlük istek sınırına tabidir (50 istek/gün); OpenRouter anahtarı eklendiğinde bakiye de ölçülür.');
       const statsNote = opencodeStatsNote(stats);
       if (statsNote) notes.push(statsNote);
       if (!goWindows.length) notes.push('Zen bakiyesi yalnız konsoldan görünür: opencode.ai/console → Overview → Credits');
