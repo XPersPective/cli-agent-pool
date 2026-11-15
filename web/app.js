@@ -19,6 +19,9 @@ import {
   setRouteModelSettingsFilter,
   unhideModels,
   sortModels,
+  cleanRouteLabel,
+  toolGroupsForRoutes,
+  filterHierarchy,
 } from '/pool-state.js';
 import { dismissOnBackdrop } from '/dialogs.js';
 import { capabilityLabel } from '/capabilities.js';
@@ -95,9 +98,16 @@ let selectedTask = null;
 let selectedTaskStamp = '';
 let poolDirty = false;
 let selectedRoute = '';
-let selectedGroup = 'high';
+let selectedGroup = '__all__';
 let selectedPoolSubgroup = '';
 let selectedHiddenSubgroup = '';
+let selectedHiddenReason = '__all__';
+let poolNav = { tool: '__all__', routeId: '__all__', family: '__all__' };
+let catalogNav = { tool: '__all__', routeId: '__all__', family: '__all__' };
+let hiddenNav = { tool: '__all__', routeId: '__all__', family: '__all__' };
+let selectedSettingsTool = '';
+const selectedSettingsRoute = new Map();
+const routeModelsFamily = new Map();
 let quotasOpen = true;
 const quotaStates = new Map();
 let noticeTimer;
@@ -118,7 +128,6 @@ let quotaIntervalId = null;
 let catalogIntervalId = null;
 let catalogSyncing = false;
 const routeModelsSearch = new Map();
-const expandedModelsPanels = new Map();
 
 let viewPreferences = {};
 try {
@@ -126,11 +135,26 @@ try {
   if (!viewPreferences || typeof viewPreferences !== 'object' || Array.isArray(viewPreferences)) viewPreferences = {};
 } catch { /* Browser defaults remain usable. */ }
 
+const validNavState = obj => ({
+  tool: typeof obj?.tool === 'string' && obj.tool ? obj.tool : '__all__',
+  routeId: typeof obj?.routeId === 'string' && obj.routeId ? obj.routeId : '__all__',
+  family: typeof obj?.family === 'string' && obj.family ? obj.family : '__all__',
+});
 selectedRoute = typeof viewPreferences.selectedRoute === 'string' ? viewPreferences.selectedRoute : '';
 selectedFamily = typeof viewPreferences.selectedFamily === 'string' ? viewPreferences.selectedFamily : '';
 selectedEmail = typeof viewPreferences.selectedEmail === 'string' ? viewPreferences.selectedEmail : '';
 selectedPoolSubgroup = typeof viewPreferences.selectedPoolSubgroup === 'string' ? viewPreferences.selectedPoolSubgroup : '';
 selectedHiddenSubgroup = typeof viewPreferences.selectedHiddenSubgroup === 'string' ? viewPreferences.selectedHiddenSubgroup : '';
+selectedHiddenReason = typeof viewPreferences.selectedHiddenReason === 'string' && viewPreferences.selectedHiddenReason ? viewPreferences.selectedHiddenReason : '__all__';
+selectedSettingsTool = typeof viewPreferences.selectedSettingsTool === 'string' ? viewPreferences.selectedSettingsTool : '';
+poolNav = validNavState(viewPreferences.poolNav);
+catalogNav = validNavState(viewPreferences.catalogNav);
+hiddenNav = validNavState(viewPreferences.hiddenNav);
+if (viewPreferences.selectedSettingsRoute && typeof viewPreferences.selectedSettingsRoute === 'object') {
+  for (const [k, v] of Object.entries(viewPreferences.selectedSettingsRoute)) {
+    if (typeof v === 'string' && v) selectedSettingsRoute.set(k, v);
+  }
+}
 if (viewPreferences.selectedGroup === '__all__' || isCategoryId(viewPreferences.selectedGroup)) {
   selectedGroup = viewPreferences.selectedGroup;
 }
@@ -150,6 +174,12 @@ function rememberView() {
       selectedGroup,
       selectedPoolSubgroup,
       selectedHiddenSubgroup,
+      selectedHiddenReason,
+      selectedSettingsTool,
+      selectedSettingsRoute: Object.fromEntries(selectedSettingsRoute),
+      poolNav,
+      catalogNav,
+      hiddenNav,
       showDisabledRoutes,
       quotasOpen,
       quotaStates: Object.fromEntries(quotaStates),
@@ -175,7 +205,7 @@ for (const id of persistedSelectIds) {
   control.addEventListener('change', () => {
     viewPreferences[id] = control.value;
     if (id === 'member-view') selectedPoolSubgroup = '';
-    if (id === 'hidden-view') selectedHiddenSubgroup = '';
+    if (id === 'hidden-view') { selectedHiddenSubgroup = ''; selectedHiddenItems.clear(); }
     rememberView();
     if ($('pool-models')) $('pool-models').scrollTop = 0;
     renderPool();
@@ -533,9 +563,10 @@ async function refresh() {
       const info = element('div');
       const titleLine = element('div', null, 'task-title');
       const email = routeEmail(conn.id);
+      const subLabel = cleanRouteLabel(conn, email);
       titleLine.append(
-        element('strong', `${conn.id} (${conn.protocol ? `${conn.protocol} API` : conn.adapter})`),
-        ...(email ? [element('span', email, 'badge email-badge')] : []),
+        element('strong', `${adapterLabels[conn.adapter] || conn.adapter}${conn.protocol ? ` · ${conn.protocol.toUpperCase()} API` : ''}`),
+        ...(email ? [element('span', email, 'badge email-badge')] : [element('span', subLabel, 'badge subtle')]),
         element('span', billingLabels[conn.billing] || conn.billing, 'badge subtle'),
       );
       info.append(titleLine, element('small', formatQuotaSummary(conn, snapshot.quotas?.[conn.id])));
@@ -585,15 +616,316 @@ function settingField(label, value, update, choices, markDirty = true) {
   return wrapper;
 }
 
+function renderSettingsSubscriptionPane(route, sub, email, issue) {
+  const pane = element('div', null, 'settings-sub-pane');
+
+  // Login / Logout / Session Bar per subscription
+  const sessionBar = element('div', null, 'subscription-session-bar');
+  const sessionInfo = element('div', null, 'subscription-session-info');
+  sessionInfo.append(
+    element('strong', adapterLabels[route.adapter] || route.adapter),
+    element('span', email || sub.subscriptionLabel, email ? 'model-email-badge' : 'badge subtle'),
+    element('span', billingLabels[route.billing] || route.billing, 'badge subtle'),
+    element(
+      'span',
+      issue.isDisabled ? 'Kapalı' : issue.isError ? issue.badge : issue.isUnknown ? issue.badge : 'Hazır',
+      `badge ${issue.isDisabled ? 'subtle' : issue.isError ? 'error' : issue.isUnknown ? 'warn' : 'ok'}`,
+    ),
+  );
+
+  const sessionActions = element('div', null, 'actions subscription-session-actions');
+  const enabledToggleLabel = element('label', null, 'subscription-enable-toggle');
+  const enabled = document.createElement('input');
+  enabled.type = 'checkbox';
+  enabled.checked = route.enabled;
+  enabled.disabled = !activeBillings.has(route.billing);
+  enabled.dataset.locked = String(!activeBillings.has(route.billing));
+  enabled.addEventListener('change', () => { route.enabled = enabled.checked; });
+  enabledToggleLabel.append(enabled, element('span', route.enabled ? 'Etkin' : 'Devre dışı'));
+  sessionActions.append(enabledToggleLabel);
+
+  if (!route.api && !['custom', 'lmstudio', 'ollama'].includes(route.adapter)) {
+    const q = snapshot?.quotas?.[route.id];
+    const hasSession = Boolean(q && (q.status === 'available' || q.status === 'rate_limited' || q.windows?.length > 0)) || Boolean(email && q?.status !== 'auth_required');
+    sessionActions.append(button(hasSession ? 'Hesabı değiştir / Yeniden giriş' : 'Giriş yap', async () => {
+      const result = await call('login', { routeId: route.id });
+      notice(result.message);
+    }));
+  }
+
+  sessionActions.append(button('Kotayı kontrol et', async () => {
+    const q = await call('quota', { routeId: route.id, force: true });
+    await refresh();
+    renderSettings();
+    showDetail(q);
+  }));
+
+  if (route.runtime === 'wsl' || (route.adapter === 'agy' && route.profile)) {
+    sessionActions.append(button('İzinleri eşitle', async () => {
+      const result = await call('sync_permissions', { routeId: route.id });
+      const synced = result.synced[route.id] || { projects: 0, grants: 0, trusted: 0 };
+      notice(`${sub.subscriptionLabel}: ${synced.projects} proje, ${synced.grants} izin ve ${synced.trusted} güvenilir klasör profil ile eşitlendi.`);
+    }));
+  }
+
+  const removeRouteBtn = button('Aboneliği kaldır', async () => {
+    const draft = poolDirty ? structuredClone(settings.config) : null;
+    const before = baseConfig || settings?.config;
+    const res = await call('delete_route', { routeId: route.id });
+    if (draft) draft.routes = draft.routes.filter(r => r.id !== route.id);
+    if (before) before.routes = before.routes.filter(r => r.id !== route.id);
+    selectedSettingsRoute.delete(route.adapter);
+    settings = { ...res, config: draft ? mergeScanDraft(res.config, before, draft) : res.config };
+    baseConfig = structuredClone(res.config);
+    poolDirty = Boolean(draft && JSON.stringify(settings.config) !== JSON.stringify(res.config));
+    updateSave();
+    renderSettings();
+    renderPool();
+    await refresh();
+    notice(`${sub.subscriptionLabel} (${adapterLabels[route.adapter] || route.adapter}) kaldırıldı.`);
+  });
+  removeRouteBtn.className = 'danger';
+  sessionActions.append(removeRouteBtn);
+
+  sessionBar.append(sessionInfo, sessionActions);
+  pane.append(sessionBar);
+
+  const authNote = loginNotice(route);
+  if (authNote.children.length) pane.append(authNote);
+
+  const grid = element('div', null, 'settings-grid');
+  grid.append(
+    settingField('Ödeme / plan türü', route.billing, value => {
+      route.billing = value;
+      enabled.disabled = !activeBillings.has(value);
+      enabled.dataset.locked = String(!activeBillings.has(value));
+    }, Object.entries(billingLabels).map(([k, v]) => [k, v])),
+    settingField('Dosya araçları', route.toolPolicy || 'native', value => { route.toolPolicy = value; }, [['native', 'Native CLI yetenekleri · istek text/read/write seçer'], ['configured', 'Yapılandırılmış model kapsamıyla sınırla']]),
+    settingField('Öncelik (küçük değer önce)', route.priority, value => { route.priority = Number(value); }),
+    settingField('Seçim için asgari kalan kota (%)', route.minRemainingPercent, value => { route.minRemainingPercent = Number(value); }),
+  );
+  pane.append(grid);
+
+  if (route.billing === 'paid_api') {
+    const autoLabel = element('label', null, 'route-header');
+    const autoCheck = document.createElement('input');
+    autoCheck.type = 'checkbox';
+    autoCheck.checked = route.autoSelect ?? route.billing !== 'paid_api';
+    autoCheck.addEventListener('change', () => { route.autoSelect = autoCheck.checked; });
+    autoLabel.append(autoCheck, element('span', 'Bu ücretli API için kategori isteklerinde kullanıma izin ver'));
+    pane.append(autoLabel);
+  }
+
+  if (route.api) {
+    pane.append(settingField('API adresi', route.api.baseUrl, value => { route.api.baseUrl = value; }));
+    const secretRef = route.api.secretRef || route.id;
+    route.api.secretRef = secretRef;
+    const hasKey = settings.secretStates?.[route.id];
+    const keyRow = element('div', null, 'actions');
+    const keyInput = document.createElement('input');
+    keyInput.type = 'password';
+    keyInput.setAttribute('aria-label', `${sub.subscriptionLabel} API anahtarı`);
+    keyInput.placeholder = hasKey ? 'Kayıtlı anahtar var (değiştirmek için yeni anahtar yazın)' : 'API anahtarı girin';
+    const keyBtn = button('Anahtarı kaydet', async () => {
+      if (!keyInput.value.trim()) throw new Error('Kaydedilecek API anahtarını girin.');
+      await call('secret', { secretRef, secret: keyInput.value });
+      keyInput.value = '';
+      settings.secretStates ||= {};
+      settings.secretStates[route.id] = true;
+      renderSettings();
+      await refresh();
+      notice(`${sub.subscriptionLabel} için API anahtarı yerel kasaya kaydedildi.`);
+    });
+    keyRow.append(keyInput, keyBtn);
+    pane.append(keyRow);
+  } else if (route.adapter !== 'codex') {
+    const trustedLabel = element('label', null, 'route-header');
+    const trusted = document.createElement('input');
+    trusted.type = 'checkbox';
+    trusted.checked = route.trustedSettings;
+    trusted.addEventListener('change', () => { route.trustedSettings = trusted.checked; });
+    trustedLabel.append(trusted, element('span', `CLI yerel ayarlarını inceledim (Giriş komutu: ${loginCommandsLabel(route.adapter)})`));
+    pane.append(trustedLabel);
+  }
+
+  // Hesaba bağlı modeller paneli + Aile & Arama filtreleri + Kalıcı settings dışlama onay kutusu
+  const modelsPanel = element('div', null, 'route-models-panel');
+  const filters = settings.config.modelFilters || [];
+  const activeCount = route.models.filter(m => !modelFiltered(filters, route.id, m.id)).length;
+  const filteredCount = route.models.length - activeCount;
+
+  const panelHeader = element('div', null, 'route-models-header');
+  panelHeader.append(element('strong', `Hesaba bağlı modeller (${route.models.length} model · ${activeCount} aktif${filteredCount ? ` · ${filteredCount} filtreli` : ''})`));
+  panelHeader.append(element('p', 'Yeni çekilen modeller varsayılan olarak aktiftir. Kataloğa ve havuzlara hiç girmesini istemediğiniz modelleri işaretleyebilirsiniz.', 'hint'));
+
+  const modelsToolbar = element('div', null, 'route-models-toolbar actions');
+  if (!route.api && route.adapter !== 'custom') {
+    modelsToolbar.append(button('Model sürümlerini yenile', async () => { await refreshCatalog(route.id); }));
+  }
+  if (filteredCount > 0) {
+    modelsToolbar.append(button(`Tümünü sisteme dahil et (${filteredCount})`, async () => {
+      settings.config.modelFilters = unhideModels(
+        settings.config.modelFilters || [],
+        settings.config.routes,
+        route.models.map(m => ({ routeId: route.id, modelId: m.id })),
+      );
+      await savePreference('modelFilters');
+      notice(`${sub.subscriptionLabel}: tüm modeller sisteme dahil edildi.`);
+    }));
+  }
+  if (activeCount > 0) {
+    modelsToolbar.append(button(`Tümünü filtrele (${activeCount})`, async () => {
+      let next = settings.config.modelFilters || [];
+      for (const m of route.models) {
+        next = setRouteModelSettingsFilter(next, route.id, m.id, true, settings.config.routes);
+      }
+      settings.config.modelFilters = next;
+      await savePreference('modelFilters');
+      notice(`${sub.subscriptionLabel}: ${activeCount} model katalog ve havuzlardan gizlendi.`);
+    }));
+  }
+
+  const familyBar = element('div', null, 'hierarchy-pills route-models-families');
+  const modelsList = element('div', null, 'route-models-list');
+
+  const renderRouteModelRows = () => {
+    const q = (routeModelsSearch.get(route.id) || '').trim().toLocaleLowerCase('tr');
+    const searchedModels = q
+      ? route.models.filter(m => `${m.id} ${m.alias || ''} ${modelFamily(m.id)} ${familyLabel(modelFamily(m.id))}`.toLocaleLowerCase('tr').includes(q))
+      : route.models;
+
+    const byFam = new Map();
+    for (const m of searchedModels) {
+      const fam = modelFamily(m.id);
+      byFam.set(fam, (byFam.get(fam) || 0) + 1);
+    }
+    const famList = [...byFam.entries()]
+      .map(([id, count]) => ({ id, label: familyLabel(id), count }))
+      .sort((a, b) => a.label.localeCompare(b.label, 'tr'));
+    let activeFamily = routeModelsFamily.get(route.id) || '__all__';
+    if (activeFamily !== '__all__' && !famList.some(f => f.id === activeFamily)) {
+      activeFamily = '__all__';
+      routeModelsFamily.set(route.id, activeFamily);
+    }
+
+    if (famList.length > 1) {
+      const famPills = [{ id: '__all__', label: 'Tüm aileler', count: searchedModels.length }, ...famList];
+      familyBar.hidden = false;
+      familyBar.replaceChildren(...famPills.map(f => {
+        const btn = element('button', `${f.label} (${f.count})`);
+        btn.type = 'button';
+        const isSel = f.id === activeFamily;
+        btn.classList.toggle('selected', isSel);
+        btn.setAttribute('aria-pressed', String(isSel));
+        btn.addEventListener('click', () => {
+          routeModelsFamily.set(route.id, f.id);
+          renderRouteModelRows();
+        });
+        return btn;
+      }));
+    } else {
+      familyBar.hidden = true;
+      familyBar.replaceChildren();
+    }
+
+    const familyFiltered = activeFamily === '__all__'
+      ? searchedModels
+      : searchedModels.filter(m => modelFamily(m.id) === activeFamily);
+    const sortedModels = sortModels(familyFiltered.map(model => ({ route, model })), 'family', false, sortContext(''));
+
+    if (!sortedModels.length) {
+      modelsList.replaceChildren(element(
+        'p',
+        route.models.length ? 'Arama veya aile filtresine uyan model yok.' : 'Bu abonelikte henüz çekilmiş model yok. "Model sürümlerini yenile" düğmesine basın.',
+        'empty',
+      ));
+      return;
+    }
+
+    modelsList.replaceChildren(...sortedModels.map(({ model }) => {
+      const currentFilters = settings.config.modelFilters || [];
+      const excluded = modelFiltered(currentFilters, route.id, model.id);
+      const row = element('label', null, `route-model-row${excluded ? ' is-filtered' : ''}`);
+      const check = document.createElement('input');
+      check.type = 'checkbox';
+      check.className = 'route-model-exclude';
+      check.checked = excluded;
+      check.setAttribute('aria-label', `${model.id} modelini gizle / katalog ve havuz dışı bırak`);
+      check.addEventListener('change', () => void action(async () => {
+        settings.config.modelFilters = setRouteModelSettingsFilter(
+          settings.config.modelFilters || [],
+          route.id,
+          model.id,
+          check.checked,
+          settings.config.routes,
+        );
+        await savePreference('modelFilters');
+        notice(`${model.id} (${sub.subscriptionLabel}) ${check.checked ? 'sistemden gizlendi (katalog/havuz dışı)' : 'sisteme dahil edildi'}.`);
+      }));
+
+      const textWrap = element('div', null, 'route-model-info');
+      const titleLine = element('div', null, 'route-model-title');
+      titleLine.append(element('strong', model.id));
+      if (model.alias && model.alias !== model.id) titleLine.append(element('small', model.alias));
+      textWrap.append(titleLine);
+
+      const meta = element('div', null, 'route-model-meta');
+      meta.append(element('span', familyLabel(modelFamily(model.id)), 'badge subtle'));
+      if (model.efforts?.length) meta.append(element('span', model.efforts.join(', '), 'badge subtle'));
+      const poolsList = memberships(model).map(m => groupLabel(m.group));
+      if (poolsList.length) meta.append(element('span', `Havuz: ${poolsList.join(', ')}`, 'badge subtle'));
+      meta.append(element('span', excluded ? 'Filtreli (Katalog/Havuz dışı)' : 'Sistemde aktif', `badge ${excluded ? 'warn' : 'ok'}`));
+
+      row.append(check, textWrap, meta);
+      return row;
+    }));
+  };
+
+  if (route.models.length > 3) {
+    const searchInput = document.createElement('input');
+    searchInput.type = 'search';
+    searchInput.className = 'route-models-search';
+    searchInput.value = routeModelsSearch.get(route.id) || '';
+    searchInput.placeholder = 'Modellerde ara…';
+    searchInput.setAttribute('aria-label', `${sub.subscriptionLabel} modellerinde ara`);
+    searchInput.addEventListener('input', () => {
+      routeModelsSearch.set(route.id, searchInput.value);
+      renderRouteModelRows();
+    });
+    modelsToolbar.append(searchInput);
+  }
+  renderRouteModelRows();
+
+  const addModelRow = element('div', null, 'actions');
+  const newModelInput = document.createElement('input');
+  newModelInput.setAttribute('aria-label', `${sub.subscriptionLabel} için yeni model kimliği`);
+  newModelInput.placeholder = 'Bu aboneliğe manuel yeni model kimliği ekle';
+  const addModelBtn = button('Model ekle', async () => {
+    const id = newModelInput.value.trim();
+    if (!id) throw new Error('Model kimliği girin.');
+    if (route.models.some(m => m.id === id)) throw new Error('Bu model zaten ekli.');
+    const kinds = ['mmx', 'ollama', 'lmstudio', 'omniroute'].includes(route.adapter) ? ['text'] : ['text', 'read', 'write'];
+    route.models.push({ id, alias: id, group: route.billing === 'free' ? 'free' : 'unassigned', enabled: true, efforts: [], kinds });
+    newModelInput.value = '';
+    await saveModel(route.id, id);
+  });
+  addModelRow.append(newModelInput, addModelBtn);
+
+  const modelsBody = element('div', null, 'route-models-body');
+  modelsBody.append(panelHeader, modelsToolbar, familyBar, modelsList, addModelRow);
+  modelsPanel.append(modelsBody);
+  pane.append(modelsPanel);
+
+  return pane;
+}
+
 function renderSettings() {
   if (!settings || !snapshot) return;
-  const expanded = new Set([...$('settings-routes').querySelectorAll('details.route-settings[open]')].map(node => node.dataset.routeId));
   const previousAdapter = $('new-adapter').value;
   const adapters = snapshot.installed.filter(cli => cli.status === 'installed');
   $('new-adapter').replaceChildren(new Option('CLI seçin', ''), ...adapters.map(cli => new Option(`${cli.label || cli.adapter} (${cli.discoveredModels?.length || 0} model)`, cli.adapter)));
   if (adapters.some(cli => cli.adapter === previousAdapter)) $('new-adapter').value = previousAdapter;
 
-  const billingChoices = Object.entries(billingLabels).map(([k, v]) => [k, v]);
   const routeSearch = ($('routes-search')?.value || '').trim().toLocaleLowerCase('tr');
   const routeFilter = $('routes-filter')?.value || 'all';
 
@@ -608,273 +940,101 @@ function renderSettings() {
     return hay.includes(routeSearch);
   });
 
-  $('settings-routes').replaceChildren(...matchingRoutes.map(route => {
-    const section = element('details', null, 'route-settings');
-    section.dataset.routeId = route.id;
-    section.open = expanded.has(route.id);
-    const email = routeEmail(route.id);
-    const issue = modelIssueInfo(route, { id: '' }, snapshot?.quotas?.[route.id], quotaErrors[route.id]);
-
-    const summary = element('summary');
-    summary.append(element('strong', adapterLabels[route.adapter] || route.adapter));
-    const meta = element('div', null, 'route-summary-meta');
-    if (email) meta.append(element('span', email, 'badge email-badge'));
-    else if (route.profile) meta.append(element('span', `Profil: ${route.profile}${route.runtime === 'wsl' ? ' (WSL)' : ''}`, 'badge email-badge'));
-    meta.append(element('span', route.id, 'badge subtle'));
-    meta.append(element('span', billingLabels[route.billing] || route.billing, 'badge subtle'));
-    if (issue.isError) meta.append(element('span', issue.badge, 'badge error'));
-    else if (issue.isUnknown) meta.append(element('span', issue.badge, 'badge warn'));
-    meta.append(element('span', route.enabled ? 'Etkin' : 'Kapalı', `badge ${route.enabled ? 'ok' : 'subtle'}`));
-    summary.append(meta);
-    section.append(summary);
-
-    const body = element('div', null, 'settings-body');
-    const header = element('label', null, 'route-header');
-    const enabled = document.createElement('input');
-    enabled.type = 'checkbox';
-    enabled.checked = route.enabled;
-    enabled.disabled = !activeBillings.has(route.billing);
-    enabled.dataset.locked = String(!activeBillings.has(route.billing));
-    enabled.addEventListener('change', () => { route.enabled = enabled.checked; });
-    header.append(enabled, element('strong', `${route.id} · ${route.api ? `${route.api.protocol} API (${route.adapter})` : (adapterLabels[route.adapter] || route.adapter)}${email ? ` · ${email}` : ''}`));
-    body.append(header);
-
-    const grid = element('div', null, 'settings-grid');
-    grid.append(
-      settingField('Ödeme / plan türü', route.billing, value => {
-        route.billing = value;
-        enabled.disabled = !activeBillings.has(value);
-        enabled.dataset.locked = String(!activeBillings.has(value));
-      }, billingChoices),
-      settingField('Dosya araçları', route.toolPolicy || 'native', value => { route.toolPolicy = value; }, [['native', 'Native CLI yetenekleri · istek text/read/write seçer'], ['configured', 'Yapılandırılmış model kapsamıyla sınırla']]),
-      settingField('Öncelik (küçük değer önce)', route.priority, value => { route.priority = Number(value); }),
-      settingField('Seçim için asgari kalan kota (%)', route.minRemainingPercent, value => { route.minRemainingPercent = Number(value); }),
-    );
-    body.append(grid);
-
-    if (route.billing === 'paid_api') {
-      const autoLabel = element('label', null, 'route-header');
-      const autoCheck = document.createElement('input');
-      autoCheck.type = 'checkbox';
-      autoCheck.checked = route.autoSelect ?? route.billing !== 'paid_api';
-      autoCheck.addEventListener('change', () => { route.autoSelect = autoCheck.checked; });
-      autoLabel.append(autoCheck, element('span', 'Bu ücretli API için kategori isteklerinde kullanıma izin ver'));
-      body.append(autoLabel);
-    }
-
-    if (route.api) {
-      body.append(settingField('API adresi', route.api.baseUrl, value => { route.api.baseUrl = value; }));
-      const secretRef = route.api.secretRef || route.id;
-      route.api.secretRef = secretRef;
-      const hasKey = settings.secretStates?.[route.id];
-      const keyRow = element('div', null, 'actions');
-      const keyInput = document.createElement('input');
-      keyInput.type = 'password';
-      keyInput.setAttribute('aria-label', `${route.id} API anahtarı`);
-      keyInput.placeholder = hasKey ? 'Kayıtlı anahtar var (değiştirmek için yeni anahtar yazın)' : 'API anahtarı girin';
-      const keyBtn = button('Anahtarı kaydet', async () => {
-        if (!keyInput.value.trim()) throw new Error('Kaydedilecek API anahtarını girin.');
-        await call('secret', { secretRef, secret: keyInput.value });
-        keyInput.value = '';
-        settings.secretStates ||= {};
-        settings.secretStates[route.id] = true;
-        renderSettings();
-        await refresh();
-        notice(`${route.id} için API anahtarı yerel kasaya kaydedildi.`);
-      });
-      keyRow.append(keyInput, keyBtn);
-      body.append(keyRow);
-    } else if (route.adapter !== 'codex') {
-      const trustedLabel = element('label', null, 'route-header');
-      const trusted = document.createElement('input');
-      trusted.type = 'checkbox';
-      trusted.checked = route.trustedSettings;
-      trusted.addEventListener('change', () => { route.trustedSettings = trusted.checked; });
-      trustedLabel.append(trusted, element('span', `CLI yerel ayarlarını inceledim (Giriş komutu: ${loginCommandsLabel(route.adapter)})`));
-      body.append(trustedLabel);
-    }
-
-    const modelsDetails = element('details', null, 'route-models-panel');
-    modelsDetails.open = expandedModelsPanels.has(route.id) ? expandedModelsPanels.get(route.id) : true;
-    modelsDetails.addEventListener('toggle', () => { expandedModelsPanels.set(route.id, modelsDetails.open); });
-    const filters = settings.config.modelFilters || [];
-    const activeCount = route.models.filter(m => !modelFiltered(filters, route.id, m.id)).length;
-    const filteredCount = route.models.length - activeCount;
-    modelsDetails.append(element(
-      'summary',
-      `Hesaba bağlı modeller (${route.models.length} model · ${activeCount} aktif${filteredCount ? ` · ${filteredCount} gizli/filtreli` : ''})`,
-    ));
-
-    const modelsBody = element('div', null, 'route-models-body');
-    modelsBody.append(element('p', 'Yeni eklenen modeller varsayılan olarak sisteme otomatik dahil edilir. Kataloğa ve havuzlara hiç girmesini istemediğiniz modelleri işaretlemeniz yeterlidir.', 'hint'));
-
-    const modelsToolbar = element('div', null, 'route-models-toolbar actions');
-    if (!route.api && route.adapter !== 'custom') {
-      modelsToolbar.append(button('Model sürümlerini yenile', async () => { await refreshCatalog(route.id); }));
-    }
-    if (filteredCount > 0) {
-      modelsToolbar.append(button(`Tümünü sisteme dahil et (${filteredCount})`, async () => {
-        settings.config.modelFilters = unhideModels(
-          settings.config.modelFilters || [],
-          settings.config.routes,
-          route.models.map(m => ({ routeId: route.id, modelId: m.id })),
-        );
-        await savePreference('modelFilters');
-        notice(`${route.id}: tüm modeller sisteme dahil edildi.`);
-      }));
-    }
-    if (activeCount > 0) {
-      modelsToolbar.append(button(`Tümünü filtrele (${activeCount})`, async () => {
-        let next = settings.config.modelFilters || [];
-        for (const m of route.models) {
-          next = setRouteModelSettingsFilter(next, route.id, m.id, true, settings.config.routes);
-        }
-        settings.config.modelFilters = next;
-        await savePreference('modelFilters');
-        notice(`${route.id}: ${activeCount} model katalog ve havuzlardan gizlendi.`);
-      }));
-    }
-
-    const modelsList = element('div', null, 'route-models-list');
-    const renderRouteModelRows = () => {
-      const q = (routeModelsSearch.get(route.id) || '').trim().toLocaleLowerCase('tr');
-      const matching = q
-        ? route.models.filter(m => `${m.id} ${m.alias || ''} ${modelFamily(m.id)}`.toLocaleLowerCase('tr').includes(q))
-        : route.models;
-      const sortedModels = sortModels(matching.map(model => ({ route, model })), 'family', false, sortContext(''));
-      if (!sortedModels.length) {
-        modelsList.replaceChildren(element(
-          'p',
-          route.models.length ? 'Aramanıza uyan model yok.' : 'Bu bağlantıda henüz çekilmiş model yok. Yukarıdaki "Model sürümlerini yenile" düğmesine basın.',
-          'empty',
-        ));
-        return;
-      }
-      modelsList.replaceChildren(...sortedModels.map(({ model }) => {
-        const currentFilters = settings.config.modelFilters || [];
-        const excluded = modelFiltered(currentFilters, route.id, model.id);
-        const row = element('label', null, `route-model-row${excluded ? ' is-filtered' : ''}`);
-        const check = document.createElement('input');
-        check.type = 'checkbox';
-        check.className = 'route-model-exclude';
-        check.checked = excluded;
-        check.setAttribute('aria-label', `${model.id} modelini gizle / katalog ve havuz dışı bırak`);
-        check.addEventListener('change', () => void action(async () => {
-          settings.config.modelFilters = setRouteModelSettingsFilter(
-            settings.config.modelFilters || [],
-            route.id,
-            model.id,
-            check.checked,
-            settings.config.routes,
-          );
-          await savePreference('modelFilters');
-          notice(`${model.id} (${route.id}) ${check.checked ? 'sistemden gizlendi (katalog/havuz dışı)' : 'sisteme dahil edildi'}.`);
-        }));
-
-        const textWrap = element('div', null, 'route-model-info');
-        const titleLine = element('div', null, 'route-model-title');
-        titleLine.append(element('strong', model.id));
-        if (model.alias && model.alias !== model.id) titleLine.append(element('small', model.alias));
-        textWrap.append(titleLine);
-
-        const meta = element('div', null, 'route-model-meta');
-        meta.append(element('span', familyLabel(modelFamily(model.id)), 'badge subtle'));
-        if (model.efforts?.length) meta.append(element('span', model.efforts.join(', '), 'badge subtle'));
-        const poolsList = memberships(model).map(m => groupLabel(m.group));
-        if (poolsList.length) meta.append(element('span', `Havuz: ${poolsList.join(', ')}`, 'badge subtle'));
-        meta.append(element('span', excluded ? 'Filtreli (Katalog/Havuz dışı)' : 'Sistemde aktif', `badge ${excluded ? 'warn' : 'ok'}`));
-
-        row.append(check, textWrap, meta);
-        return row;
-      }));
-    };
-
-    if (route.models.length > 6) {
-      const searchInput = document.createElement('input');
-      searchInput.type = 'search';
-      searchInput.className = 'route-models-search';
-      searchInput.value = routeModelsSearch.get(route.id) || '';
-      searchInput.placeholder = 'Modellerde ara…';
-      searchInput.setAttribute('aria-label', `${route.id} modellerinde ara`);
-      searchInput.addEventListener('input', () => {
-        routeModelsSearch.set(route.id, searchInput.value);
-        renderRouteModelRows();
-      });
-      modelsToolbar.append(searchInput);
-    }
-    renderRouteModelRows();
-
-    const addModelRow = element('div', null, 'actions');
-    const newModelInput = document.createElement('input');
-    newModelInput.setAttribute('aria-label', `${route.id} için yeni model kimliği`);
-    newModelInput.placeholder = 'Bu bağlantıya manuel yeni model kimliği ekle';
-    const addModelBtn = button('Model ekle', async () => {
-      const id = newModelInput.value.trim();
-      if (!id) throw new Error('Model kimliği girin.');
-      if (route.models.some(m => m.id === id)) throw new Error('Bu model zaten ekli.');
-      const kinds = ['mmx', 'ollama', 'lmstudio', 'omniroute'].includes(route.adapter) ? ['text'] : ['text', 'read', 'write'];
-      route.models.push({ id, alias: id, group: route.billing === 'free' ? 'free' : 'unassigned', enabled: true, efforts: [], kinds });
-      newModelInput.value = '';
-      await saveModel(route.id, id);
-    });
-    addModelRow.append(newModelInput, addModelBtn);
-    modelsBody.append(modelsToolbar, modelsList, addModelRow);
-    modelsDetails.append(modelsBody);
-    body.append(modelsDetails);
-
-    const routeActionsBar = element('div', null, 'route-actions-bar');
-    const routeActions = element('div', null, 'actions');
-    routeActions.append(button('Kota / plan sorgula', async () => {
-      const q = await call('quota', { routeId: route.id, force: true });
-      await refresh();
-      showDetail(q);
-    }));
-    if (!route.api && route.adapter !== 'custom') {
-      routeActions.append(button('Model sürümlerini yenile', async () => { await refreshCatalog(route.id); }));
-    }
-    if (!route.api && !['custom', 'lmstudio', 'ollama'].includes(route.adapter)) {
-      routeActions.append(button('Giriş yap', async () => {
-        const result = await call('login', { routeId: route.id });
-        notice(result.message);
-      }));
-    }
-    if (!route.api && accountAdapters.has(route.adapter) && !route.profile) {
-      routeActions.append(button(route.adapter === 'agy' ? 'Yeni Antigravity hesabı ekle' : 'Yeni hesap ekle', () => addAccount(route.id)));
-    }
-    if (route.runtime === 'wsl' || (route.adapter === 'agy' && route.profile)) {
-      routeActions.append(button('İzinleri eşitle', async () => {
-        const result = await call('sync_permissions', { routeId: route.id });
-        const synced = result.synced[route.id] || { projects: 0, grants: 0, trusted: 0 };
-        notice(`${route.id}: ${synced.projects} proje, ${synced.grants} izin ve ${synced.trusted} güvenilir klasör profil ile eşitlendi.`);
-      }));
-    }
-    const removeRouteBtn = button('Bağlantıyı kaldır', async () => {
-      const draft = poolDirty ? structuredClone(settings.config) : null;
-      const before = baseConfig || settings?.config;
-      const res = await call('delete_route', { routeId: route.id });
-      if (draft) draft.routes = draft.routes.filter(r => r.id !== route.id);
-      if (before) before.routes = before.routes.filter(r => r.id !== route.id);
-      settings = { ...res, config: draft ? mergeScanDraft(res.config, before, draft) : res.config };
-      baseConfig = structuredClone(res.config);
-      poolDirty = Boolean(draft && JSON.stringify(settings.config) !== JSON.stringify(res.config));
-      updateSave();
-      renderSettings();
-      renderPool();
-      await refresh();
-      notice(`${route.id} bağlantısı kaldırıldı.`);
-    });
-    removeRouteBtn.className = 'danger';
-    routeActionsBar.append(routeActions, removeRouteBtn);
-    body.append(routeActionsBar, loginNotice(route));
-    section.append(body);
-    return section;
-  }));
-
   if (!settings.config.routes.length) {
-    $('settings-routes').append(element('p', 'Henüz bağlantı yok. Üstteki "Modelleri tara ve aktar" düğmesine basın veya aşağıdan ekleyin.', 'empty'));
-  } else if (!matchingRoutes.length) {
-    $('settings-routes').append(element('p', 'Arama veya filtreye uyan bağlantı yok.', 'empty'));
+    $('settings-routes').replaceChildren(element('p', 'Henüz bağlantı yok. Üstteki "Modelleri tara ve aktar" düğmesine basın veya aşağıdan ekleyin.', 'empty'));
+    return;
   }
+  if (!matchingRoutes.length) {
+    $('settings-routes').replaceChildren(element('p', 'Arama veya filtreye uyan bağlantı yok.', 'empty'));
+    return;
+  }
+
+  const toolGroups = toolGroupsForRoutes(matchingRoutes, emailsMap(), adapterLabels);
+  if (!toolGroups.some(g => g.adapter === selectedSettingsTool)) {
+    selectedSettingsTool = toolGroups[0].adapter;
+  }
+
+  // Level 1: Alphabetical Tool Tab Bar
+  const toolsNav = element('div', null, 'settings-tools-nav');
+  for (const group of toolGroups) {
+    const hasError = group.routes.some(sub => {
+      const iss = modelIssueInfo(sub.route, { id: '' }, snapshot?.quotas?.[sub.id], quotaErrors[sub.id]);
+      return iss.isError;
+    });
+    const enabledCount = group.routes.filter(sub => sub.enabled).length;
+    const tab = element('button', null, `settings-tool-tab${group.adapter === selectedSettingsTool ? ' selected' : ''}${hasError ? ' has-issue' : ''}`);
+    tab.type = 'button';
+    tab.setAttribute('aria-pressed', String(group.adapter === selectedSettingsTool));
+    tab.append(
+      element('strong', group.label),
+      element('span', `${enabledCount}/${group.routes.length} abonelik`, 'badge subtle'),
+    );
+    tab.addEventListener('click', () => {
+      selectedSettingsTool = group.adapter;
+      rememberView();
+      renderSettings();
+    });
+    toolsNav.append(tab);
+  }
+
+  const activeTool = toolGroups.find(g => g.adapter === selectedSettingsTool) || toolGroups[0];
+  let activeSubId = selectedSettingsRoute.get(activeTool.adapter);
+  if (!activeTool.routes.some(sub => sub.id === activeSubId)) {
+    activeSubId = activeTool.routes[0]?.id || '';
+    if (activeSubId) selectedSettingsRoute.set(activeTool.adapter, activeSubId);
+  }
+  const activeSub = activeTool.routes.find(sub => sub.id === activeSubId) || activeTool.routes[0];
+
+  // Tool container card
+  const toolCard = element('section', null, 'settings-tool-card');
+  const toolHeader = element('div', null, 'settings-tool-header');
+  const toolTitle = element('div', null, 'settings-tool-title');
+  toolTitle.append(
+    element('h4', activeTool.label),
+    element('span', `${activeTool.routes.length} abonelik / bağlantı`, 'badge subtle'),
+  );
+  const toolActions = element('div', null, 'actions');
+  const baseAccountRoute = settings.config.routes.find(r => r.adapter === activeTool.adapter && !r.api && !r.profile)
+    || activeTool.routes.find(sub => !sub.isApi)?.route;
+  if (baseAccountRoute && accountAdapters.has(activeTool.adapter)) {
+    const addAccBtn = button(`+ Yeni ${activeTool.adapter === 'agy' ? 'Antigravity hesabı' : 'abonelik'} ekle`, () => addAccount(baseAccountRoute.id));
+    addAccBtn.classList.add('primary');
+    toolActions.append(addAccBtn);
+  }
+  toolHeader.append(toolTitle, toolActions);
+  toolCard.append(toolHeader);
+
+  // Level 2: Subscription Sub-tabs under the selected Tool
+  const subsNav = element('div', null, 'settings-subs-nav');
+  for (const sub of activeTool.routes) {
+    const iss = modelIssueInfo(sub.route, { id: '' }, snapshot?.quotas?.[sub.id], quotaErrors[sub.id]);
+    const isSel = sub.id === activeSub?.id;
+    const subBtn = element('button', null, `settings-sub-tab${isSel ? ' selected' : ''}${iss.isError ? ' has-issue' : ''}${!sub.enabled ? ' is-disabled' : ''}`);
+    subBtn.type = 'button';
+    subBtn.setAttribute('aria-pressed', String(isSel));
+    const statusText = iss.isDisabled ? 'Kapalı' : iss.isError ? 'Sorunlu' : iss.isUnknown ? 'Kota ?' : 'Etkin';
+    const statusTone = iss.isDisabled ? 'subtle' : iss.isError ? 'error' : iss.isUnknown ? 'warn' : 'ok';
+    subBtn.append(
+      element('span', sub.subscriptionLabel, 'settings-sub-label'),
+      element('span', statusText, `badge ${statusTone}`),
+    );
+    subBtn.addEventListener('click', () => {
+      selectedSettingsRoute.set(activeTool.adapter, sub.id);
+      rememberView();
+      renderSettings();
+    });
+    subsNav.append(subBtn);
+  }
+  toolCard.append(subsNav);
+
+  // Level 3: Selected Subscription Details & Models Checklist
+  if (activeSub) {
+    const email = activeSub.email || routeEmail(activeSub.id);
+    const issue = modelIssueInfo(activeSub.route, { id: '' }, snapshot?.quotas?.[activeSub.id], quotaErrors[activeSub.id]);
+    toolCard.append(renderSettingsSubscriptionPane(activeSub.route, activeSub, email, issue));
+  }
+
+  $('settings-routes').replaceChildren(toolsNav, toolCard);
   if (busy) $('settings-routes').querySelectorAll('input,select,textarea,button').forEach(node => { node.disabled = true; });
 }
 
@@ -1159,53 +1319,87 @@ function entryMatchesQuotaFilter(route, model) {
   );
 }
 
-function buildSubGroups(entries, mode) {
-  if (mode === 'all') return [];
-  const groups = [];
-  if (mode === 'route') {
-    const byRoute = new Map();
-    for (const item of entries) {
-      if (!byRoute.has(item.route.id)) byRoute.set(item.route.id, []);
-      byRoute.get(item.route.id).push(item);
-    }
-    for (const [id, list] of byRoute) {
-      const route = list[0].route;
-      const mail = routeEmail(route.id);
-      groups.push({
-        id,
-        label: `${adapterLabels[route.adapter] || route.adapter}${route.api ? ' API' : ''}${mail ? ` · ${mail}` : ` · ${route.id}`}`,
-        count: list.length,
-      });
-    }
-    groups.sort((a, b) => a.label.localeCompare(b.label, 'tr'));
-  } else if (mode === 'family') {
-    const byFamily = new Map();
-    for (const item of entries) {
-      const fam = modelFamily(item.model.id);
-      byFamily.set(fam, (byFamily.get(fam) || 0) + 1);
-    }
-    for (const [id, count] of [...byFamily.entries()].sort((a, b) => a[0].localeCompare(b[0], 'tr'))) {
-      groups.push({ id, label: familyLabel(id), count });
-    }
-  } else if (mode === 'email') {
-    const byMail = new Map();
-    for (const item of entries) {
-      const mail = routeEmail(item.route.id) || '__no_email__';
-      byMail.set(mail, (byMail.get(mail) || 0) + 1);
-    }
-    for (const [id, count] of [...byMail.entries()].sort((a, b) => a[0].localeCompare(b[0], 'tr'))) {
-      groups.push({ id, label: id === '__no_email__' ? 'E-postasız / Yerel' : id, count });
-    }
+function makeHierarchyRow(labelText, items, selectedVal, onPick, isSubRow = false) {
+  const row = element('div', null, `hierarchy-row${isSubRow ? ' sub-row' : ''}`);
+  row.append(element('span', labelText, 'hierarchy-label'));
+  const pills = element('div', null, 'hierarchy-pills');
+  for (const item of items) {
+    const disabledSuffix = isSubRow && item.enabled === false ? ' (Kapalı)' : '';
+    const btn = element('button', `${item.label}${disabledSuffix} (${item.count})`);
+    btn.type = 'button';
+    btn.title = `${item.label}${disabledSuffix}`;
+    const isSelected = item.id === selectedVal;
+    btn.classList.toggle('selected', isSelected);
+    if (isSubRow && item.enabled === false) btn.classList.add('is-disabled');
+    btn.setAttribute('aria-pressed', String(isSelected));
+    btn.addEventListener('click', () => onPick(item.id));
+    pills.append(btn);
   }
-  return groups;
+  row.append(pills);
+  return row;
 }
 
-function entryMatchesSubGroup(item, mode, selected) {
-  if (!selected || selected === '__all__' || mode === 'all') return true;
-  if (mode === 'route') return item.route.id === selected;
-  if (mode === 'family') return modelFamily(item.model.id) === selected;
-  if (mode === 'email') return (routeEmail(item.route.id) || '__no_email__') === selected;
-  return true;
+function renderHierarchyNav(container, entries, navState, onChange, extraTopRow = null) {
+  if (!container) return { tool: '__all__', routeId: '__all__', family: '__all__', filtered: entries, tools: [], subscriptions: [], families: [] };
+  const result = filterHierarchy(entries, navState, emailsMap(), adapterLabels, familyLabel);
+  navState.tool = result.tool;
+  navState.routeId = result.routeId;
+  navState.family = result.family;
+
+  const rows = [];
+  if (extraTopRow && extraTopRow.items?.length) {
+    rows.push(makeHierarchyRow(extraTopRow.label, extraTopRow.items, extraTopRow.value, extraTopRow.onSelect));
+  }
+  if (entries.length) {
+    rows.push(makeHierarchyRow('Araç', result.tools, result.tool, toolId => {
+      onChange({ tool: toolId, routeId: '__all__', family: '__all__' });
+    }));
+    if (result.tool !== '__all__' && result.subscriptions.length) {
+      rows.push(makeHierarchyRow('Abonelik', result.subscriptions, result.routeId, subId => {
+        onChange({ tool: result.tool, routeId: subId, family: '__all__' });
+      }, true));
+    }
+    if (result.families.length > 1) {
+      rows.push(makeHierarchyRow('Model ailesi', result.families, result.family, famId => {
+        onChange({ tool: result.tool, routeId: result.routeId, family: famId });
+      }));
+    }
+  }
+  container.replaceChildren(...rows);
+  return result;
+}
+
+function renderEmailHierarchyNav(container, entries, currentEmail, onSelectEmail, currentFamily, onSelectFamily, extraTopRow = null) {
+  if (!container) return entries;
+  const byMail = new Map();
+  for (const item of entries) {
+    const mail = routeEmail(item.route.id) || '__no_email__';
+    byMail.set(mail, (byMail.get(mail) || 0) + 1);
+  }
+  const mailItems = [
+    { id: '__all__', label: 'Tüm hesaplar', count: entries.length },
+    ...[...byMail.entries()]
+      .sort((a, b) => (a[0] === '__no_email__' ? '~~~' : a[0]).localeCompare(b[0] === '__no_email__' ? '~~~' : b[0], 'tr'))
+      .map(([id, count]) => ({ id, label: id === '__no_email__' ? 'E-postasız / API' : id, count })),
+  ];
+  const validEmail = currentEmail && mailItems.some(m => m.id === currentEmail) ? currentEmail : '__all__';
+  const emailFiltered = validEmail === '__all__'
+    ? entries
+    : entries.filter(item => (routeEmail(item.route.id) || '__no_email__') === validEmail);
+
+  const subResult = filterHierarchy(emailFiltered, { tool: '__all__', routeId: '__all__', family: currentFamily }, emailsMap(), adapterLabels, familyLabel);
+  const rows = [];
+  if (extraTopRow && extraTopRow.items?.length) {
+    rows.push(makeHierarchyRow(extraTopRow.label, extraTopRow.items, extraTopRow.value, extraTopRow.onSelect));
+  }
+  if (entries.length) {
+    rows.push(makeHierarchyRow('Hesap', mailItems, validEmail, id => onSelectEmail(id)));
+    if (subResult.families.length > 1) {
+      rows.push(makeHierarchyRow('Model ailesi', subResult.families, subResult.family, famId => onSelectFamily(famId)));
+    }
+  }
+  container.replaceChildren(...rows);
+  return subResult.filtered;
 }
 
 function searchHaystack(route, model) {
@@ -1309,33 +1503,41 @@ function renderPool() {
     : groupFiltered;
 
   const memberView = $('member-view').value;
-  const subGroups = buildSubGroups(searched, memberView);
-  if (memberView !== 'all') {
-    const validIds = new Set(['', ...subGroups.map(g => g.id)]);
-    if (!validIds.has(selectedPoolSubgroup)) selectedPoolSubgroup = '';
-    $('pool-sub-nav').replaceChildren(
-      ...[{ id: '', label: 'Tümü', count: searched.length }, ...subGroups].map(group => {
-        const node = element('button', `${group.label} (${group.count})`);
-        node.type = 'button';
-        const isSelected = group.id === selectedPoolSubgroup;
-        node.classList.toggle('selected', isSelected);
-        node.setAttribute('aria-pressed', String(isSelected));
-        node.addEventListener('click', () => {
-          selectedPoolSubgroup = group.id;
-          selectedPoolItems.clear();
-          rememberView();
-          renderPool();
-        });
-        return node;
-      }),
+  const poolNavEl = $('pool-hierarchy-nav') || $('pool-sub-nav');
+  let subFiltered = searched;
+  if (memberView === 'all') {
+    poolNavEl?.replaceChildren();
+  } else if (memberView === 'email') {
+    subFiltered = renderEmailHierarchyNav(
+      poolNavEl,
+      searched,
+      selectedPoolSubgroup || '__all__',
+      id => {
+        selectedPoolSubgroup = id;
+        poolNav.family = '__all__';
+        selectedPoolItems.clear();
+        rememberView();
+        renderPool();
+      },
+      poolNav.family,
+      famId => {
+        poolNav.family = famId;
+        selectedPoolItems.clear();
+        rememberView();
+        renderPool();
+      },
     );
   } else {
-    $('pool-sub-nav').replaceChildren();
+    subFiltered = renderHierarchyNav(poolNavEl, searched, poolNav, next => {
+      poolNav = next;
+      selectedPoolItems.clear();
+      rememberView();
+      renderPool();
+    }).filtered;
   }
 
-  const subFiltered = searched.filter(item => entryMatchesSubGroup(item, memberView, selectedPoolSubgroup));
   const memberSort = $('member-sort')?.value || 'az';
-  const sorted = sortModels(subFiltered, memberSort, memberView === 'family', sortContext(selectedGroup));
+  const sorted = sortModels(subFiltered, memberSort, false, sortContext(selectedGroup));
   if ($('pool-member-count')) $('pool-member-count').textContent = `${sorted.length} model`;
 
   const visibleMemberKeys = new Set();
@@ -1490,131 +1692,79 @@ function renderCatalog() {
       .map(model => ({ route, model })),
   );
 
-  const viewMode = $('catalog-view').value;
-  const byFamily = viewMode === 'family';
-  const byEmail = viewMode === 'email';
-  const showAllTogether = viewMode === 'all';
+  const search = $('pool-search').value.trim().toLocaleLowerCase('tr');
+  const searched = search
+    ? all.filter(({ route, model }) => searchHaystack(route, model).includes(search))
+    : all;
 
-  if (showAllTogether) {
+  const viewMode = $('catalog-view').value;
+  let filtered = searched;
+
+  if (viewMode === 'all') {
     $('route-nav').replaceChildren();
-    $('catalog-status').replaceChildren(element('small', `Tüm bağlantılar ve aileler bir arada (${all.length} model)`));
-  } else if (byFamily) {
-    const families = [...new Set(all.map(({ model }) => modelFamily(model.id)))].sort((a, b) => a.localeCompare(b, 'tr'));
-    if (selectedFamily !== '__all__' && !families.includes(selectedFamily)) selectedFamily = families[0] || '__all__';
-    const pills = [
-      { id: '__all__', label: 'Tüm aileler', count: all.length },
-      ...families.map(id => ({ id, label: familyLabel(id), count: all.filter(({ model }) => modelFamily(model.id) === id).length })),
-    ];
-    $('route-nav').replaceChildren(...pills.map(group => {
-      const node = element('button', `${group.label} (${group.count})`);
-      node.type = 'button';
-      node.title = group.id;
-      const selected = group.id === selectedFamily;
-      node.classList.toggle('selected', selected);
-      node.setAttribute('aria-pressed', String(selected));
-      node.addEventListener('click', () => {
-        selectedFamily = group.id;
+    $('catalog-status').replaceChildren(element('small', `Tüm araç ve abonelikler bir arada (${searched.length} model)`));
+  } else if (viewMode === 'email') {
+    filtered = renderEmailHierarchyNav(
+      $('route-nav'),
+      searched,
+      selectedEmail || '__all__',
+      id => {
+        selectedEmail = id;
+        selectedFamily = '__all__';
         selectedCatalogItems.clear();
         rememberView();
-        $('pool-search').value = '';
         $('pool-models').scrollTop = 0;
         renderCatalog();
-      });
-      return node;
-    }));
-    const famTitle = selectedFamily === '__all__' ? 'Tüm model aileleri' : familyLabel(selectedFamily);
-    $('catalog-status').replaceChildren(element('small', `${famTitle} · Aynı aileye ait modeller her hesap için yan yana gösterilir.`));
-  } else if (byEmail) {
-    const mails = [...new Set(all.map(({ route }) => routeEmail(route.id) || '__no_email__'))].sort((a, b) => a.localeCompare(b, 'tr'));
-    if (selectedEmail !== '__all__' && !mails.includes(selectedEmail)) selectedEmail = mails[0] || '__all__';
-    const pills = [
-      { id: '__all__', label: 'Tüm hesaplar', count: all.length },
-      ...mails.map(id => ({
-        id,
-        label: id === '__no_email__' ? 'E-postasız / Yerel' : id,
-        count: all.filter(({ route }) => (routeEmail(route.id) || '__no_email__') === id).length,
-      })),
-    ];
-    $('route-nav').replaceChildren(...pills.map(group => {
-      const node = element('button', `${group.label} (${group.count})`);
-      node.type = 'button';
-      node.title = group.label;
-      const selected = group.id === selectedEmail;
-      node.classList.toggle('selected', selected);
-      node.setAttribute('aria-pressed', String(selected));
-      node.addEventListener('click', () => {
-        selectedEmail = group.id;
+      },
+      selectedFamily || '__all__',
+      famId => {
+        selectedFamily = famId;
         selectedCatalogItems.clear();
         rememberView();
-        $('pool-search').value = '';
         $('pool-models').scrollTop = 0;
         renderCatalog();
-      });
-      return node;
-    }));
-    $('catalog-status').replaceChildren(element('small', `${selectedEmail === '__all__' ? 'Tüm e-posta hesapları' : selectedEmail === '__no_email__' ? 'E-postasız / Yerel bağlantılar' : selectedEmail} · Hesap bazlı model görünümü.`));
+      },
+    );
+    const activeMail = selectedEmail && selectedEmail !== '__all__' ? (selectedEmail === '__no_email__' ? 'E-postasız / API' : selectedEmail) : 'Tüm hesaplar';
+    const activeFam = selectedFamily && selectedFamily !== '__all__' ? ` · ${familyLabel(selectedFamily)}` : '';
+    $('catalog-status').replaceChildren(element('small', `${activeMail}${activeFam} · Hesap bazlı model görünümü (${filtered.length} model).`));
   } else {
-    if (selectedRoute !== '__all__' && !routes.some(route => route.id === selectedRoute)) {
-      selectedRoute = routes.find(route => route.adapter === 'codex')?.id || routes[0]?.id || '__all__';
-    }
-    const pills = [
-      { id: '__all__', label: 'Tümü (yan yana)', count: all.length },
-      ...routes.map(route => {
-        const email = routeEmail(route.id);
-        return {
-          id: route.id,
-          label: `${adapterLabels[route.adapter] || route.adapter}${route.api ? ' API' : ''}${email ? ` · ${email}` : ` · ${route.id}`}${route.enabled ? '' : ' (Kapalı)'}`,
-          count: all.filter(item => item.route.id === route.id).length,
-        };
-      }),
-    ];
-    $('route-nav').replaceChildren(...pills.map(group => {
-      const node = element('button', `${group.label} (${group.count})`);
-      node.type = 'button';
-      node.title = group.id;
-      const selected = group.id === selectedRoute;
-      node.classList.toggle('selected', selected);
-      node.setAttribute('aria-pressed', String(selected));
-      node.addEventListener('click', () => {
-        selectedRoute = group.id;
-        selectedCatalogItems.clear();
-        rememberView();
-        $('pool-search').value = '';
-        $('pool-models').scrollTop = 0;
-        renderCatalog();
-      });
-      return node;
-    }));
-    const route = routes.find(r => r.id === selectedRoute);
+    const hierarchy = renderHierarchyNav($('route-nav'), searched, catalogNav, next => {
+      catalogNav = next;
+      selectedCatalogItems.clear();
+      rememberView();
+      $('pool-models').scrollTop = 0;
+      renderCatalog();
+    });
+    filtered = hierarchy.filtered;
     const status = element('div', null, 'actions');
-    if (selectedRoute === '__all__') {
-      status.append(element('small', 'Tüm bağlı araçlardaki modeller bir arada listeleniyor; arama ve sıralama ile argon veya aynı abonelikteki modelleri yan yana getirebilirsiniz.'));
-    } else if (route) {
-      const email = routeEmail(route.id);
-      status.append(element('small', `${route.id}${email ? ` · ${email}` : ''} · ${billingLabels[route.billing]}${route.api ? ` · ${route.api.baseUrl}` : ['ollama', 'lmstudio'].includes(route.adapter) ? ' · Yerel modeller' : ''}${route.enabled ? '' : ' · Devre dışı'}`));
-      if (route.adapter !== 'codex' && !route.api && route.billing !== 'free' && !route.trustedSettings) {
-        const label = element('label', null, 'trust-field'), check = document.createElement('input');
-        check.type = 'checkbox';
-        check.checked = route.trustedSettings;
-        check.addEventListener('change', () => { route.trustedSettings = check.checked; dirty(); });
-        label.append(check, element('span', 'Yerel ayarları ve planı doğruladım'));
-        status.append(label);
-      }
+    const selectedToolObj = hierarchy.tools.find(t => t.id === hierarchy.tool);
+    const route = hierarchy.routeId !== '__all__' ? routes.find(r => r.id === hierarchy.routeId) : null;
+    const toolText = hierarchy.tool === '__all__' ? 'Tüm araçlar' : (selectedToolObj?.label || hierarchy.tool);
+    const subText = hierarchy.tool === '__all__'
+      ? ''
+      : hierarchy.routeId === '__all__'
+        ? ` · Tüm abonelikler (${Math.max(0, hierarchy.subscriptions.length - 1)} hesap)`
+        : ` · ${cleanRouteLabel(route, routeEmail(route?.id))}`;
+    const famText = hierarchy.family === '__all__' ? '' : ` · ${familyLabel(hierarchy.family)}`;
+    const routeMeta = route
+      ? ` · ${billingLabels[route.billing]}${route.api ? ` · ${route.api.baseUrl}` : ''}${route.enabled ? '' : ' · Devre dışı'}`
+      : '';
+    status.append(element('small', `${toolText}${subText}${famText}${routeMeta} · ${filtered.length} model`));
+
+    if (route && route.adapter !== 'codex' && !route.api && route.billing !== 'free' && !route.trustedSettings) {
+      const label = element('label', null, 'trust-field'), check = document.createElement('input');
+      check.type = 'checkbox';
+      check.checked = route.trustedSettings;
+      check.addEventListener('change', () => { route.trustedSettings = check.checked; dirty(); });
+      label.append(check, element('span', 'Yerel ayarları ve planı doğruladım'));
+      status.append(label);
     }
     $('catalog-status').replaceChildren(status);
   }
 
-  const search = $('pool-search').value.trim().toLocaleLowerCase('tr');
-  const filtered = all.filter(({ route, model }) => {
-    const viewOk = showAllTogether
-      || (byFamily ? (selectedFamily === '__all__' || modelFamily(model.id) === selectedFamily)
-        : byEmail ? (selectedEmail === '__all__' || (routeEmail(route.id) || '__no_email__') === selectedEmail)
-          : (selectedRoute === '__all__' || route.id === selectedRoute));
-    return viewOk && (!search || searchHaystack(route, model).includes(search));
-  });
-
   const catalogSort = $('catalog-sort').value;
-  const entries = sortModels(filtered, catalogSort, byFamily, sortContext(''));
+  const entries = sortModels(filtered, catalogSort, catalogSort === 'family', sortContext(''));
   const visibleCatalogKeys = new Set(entries.map(({ route, model }) => JSON.stringify([route.id, model.id])));
   for (const key of [...selectedCatalogItems]) {
     if (!visibleCatalogKeys.has(key)) selectedCatalogItems.delete(key);
@@ -1745,73 +1895,72 @@ function renderHidden() {
     ? scopedHidden.filter(({ route, model, reasonKey }) => `${searchHaystack(route, model)} ${hiddenReasonLabels[reasonKey] || ''}`.toLocaleLowerCase('tr').includes(search))
     : scopedHidden;
 
-  let navGroups = [];
-  if (viewMode === 'reason') {
-    navGroups = ['auth_issue', 'unknown_quota', 'manual']
-      .map(id => ({ id, label: hiddenReasonLabels[id], count: searched.filter(e => e.reasonKey === id).length }))
-      .filter(g => g.count > 0);
-  } else if (viewMode === 'settings') {
-    navGroups = buildSubGroups(searched, 'route');
-  } else if (viewMode !== 'all') {
-    navGroups = buildSubGroups(searched, viewMode);
-  }
-
+  let subFiltered = searched;
   if (viewMode === 'all') {
     $('hidden-nav').replaceChildren();
+  } else if (viewMode === 'settings') {
+    subFiltered = renderHierarchyNav($('hidden-nav'), searched, hiddenNav, next => {
+      hiddenNav = next;
+      selectedHiddenItems.clear();
+      rememberView();
+      renderHidden();
+    }).filtered;
   } else {
-    const validIds = new Set(['', ...navGroups.map(g => g.id)]);
-    if (!validIds.has(selectedHiddenSubgroup)) selectedHiddenSubgroup = '';
-    $('hidden-nav').replaceChildren(
-      ...[{ id: '', label: 'Tümü', count: searched.length }, ...navGroups].map(group => {
-        const node = element('button', `${group.label} (${group.count})`);
-        node.type = 'button';
-        const isSelected = group.id === selectedHiddenSubgroup;
-        node.classList.toggle('selected', isSelected);
-        node.setAttribute('aria-pressed', String(isSelected));
-        node.addEventListener('click', () => {
-          selectedHiddenSubgroup = group.id;
+    const reasonItems = ['auth_issue', 'unknown_quota', 'manual']
+      .map(id => ({ id, label: hiddenReasonLabels[id], count: searched.filter(e => e.reasonKey === id).length }))
+      .filter(g => g.count > 0);
+    if (selectedHiddenReason !== '__all__' && !reasonItems.some(r => r.id === selectedHiddenReason)) {
+      selectedHiddenReason = '__all__';
+    }
+    const reasonFiltered = selectedHiddenReason === '__all__'
+      ? searched
+      : searched.filter(e => e.reasonKey === selectedHiddenReason);
+    const extraTopRow = reasonItems.length
+      ? {
+        label: 'Neden',
+        items: [{ id: '__all__', label: 'Tümü', count: searched.length }, ...reasonItems],
+        value: selectedHiddenReason,
+        onSelect: val => {
+          selectedHiddenReason = val;
           selectedHiddenItems.clear();
           rememberView();
           renderHidden();
-        });
-        return node;
-      }),
-    );
-  }
+        },
+      }
+      : null;
 
-  // Raw filter rules strip (helpful when a family rule matches future/empty models too)
-  const rulesBar = $('hidden-rules-bar');
-  if (rulesBar) {
-    const visibleRules = filters
-      .map((rule, index) => ({ rule, index }))
-      .filter(({ rule }) => viewMode === 'settings' ? rule.reason === 'settings' : rule.reason !== 'settings');
-    if (visibleRules.length) {
-      const wrap = element('div', null, 'actions');
-      wrap.append(element('small', viewMode === 'settings' ? 'Ayar filtreleri:' : 'Aktif kurallar:'));
-      visibleRules.forEach(({ rule, index }) => {
-        const label = `${rule.match === 'family' ? `${familyLabel(rule.value)} ailesi` : rule.value}${rule.routeId ? ` (${rule.routeId})` : ' (Tümü)'}`;
-        const chip = button(`× ${label}`, async () => {
-          filters.splice(index, 1);
-          await savePreference('modelFilters');
-          notice('Gizleme kuralı kaldırıldı.');
-        });
-        chip.title = 'Bu gizleme kuralını kaldır';
-        wrap.append(chip);
-      });
-      rulesBar.replaceChildren(wrap);
+    if (viewMode === 'email') {
+      subFiltered = renderEmailHierarchyNav(
+        $('hidden-nav'),
+        reasonFiltered,
+        selectedHiddenSubgroup || '__all__',
+        id => {
+          selectedHiddenSubgroup = id;
+          hiddenNav.family = '__all__';
+          selectedHiddenItems.clear();
+          rememberView();
+          renderHidden();
+        },
+        hiddenNav.family,
+        famId => {
+          hiddenNav.family = famId;
+          selectedHiddenItems.clear();
+          rememberView();
+          renderHidden();
+        },
+        extraTopRow,
+      );
     } else {
-      rulesBar.replaceChildren();
+      subFiltered = renderHierarchyNav($('hidden-nav'), reasonFiltered, hiddenNav, next => {
+        hiddenNav = next;
+        selectedHiddenItems.clear();
+        rememberView();
+        renderHidden();
+      }, extraTopRow).filtered;
     }
   }
 
-  const subFiltered = searched.filter(item => {
-    if (!selectedHiddenSubgroup || viewMode === 'all') return true;
-    if (viewMode === 'reason') return item.reasonKey === selectedHiddenSubgroup;
-    if (viewMode === 'settings') return entryMatchesSubGroup(item, 'route', selectedHiddenSubgroup);
-    return entryMatchesSubGroup(item, viewMode, selectedHiddenSubgroup);
-  });
-
-  const sorted = sortModels(subFiltered, $('hidden-sort')?.value || 'status', viewMode === 'family', sortContext(''));
+  const sorted = sortModels(subFiltered, $('hidden-sort')?.value || 'status', hiddenNav.family !== '__all__', sortContext(''));
   const visibleHiddenKeys = new Set(sorted.map(({ route, model }) => JSON.stringify([route.id, model.id])));
   for (const key of [...selectedHiddenItems]) {
     if (!visibleHiddenKeys.has(key)) selectedHiddenItems.delete(key);
@@ -1964,12 +2113,13 @@ function modelCard(route, model, member, options = {}) {
   }
 
   const email = routeEmail(route.id);
+  const subLabel = cleanRouteLabel(route, email);
   const accountRow = element('div', null, 'model-account-row');
-  accountRow.append(element('span', `${adapterLabels[route.adapter] || route.adapter} · ${route.id}`, 'model-provider-tag'));
+  accountRow.append(element('span', `${adapterLabels[route.adapter] || route.adapter}${route.api ? ' · API' : ''}`, 'model-provider-tag'));
   if (email) {
     accountRow.append(element('span', email, 'model-email-badge'));
-  } else if (route.profile) {
-    accountRow.append(element('span', `Profil: ${route.profile}`, 'model-email-badge'));
+  } else {
+    accountRow.append(element('span', subLabel, route.profile ? 'model-email-badge' : 'badge subtle'));
   }
   accountRow.append(element('span', billingLabels[model.billing || route.billing] || route.billing, 'badge subtle'));
 
@@ -1985,7 +2135,7 @@ function modelCard(route, model, member, options = {}) {
     statusRow.append(element('span', hiddenReasonLabels[reasonKey] || reasonKey, 'badge subtle'));
   }
 
-  info.title = `${model.id} · ${route.id}${email ? ` · ${email}` : ''}`;
+  info.title = `${model.id} · ${adapterLabels[route.adapter] || route.adapter} · ${subLabel}`;
   info.append(titleRow, accountRow);
   if (statusRow.children.length) info.append(statusRow);
   info.append(element('small', capabilityLabel(route, model), 'capability-note'));
@@ -1994,9 +2144,7 @@ function modelCard(route, model, member, options = {}) {
     const state = element('div', null, 'model-connection');
     const enable = button('Etkinleştir', async () => {
       if (!activeBillings.has(baseConfig.routes.find(item => item.id === route.id)?.billing)) {
-        switchPage('settings');
-        const section = [...$('settings-routes').children].find(node => node.dataset.routeId === route.id);
-        if (section) { section.open = true; section.scrollIntoView({ block: 'nearest' }); }
+        routeSettings(route);
         notice('Önce bağlantının ödeme / plan türünü doğrulayın.');
         return;
       }
@@ -2085,7 +2233,7 @@ function modelCard(route, model, member, options = {}) {
   const toggleEnabled = button(model.enabled === false ? 'Etkinleştir' : 'Devre dışı bırak', async () => {
     if (model.enabled === false) {
       if (!activeBillings.has(baseConfig.routes.find(item => item.id === route.id)?.billing)) {
-        switchPage('settings');
+        routeSettings(route);
         notice('Önce bağlantının ödeme / plan türünü doğrulayın.');
         return;
       }
@@ -2141,9 +2289,11 @@ function openFilters(route, model) {
     $('filter-heading').textContent = 'Gizlenen modeller';
   }
   $('filter-list').replaceChildren(...filters.map((rule, index) => {
+    const r = rule.routeId ? settings.config.routes.find(item => item.id === rule.routeId) : null;
+    const routeText = r ? `${adapterLabels[r.adapter] || r.adapter} · ${cleanRouteLabel(r, routeEmail(r.id))}` : (rule.routeId || 'Tüm bağlantılar');
     const row = element('div', null, 'filter-row');
     row.append(
-      element('span', `${rule.match === 'family' ? `${familyLabel(rule.value)} ailesi` : rule.value} · ${rule.routeId || 'Tüm bağlantılar'}`),
+      element('span', `${rule.match === 'family' ? `${familyLabel(rule.value)} ailesi` : rule.value} · ${routeText}`),
       button('Göster', async () => {
         filters.splice(index, 1);
         await savePreference('modelFilters');
@@ -2275,9 +2425,10 @@ async function savePreference(key) {
 }
 
 function routeSettings(route) {
+  selectedSettingsTool = route.adapter;
+  selectedSettingsRoute.set(route.adapter, route.id);
+  rememberView();
   switchPage('settings');
-  const section = [...$('settings-routes').children].find(node => node.dataset.routeId === route.id);
-  if (section) { section.open = true; section.scrollIntoView({ block: 'nearest' }); }
 }
 
 function loginNotice(route, compact = false) {

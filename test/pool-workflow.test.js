@@ -13,7 +13,7 @@ import { claudeWindows, antigravityGroupWindows, agyUsageWindows } from '../src/
 import { browserUI, openCliLogin } from '../src/web.js';
 import { ensureInitialized } from '../src/daemon.js';
 import { isCategoryId } from '../web/categories.js';
-import { memberships, mergeScanDraft, addMembership, quotaWindows, quotaWindowPercent, modelIssueInfo, quotaMatches, effortLabel, modelFamily, modelIdentity, modelFiltered, isSettingsFiltered, setRouteModelSettingsFilter, unhideModels, sortModels, initialTaskGroup, restoredWorkspace } from '../web/pool-state.js';
+import { memberships, mergeScanDraft, addMembership, quotaWindows, quotaWindowPercent, modelIssueInfo, quotaMatches, effortLabel, modelFamily, modelIdentity, modelFiltered, isSettingsFiltered, setRouteModelSettingsFilter, unhideModels, sortModels, initialTaskGroup, restoredWorkspace, cleanRouteLabel, toolGroupsForRoutes, filterHierarchy } from '../web/pool-state.js';
 
 test('adding to an explicit target pool preserves other memberships and validates effort before mutation', () => {
   const model = { group: 'high', defaultEffort: 'high', efforts: ['low', 'medium', 'high'] };
@@ -580,4 +580,49 @@ rl.on('line', line => {
   assert.equal(isSettingsFiltered(rehidden, 'codex-test', 'gpt-6.2-nova'), true);
 
   assert.equal(typeof importDiscoveredRoutes, 'function');
+});
+
+test('cleanRouteLabel, toolGroupsForRoutes, and filterHierarchy group tools alphabetically with subscription sub-tabs and family filters', () => {
+  assert.equal(cleanRouteLabel({ id: 'zcode-local', adapter: 'zcode' }), 'Varsayılan abonelik');
+  assert.equal(cleanRouteLabel({ id: 'zcode-local', adapter: 'zcode' }, '', 2), 'Abonelik #2');
+  assert.equal(cleanRouteLabel({ id: 'agy-local', adapter: 'agy' }, 'alpha@example.com'), 'alpha@example.com');
+  assert.equal(cleanRouteLabel({ id: 'agy-acc4', adapter: 'agy', profile: 'acc4' }), 'Abonelik #4');
+  assert.equal(cleanRouteLabel({ id: 'qwen-api', adapter: 'claude', api: { baseUrl: 'https://api.example.com' } }), 'qwen-api · API');
+
+  const routes = [
+    { id: 'zcode-local', adapter: 'zcode', enabled: true, models: [{ id: 'glm-5.3' }] },
+    { id: 'claude-api', adapter: 'claude', enabled: true, api: { baseUrl: 'https://x.test' }, models: [{ id: 'claude-opus-5-5' }] },
+    { id: 'agy-acc2', adapter: 'agy', profile: 'acc2', enabled: true, models: [{ id: 'gemini-4-hydrogen' }, { id: 'gemini-4-argon' }] },
+    { id: 'agy-local', adapter: 'agy', enabled: true, models: [{ id: 'gemini-4-hydrogen' }, { id: 'claude-opus-5-5' }] },
+    { id: 'claude-local', adapter: 'claude', enabled: true, models: [{ id: 'claude-sonnet-5-5' }, { id: 'claude-fable-5-2' }] },
+  ];
+  const emails = { 'agy-local': 'b-user@example.com', 'agy-acc2': 'a-user@example.com', 'claude-local': 'claude@example.com' };
+  const labels = { agy: 'Antigravity', claude: 'Claude', zcode: 'ZCode' };
+
+  const grouped = toolGroupsForRoutes(routes, emails, labels);
+  assert.deepEqual(grouped.map(g => g.label), ['Antigravity', 'Claude', 'ZCode']);
+  assert.deepEqual(grouped[0].routes.map(r => r.subscriptionLabel), ['a-user@example.com', 'b-user@example.com']);
+  assert.deepEqual(grouped[1].routes.map(r => r.subscriptionLabel), ['claude@example.com', 'claude-api · API']);
+  assert.deepEqual(grouped[2].routes.map(r => r.subscriptionLabel), ['Varsayılan abonelik']);
+
+  const entries = routes.flatMap(route => route.models.map(model => ({ route, model })));
+  const toolAll = filterHierarchy(entries, { tool: 'agy' }, emails, labels);
+  assert.equal(toolAll.tool, 'agy');
+  assert.equal(toolAll.routeId, '__all__');
+  assert.deepEqual(toolAll.tools.map(t => t.label), ['Tümü', 'Antigravity', 'Claude', 'ZCode']);
+  assert.deepEqual(toolAll.subscriptions.map(s => s.label), ['Tümü', 'a-user@example.com', 'b-user@example.com']);
+  assert.equal(toolAll.filtered.length, 4);
+
+  const subOnly = filterHierarchy(entries, { tool: 'agy', routeId: 'agy-acc2' }, emails, labels);
+  assert.equal(subOnly.routeId, 'agy-acc2');
+  assert.equal(subOnly.filtered.length, 2);
+
+  const subAndFamily = filterHierarchy(entries, { tool: 'agy', routeId: 'agy-acc2', family: 'hydrogen' }, emails, labels);
+  assert.deepEqual(subAndFamily.filtered.map(e => e.model.id), ['gemini-4-hydrogen']);
+
+  const normalized = filterHierarchy(entries, { tool: 'missing', routeId: 'agy-acc2', family: 'hydrogen' }, emails, labels);
+  assert.equal(normalized.tool, '__all__');
+  assert.equal(normalized.routeId, '__all__');
+  assert.equal(normalized.family, 'hydrogen');
+  assert.equal(normalized.filtered.length, 2);
 });

@@ -263,3 +263,145 @@ export function initialTaskGroup(models, mode, previous, initialized = false) {
 }
 
 export function restoredWorkspace(saved) { return typeof saved === 'string' ? saved : ''; }
+
+export function cleanRouteLabel(route, email = '', index = 1) {
+  const cleanEmail = typeof email === 'string' ? email.trim() : '';
+  const rawId = typeof route?.id === 'string' ? route.id.trim() : '';
+  const adapter = typeof route?.adapter === 'string' ? route.adapter.trim() : '';
+  if (route?.api) {
+    const cleanedApiId = rawId.replace(/-local(?=$|-)/g, '');
+    return `${cleanEmail || cleanedApiId || rawId || (index > 1 ? `API #${index}` : 'Özel API')} · API`;
+  }
+  if (cleanEmail) return cleanEmail;
+  if (route?.profile) {
+    const num = String(route.profile).replace(/\D+/g, '');
+    return `Abonelik #${num || index}`;
+  }
+  if (rawId) {
+    let cleaned = rawId.replace(/-local(?=$|-)/g, '');
+    if (adapter && cleaned.toLowerCase() === adapter.toLowerCase()) cleaned = '';
+    else if (adapter && cleaned.toLowerCase().startsWith(`${adapter.toLowerCase()}-`)) cleaned = cleaned.slice(adapter.length + 1);
+    if (!cleaned || cleaned.toLowerCase() === 'local') {
+      return index > 1 ? `Abonelik #${index}` : 'Varsayılan abonelik';
+    }
+    if (/^\d+$/.test(cleaned)) return `Abonelik #${cleaned}`;
+    return cleaned;
+  }
+  return index > 1 ? `Abonelik #${index}` : 'Varsayılan abonelik';
+}
+
+export function toolGroupsForRoutes(routes = [], emails = {}, adapterLabels = {}) {
+  const byAdapter = new Map();
+  for (const route of routes || []) {
+    if (!route?.adapter) continue;
+    if (!byAdapter.has(route.adapter)) byAdapter.set(route.adapter, []);
+    byAdapter.get(route.adapter).push(route);
+  }
+  const groups = [];
+  for (const [adapter, list] of byAdapter) {
+    const label = adapterLabels[adapter] || adapter;
+    const sorted = [...list].sort((a, b) => {
+      const apiDiff = Number(Boolean(a.api)) - Number(Boolean(b.api));
+      if (apiDiff !== 0) return apiDiff;
+      const aKey = String(emails[a.id] || a.email || a.profile || a.id || '');
+      const bKey = String(emails[b.id] || b.email || b.profile || b.id || '');
+      return aKey.localeCompare(bKey, 'tr', { numeric: true });
+    });
+    const wrapped = sorted.map((route, idx) => {
+      const email = emails[route.id] || route.email || '';
+      const subscriptionLabel = cleanRouteLabel(route, email, idx + 1);
+      return {
+        route,
+        id: route.id,
+        email,
+        subscriptionLabel,
+        isApi: Boolean(route.api),
+        enabled: route.enabled !== false,
+      };
+    });
+    groups.push({ adapter, label, routes: wrapped });
+  }
+  groups.sort((a, b) => a.label.localeCompare(b.label, 'tr'));
+  return groups;
+}
+
+export function filterHierarchy(entries = [], selection = {}, emails = {}, adapterLabels = {}, familyLabelFn = x => x) {
+  const byAdapter = new Map();
+  for (const item of entries || []) {
+    const adapter = item?.route?.adapter;
+    if (!adapter) continue;
+    if (!byAdapter.has(adapter)) byAdapter.set(adapter, { count: 0, routeIds: new Set() });
+    const stats = byAdapter.get(adapter);
+    stats.count += 1;
+    if (item.route?.id) stats.routeIds.add(item.route.id);
+  }
+  const totalRouteIds = new Set((entries || []).map(item => item?.route?.id).filter(Boolean));
+  const toolRows = [...byAdapter.entries()]
+    .map(([id, stats]) => ({
+      id,
+      label: adapterLabels[id] || id,
+      count: stats.count,
+      subscriptionCount: stats.routeIds.size,
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label, 'tr'));
+  const tools = [
+    { id: '__all__', label: 'Tümü', count: (entries || []).length, subscriptionCount: totalRouteIds.size },
+    ...toolRows,
+  ];
+
+  const tool = selection?.tool && selection.tool !== '__all__' && tools.some(t => t.id === selection.tool)
+    ? selection.tool
+    : '__all__';
+  const toolFiltered = tool === '__all__'
+    ? [...(entries || [])]
+    : (entries || []).filter(item => item?.route?.adapter === tool);
+
+  let subscriptions = [];
+  if (tool !== '__all__') {
+    const uniqueRoutes = new Map();
+    for (const item of toolFiltered) {
+      if (item?.route?.id && !uniqueRoutes.has(item.route.id)) uniqueRoutes.set(item.route.id, item.route);
+    }
+    if (Array.isArray(selection?.routes)) {
+      for (const r of selection.routes) {
+        if (r?.adapter === tool && r.id && !uniqueRoutes.has(r.id)) uniqueRoutes.set(r.id, r);
+      }
+    }
+    const grouped = toolGroupsForRoutes([...uniqueRoutes.values()], emails, adapterLabels)[0];
+    const subRows = (grouped?.routes || []).map(w => ({
+      id: w.id,
+      label: w.subscriptionLabel,
+      email: w.email,
+      isApi: w.isApi,
+      enabled: w.enabled,
+      count: toolFiltered.filter(item => item?.route?.id === w.id).length,
+    }));
+    subscriptions = [{ id: '__all__', label: 'Tümü', count: toolFiltered.length }, ...subRows];
+  }
+
+  const routeId = tool !== '__all__' && selection?.routeId && selection.routeId !== '__all__' && subscriptions.some(s => s.id === selection.routeId)
+    ? selection.routeId
+    : '__all__';
+  const routeFiltered = routeId === '__all__'
+    ? toolFiltered
+    : toolFiltered.filter(item => item?.route?.id === routeId);
+
+  const byFamily = new Map();
+  for (const item of routeFiltered) {
+    const fam = modelFamily(item?.model?.id || '');
+    byFamily.set(fam, (byFamily.get(fam) || 0) + 1);
+  }
+  const familyRows = [...byFamily.entries()]
+    .map(([id, count]) => ({ id, label: familyLabelFn(id), count }))
+    .sort((a, b) => a.label.localeCompare(b.label, 'tr'));
+  const families = [{ id: '__all__', label: 'Tüm aileler', count: routeFiltered.length }, ...familyRows];
+
+  const family = selection?.family && selection.family !== '__all__' && families.some(f => f.id === selection.family)
+    ? selection.family
+    : '__all__';
+  const filtered = family === '__all__'
+    ? routeFiltered
+    : routeFiltered.filter(item => modelFamily(item?.model?.id || '') === family);
+
+  return { tool, routeId, family, tools, subscriptions, families, filtered };
+}

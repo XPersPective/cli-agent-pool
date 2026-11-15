@@ -52,10 +52,9 @@
           <span id="pool-member-count" class="hint"></span>
           <div class="catalog-controls pool-controls">
             <select id="member-view" aria-label="Havuz görünümü">
-              <option value="all">Tümünü bir arada</option>
-              <option value="route">Araçlara göre</option>
-              <option value="family">Model ailesine göre</option>
+              <option value="hierarchy" selected>Araç / Abonelik / Model ailesi</option>
               <option value="email">E-postaya göre</option>
+              <option value="all">Tümünü bir arada (Filtresiz)</option>
             </select>
             <select id="member-billing-filter" aria-label="Havuz ödeme türü filtresi">
               <option value="all">Tüm ödeme türleri</option>
@@ -99,7 +98,7 @@
             <input id="pool-member-search" type="search" aria-label="Havuzda model ara" placeholder="Havuzda model, sağlayıcı veya e-posta ara…">
             <div id="pool-batch-bar" class="batch-bar" aria-label="Havuz toplu işlemleri"></div>
           </div>
-          <div id="pool-sub-nav" class="route-nav" aria-label="Havuz alt grupları"></div>
+          <div id="pool-hierarchy-nav" class="hierarchy-nav" aria-label="Havuz araç, abonelik ve model ailesi filtreleri"></div>
           <section class="membership-panel" aria-labelledby="members-heading">
             <h2 id="members-heading" class="sr-only">Havuz üyeleri</h2>
             <div id="pool-members"></div>
@@ -112,10 +111,9 @@
           <span id="catalog-count" class="hint"></span>
           <div class="catalog-controls">
             <select id="catalog-view" aria-label="Katalog görünümü">
-              <option value="route">Araçlara göre</option>
-              <option value="family">Model ailesine göre</option>
+              <option value="hierarchy" selected>Araç / Abonelik / Model ailesi</option>
               <option value="email">E-postaya göre</option>
-              <option value="all">Tümünü bir arada</option>
+              <option value="all">Tümünü bir arada (Filtresiz)</option>
             </select>
             <select id="billing-filter" aria-label="Ücretsiz veya ücretli modelleri filtrele">
               <option value="all">Tüm ödeme türleri</option>
@@ -145,7 +143,7 @@
             <input id="pool-search" type="search" aria-label="Katalogda model ara" placeholder="Model, sürüm veya e-posta ara…">
             <div id="catalog-batch-bar" class="batch-bar" aria-label="Katalog toplu işlemleri"></div>
           </div>
-          <div id="route-nav" class="route-nav" aria-label="Katalog grupları"></div>
+          <div id="route-nav" class="hierarchy-nav" aria-label="Katalog araç, abonelik ve model ailesi filtreleri"></div>
           <div id="catalog-status" class="catalog-status"></div>
           <div id="pool-models" class="catalog-models" tabindex="0" aria-label="Kaydırılabilir model kataloğu"></div>
         </div>
@@ -156,12 +154,10 @@
           <span id="hidden-panel-count" class="hint">0</span>
           <div class="catalog-controls">
             <select id="hidden-view" aria-label="Gizlenenler görünümü">
-              <option value="reason">Gizlenme / sorun nedenine göre</option>
+              <option value="reason" selected>Araç / Abonelik / Neden &amp; Aile</option>
               <option value="settings">Ayarlarda filtrelenenler</option>
-              <option value="all">Tümünü bir arada</option>
-              <option value="family">Model ailesine göre</option>
-              <option value="route">Araçlara göre</option>
               <option value="email">E-postaya göre</option>
+              <option value="all">Tümünü bir arada (Filtresiz)</option>
             </select>
             <select id="hidden-sort" aria-label="Gizlenenler sıralaması">
               <option value="status">Sorunlular önce</option>
@@ -179,8 +175,7 @@
             <input id="hidden-search" type="search" aria-label="Gizlenenlerde model ara" placeholder="Gizlenen modellerde model, e-posta veya araç ara…">
             <div id="hidden-batch-bar" class="batch-bar" aria-label="Gizlenenler toplu işlemleri"></div>
           </div>
-          <div id="hidden-nav" class="route-nav" aria-label="Gizlenen model grupları"></div>
-          <div id="hidden-rules-bar" class="catalog-status"></div>
+          <div id="hidden-nav" class="hierarchy-nav" aria-label="Gizlenen model filtreleri"></div>
           <div id="hidden-models" class="catalog-models" tabindex="0" aria-label="Gizlenen modeller"></div>
         </div>
       </section>
