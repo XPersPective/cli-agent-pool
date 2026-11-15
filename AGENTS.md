@@ -11,3 +11,10 @@ Non-trivial logic must have a runnable node:test check. Run npm test, npm run ch
 npm run secrets, and npm audit before pushing. Never commit runtime configuration,
 account identifiers, prompts, task results, browser artifacts or tokens.
 Do not use Project Brain as a dependency or project workflow.
+
+Release flow: every user-visible feature or fix bumps package.json (and package-lock.json)
+with `npm version <x.y.z> --no-git-tag-version`, because the panel update button compares the
+installed version with the running one and only then restarts the service. Commit with the
+`vX.Y.Z: <summary>` message, push to origin main, then refresh the machine with
+`node bin/pool.js install` (shortcuts + Skills Manager deployment) or `npm run setup`.
+Record the change and its evidence in docs/maintenance-plan.md.
