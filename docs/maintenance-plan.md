@@ -50,6 +50,7 @@
 - [x] **Form yüzeyleri (`web/style.css`)**: Arama kutuları ve açılır listeler (select) artık panelden açık renk (`--raised`) zeminde, belirgin kenarlık ve iç gölge ile duruyor; açılır listelere ok işareti eklendi. Katalog durum satırı rozet biçiminde yüzey aldı.
 - [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.12.0`.
 - [x] **Doğrulama kanıtı (2.12.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate`, `npm test` (185+ test) ve canlı panel ekran görüntüsü doğrulaması.
+- [x] **2.12.1 düzeltme**: API rehberindeki adres yer tutucusu doldurulurken uç yolu siliniyordu (`GET http://127.0.0.1:43127`); yer tutucu artık yalnızca kök adresi taşıyor, yol metni yerinde kalıyor.
 
 ## 2.11.0 — Bağlantıların Silinmesi Kalıcı, Tarama Yalnız Var Olanı Tazeler
 - [x] **Tarama yeni bağlantı kurmuyor (`src/adapters.js`)**: `importDiscoveredRoutes` artık kurulu her CLI için bağlantı üretmiyor; yalnızca kullanıcının eklediği rotaların modellerini tazeliyor. Böylece silinen bir abonelik (Hermes, Kimi vb.) tarama, servis başlatma veya panel yenilemesinden sonra geri gelmiyor; bağlantı ekleme yalnızca paneldeki "Kurulu CLI bağlantısı ekle" akışı ile oluyor (bir CLI eklerken başka araçların aboneliklerinin gelmesi de böylece kesildi).

@@ -223,19 +223,19 @@
         <p class="hint">Ajana verilecek en kısa yol: okuma uçları token istemez.</p>
         <h4>Okuma uçları <span class="badge subtle">token gerekmez</span></h4>
         <ul class="guide-list">
-          <li><code>GET <span data-origin>/api/health</span></code> — servis durumu, model ve görev sayıları</li>
-          <li><code>GET <span data-origin>/api/catalog?view=models&amp;limit=40</span></code> — model kataloğu</li>
-          <li><code>GET <span data-origin>/api/pools</span></code> — havuz kategorileri, <code>/api/pools/&lt;id&gt;</code> — bir kategorinin modelleri</li>
-          <li><code>GET <span data-origin>/api/quotas</span></code> — bağlantı başına önbelleklenmiş kota, <code>?live=1</code> CLI'dan sorar</li>
-          <li><code>GET <span data-origin>/api/select?kind=write&amp;mode=execute</span></code> — görev için model önerisi (göndermeden)</li>
-          <li><code>GET <span data-origin>/api/help[?code=X]</span></code> — servis haritası veya tek hata kodunun açıklaması</li>
-          <li><code>GET <span data-origin>/api/capabilities</span></code>, <code>GET <span data-origin>/api/connections</span></code></li>
+          <li><code>GET <span data-origin></span>/api/health</code> — servis durumu, model ve görev sayıları</li>
+          <li><code>GET <span data-origin></span>/api/catalog?view=models&amp;limit=40</code> — model kataloğu</li>
+          <li><code>GET <span data-origin></span>/api/pools</code> — havuz kategorileri, <code>/api/pools/&lt;id&gt;</code> — bir kategorinin modelleri</li>
+          <li><code>GET <span data-origin></span>/api/quotas</code> — bağlantı başına önbelleklenmiş kota, <code>?live=1</code> CLI'dan sorar</li>
+          <li><code>GET <span data-origin></span>/api/select?kind=write&amp;mode=execute</code> — görev için model önerisi (göndermeden)</li>
+          <li><code>GET <span data-origin></span>/api/help[?code=X]</code> — servis haritası veya tek hata kodunun açıklaması</li>
+          <li><code>GET <span data-origin></span>/api/capabilities</code>, <code>GET <span data-origin></span>/api/connections</code></li>
         </ul>
         <h4>Görev uçları <span class="badge subtle">Bearer token</span></h4>
         <ul class="guide-list">
-          <li><code>POST <span data-origin>/api/tasks</span></code> — gövde: <code>{prompt, workspace, kind, mode?, routeId?, modelId?, group?, effort?}</code></li>
-          <li><code>GET <span data-origin>/api/tasks/&lt;id&gt;</span></code> — görev durumu/sonucu, <code>POST <span data-origin>/api/tasks/&lt;id&gt;/cancel</span></code></li>
-          <li><code>POST <span data-origin>/api/tools/&lt;tool&gt;</span></code> — herhangi bir havuz aracı (gövde = argümanlar)</li>
+          <li><code>POST <span data-origin></span>/api/tasks</code> — gövde: <code>{prompt, workspace, kind, mode?, routeId?, modelId?, group?, effort?}</code></li>
+          <li><code>GET <span data-origin></span>/api/tasks/&lt;id&gt;</code> — görev durumu/sonucu, <code>POST <span data-origin></span>/api/tasks/&lt;id&gt;/cancel</code></li>
+          <li><code>POST <span data-origin></span>/api/tools/&lt;tool&gt;</code> — herhangi bir havuz aracı (gövde = argümanlar)</li>
         </ul>
         <h4>CLI <span class="badge subtle">tokenu kendi yönetir</span></h4>
         <ul class="guide-list">
@@ -245,7 +245,7 @@
           <li><code>cli-agent-pool model --route &lt;id&gt; --model &lt;id&gt;</code> · <code>cli-agent-pool help-code &lt;KOD&gt;</code></li>
         </ul>
         <h4>MCP</h4>
-        <ul class="guide-list"><li><code>POST <span data-origin>/mcp</span></code> — <code>havuz_*</code> araçları</li></ul>
+        <ul class="guide-list"><li><code>POST <span data-origin></span>/mcp</code> — <code>havuz_*</code> araçları</li></ul>
       </div></details>
       <details class="settings-section"><summary>Kurulu CLI bağlantısı ekle</summary><fieldset class="settings-body"><legend class="sr-only">Kurulu CLI bağlantısı ekle</legend>
         <label class="setting-field" for="new-adapter">Kurulu CLI<select id="new-adapter"><option value="">CLI seçin</option></select></label>
