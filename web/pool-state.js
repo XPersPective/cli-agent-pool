@@ -180,6 +180,19 @@ export function quotaApplies(window, modelId = '') {
   return !id || !window.models?.length || window.models.some(scope => ['gemini-flash', 'gemini-pro'].includes(scope) ? id.includes('gemini') && id.includes(scope.slice(7)) : id.includes(scope.toLowerCase()));
 }
 
+// The quota toggle must never claim a state the page does not have: without an
+// expandable quota block there is nothing to show or hide.
+export function quotaToggleState(details = []) {
+  const list = details.filter(Boolean);
+  if (!list.length) return { label: 'Kota ayrıntısı yok', pressed: false, disabled: true, title: 'Bu görünümde açılabilir kota ayrıntısı yok' };
+  const allOpen = list.every(detail => detail.open);
+  return { label: allOpen ? 'Kotaları gizle' : 'Kotaları göster', pressed: allOpen, disabled: false, title: allOpen ? 'Kota ayrıntılarını gizle' : 'Kota ayrıntılarını göster' };
+}
+
+export function quotaToggleTarget(details = []) {
+  return details.some(detail => !detail.open);
+}
+
 export function effortLabel(value) {
   return ({ low: 'Düşük', medium: 'Orta', high: 'Yüksek', xhigh: 'Çok yüksek', max: 'En yüksek', minimal: 'En az', none: 'Kapalı', default: 'Varsayılan' })[value] || value || 'CLI varsayılanı';
 }

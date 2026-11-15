@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { opencodeAuthKeys, parseOpenCodeGoUsage, parseOpenCodeStats, opencodeStatsNote } from '../src/quotas.js';
-import { modelIssueInfo } from '../web/pool-state.js';
+import { modelIssueInfo, quotaToggleState, quotaToggleTarget } from '../web/pool-state.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 
@@ -126,4 +126,26 @@ test('panel: yüzde penceresi yoksa açılır ok satırı kurulmaz', () => {
   assert.match(app, /function quotaFlatText\(/);
   assert.match(app, /element\('small', text, 'quota-flat'\)/);
   assert.doesNotMatch(app, /'Bilinmiyor'/);
+});
+
+test('kota düğmesi sayfadaki gerçek durumu gösterir', () => {
+  const closed = quotaToggleState([{ open: false }]);
+  assert.equal(closed.label, 'Kotaları göster');
+  assert.equal(closed.pressed, false);
+  assert.equal(closed.disabled, false);
+  const open = quotaToggleState([{ open: true }, { open: true }]);
+  assert.equal(open.label, 'Kotaları gizle');
+  assert.equal(open.pressed, true);
+  const empty = quotaToggleState([]);
+  assert.equal(empty.disabled, true);
+  assert.equal(empty.label, 'Kota ayrıntısı yok');
+  assert.equal(quotaToggleTarget([{ open: true }, { open: false }]), true);
+  assert.equal(quotaToggleTarget([{ open: true }]), false);
+});
+
+test('kapalı kota durumunda tüm kota blokları gizlenir', () => {
+  const app = readFileSync(path.join(root, 'web', 'app.js'), 'utf8');
+  const css = readFileSync(path.join(root, 'web', 'style.css'), 'utf8');
+  assert.match(app, /classList\.toggle\('quota-collapsed', !quotasOpen\)/);
+  assert.match(css, /\.quota-collapsed \.quota-cell \{ display: none; \}/);
 });

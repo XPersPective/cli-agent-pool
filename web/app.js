@@ -23,6 +23,8 @@ import {
   toolGroupsForRoutes,
   filterHierarchy,
   settingsViewSignature,
+  quotaToggleState,
+  quotaToggleTarget,
 } from '/pool-state.js';
 import { dismissOnBackdrop } from '/dialogs.js';
 import { capabilityLabel } from '/capabilities.js';
@@ -1313,18 +1315,25 @@ $('discard-settings').addEventListener('click', () => void action(async () => {
 }));
 
 $('toggle-quotas').addEventListener('click', () => {
-  quotasOpen = [...document.querySelectorAll('.quota-details')].some(node => !node.open);
+  const details = [...document.querySelectorAll('.quota-details')];
+  // One control for every quota block: open the detail bodies and show the
+  // flat quota lines, or collapse both.
+  quotasOpen = quotaToggleTarget(details);
   quotaStates.clear();
-  document.querySelectorAll('.quota-details').forEach(node => { node.open = quotasOpen; });
+  details.forEach(node => { node.open = quotasOpen; });
   updateQuotaToggle();
   rememberView();
 });
 
 function updateQuotaToggle() {
   const details = [...document.querySelectorAll('.quota-details')];
-  const allOpen = details.length ? details.every(node => node.open) : quotasOpen;
-  $('toggle-quotas').textContent = allOpen ? 'Kotaları gizle' : 'Kotaları göster';
-  $('toggle-quotas').setAttribute('aria-pressed', String(allOpen));
+  const button = $('toggle-quotas');
+  document.body.classList.toggle('quota-collapsed', !quotasOpen);
+  const state = quotaToggleState(details);
+  button.textContent = state.label;
+  button.setAttribute('aria-pressed', String(state.pressed));
+  button.disabled = state.disabled;
+  button.title = state.title;
 }
 
 const quotaLevel = remaining => remaining >= 50 ? 'ok' : remaining >= 20 ? 'mid' : 'low';
