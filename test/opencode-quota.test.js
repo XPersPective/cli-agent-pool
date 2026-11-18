@@ -128,7 +128,7 @@ test('panel: yüzde penceresi yoksa açılır ok satırı kurulmaz', () => {
   assert.doesNotMatch(app, /'Bilinmiyor'/);
 });
 
-test('üçlü kart/kota görünümü ve kompakt yüzde formatı her durumda kota gösterir', () => {
+test('iki modlu kart görünümü (Normal / Mini) ve kompakt yüzde formatı her durumda kota gösterir', () => {
   const items = formatCompactQuotaWindows({
     windows: [
       { name: 'five_hour', remainingPercent: 84.4, windowMinutes: 300 },
@@ -136,25 +136,34 @@ test('üçlü kart/kota görünümü ve kompakt yüzde formatı her durumda kota
     ],
   });
   assert.deepEqual(items.map(i => `${i.label} %${i.remaining}`), ['5s %84', '7g %62']);
-  assert.equal(normalizeDisplayMode('mini', true), 'mini');
-  assert.equal(normalizeDisplayMode('compact', true), 'compact');
-  assert.equal(normalizeDisplayMode(undefined, false), 'compact');
-  assert.equal(normalizeDisplayMode(undefined, true), 'detailed');
+  assert.equal(normalizeDisplayMode('mini'), 'mini');
+  assert.equal(normalizeDisplayMode('detailed'), 'detailed');
+  assert.equal(normalizeDisplayMode('compact'), 'detailed');
+  assert.equal(normalizeDisplayMode(undefined), 'detailed');
 });
 
-test('panelde üçlü görünüm, araç ikonları, saydam kota zemini, kategori penceresi ve tıklanabilir bağlantı düğmesi bulunur', () => {
+test('panelde tekli Normal/Mini geçişi, mini çift tıklama genişletmesi, onay penceresi ve iki satırlı abonelik rozetleri bulunur', () => {
   const html = readFileSync(path.join(root, 'web', 'index.html'), 'utf8');
   const app = readFileSync(path.join(root, 'web', 'app.js'), 'utf8');
   const css = readFileSync(path.join(root, 'web', 'style.css'), 'utf8');
   assert.match(html, /<button id="connection-state"[^>]*class="connection-state"/);
-  assert.match(html, /id="display-mode-group"/);
+  assert.match(html, /<button id="toggle-display-mode"/);
+  assert.equal(html.includes('id="display-mode-group"'), false);
+  assert.match(html, /id="confirm-dialog"/);
   assert.match(html, /id="open-category-dialog"/);
   assert.match(html, /id="category-dialog"/);
   assert.equal(html.includes('id="category-editor"'), false);
   assert.equal(html.includes('id="manage-categories"'), false);
   assert.match(app, /function adapterIcon\(/);
   assert.match(app, /function reconnectPool\(/);
+  assert.match(app, /function askConfirm\(/);
+  assert.match(app, /expandedMiniCards/);
+  assert.match(app, /sub-pill-btn/);
+  assert.match(app, /mini-test-btn/);
+  assert.equal(app.includes('add-model-mini'), false);
   assert.match(css, /\.quota-details\s*\{[^}]*background:\s*transparent/);
+  assert.match(css, /\.usage-line progress\s*\{[^}]*height:\s*3px/);
+  assert.match(css, /\.quota-pill-period\s*\{[^}]*font-weight:\s*400/);
   assert.match(css, /select:focus-visible[^}]*background-color:\s*var\(--raised\)/);
   assert.doesNotMatch(css, /select:focus-visible[^}]*\bbackground:\s*var\(--raised\)/);
 });

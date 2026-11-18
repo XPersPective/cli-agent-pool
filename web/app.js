@@ -114,7 +114,7 @@ let selectedSettingsTool = '';
 const selectedSettingsRoute = new Map();
 const routeModelsFamily = new Map();
 let displayMode = 'detailed';
-const quotaStates = new Map();
+const expandedMiniCards = new Set();
 let noticeTimer;
 let selectedFamily = '';
 let selectedEmail = '';
@@ -163,11 +163,8 @@ if (viewPreferences.selectedSettingsRoute && typeof viewPreferences.selectedSett
 if (viewPreferences.selectedGroup === '__all__' || isCategoryId(viewPreferences.selectedGroup)) {
   selectedGroup = viewPreferences.selectedGroup;
 }
-displayMode = normalizeDisplayMode(viewPreferences.displayMode, viewPreferences.quotasOpen);
+displayMode = normalizeDisplayMode(viewPreferences.displayMode);
 if (typeof viewPreferences.showDisabledRoutes === 'boolean') showDisabledRoutes = viewPreferences.showDisabledRoutes;
-for (const [key, value] of Object.entries(viewPreferences.quotaStates || {})) {
-  if (typeof value === 'boolean') quotaStates.set(key, value);
-}
 
 function rememberView() {
   try {
@@ -187,8 +184,6 @@ function rememberView() {
       hiddenNav,
       showDisabledRoutes,
       displayMode,
-      quotasOpen: displayMode === 'detailed',
-      quotaStates: Object.fromEntries(quotaStates),
     }));
   } catch { /* Current-page choices still work. */ }
 }
@@ -1481,23 +1476,67 @@ $('discard-settings').addEventListener('click', () => void action(async () => {
 
 function updateDisplayModeUI() {
   document.body.dataset.displayMode = displayMode;
-  for (const btn of document.querySelectorAll('#display-mode-group [data-display-mode]')) {
-    btn.setAttribute('aria-pressed', String(btn.dataset.displayMode === displayMode));
+  const toggleBtn = $('toggle-display-mode');
+  if (toggleBtn) {
+    toggleBtn.dataset.activeMode = displayMode;
+    toggleBtn.setAttribute('aria-pressed', String(displayMode === 'mini'));
   }
 }
 
 function setDisplayMode(mode) {
-  displayMode = normalizeDisplayMode(mode, true);
-  quotaStates.clear();
+  displayMode = normalizeDisplayMode(mode);
+  expandedMiniCards.clear();
   updateDisplayModeUI();
   rememberView();
   renderPool();
 }
 
-for (const btn of document.querySelectorAll('#display-mode-group [data-display-mode]')) {
-  btn.addEventListener('click', () => setDisplayMode(btn.dataset.displayMode));
-}
+$('toggle-display-mode')?.addEventListener('click', () => {
+  setDisplayMode(displayMode === 'mini' ? 'detailed' : 'mini');
+});
 updateDisplayModeUI();
+
+let confirmResolver = null;
+function finishConfirm(result) {
+  const dlg = $('confirm-dialog');
+  if (dlg?.open) dlg.close();
+  const resolve = confirmResolver;
+  confirmResolver = null;
+  if (resolve) resolve(Boolean(result));
+}
+$('confirm-ok-btn')?.addEventListener('click', () => finishConfirm(true));
+$('confirm-cancel-btn')?.addEventListener('click', () => finishConfirm(false));
+$('confirm-cancel-x')?.addEventListener('click', () => finishConfirm(false));
+$('confirm-dialog')?.addEventListener('cancel', event => {
+  event.preventDefault();
+  finishConfirm(false);
+});
+$('confirm-dialog')?.addEventListener('close', () => {
+  if (confirmResolver) finishConfirm(false);
+});
+
+function askConfirm({ title = 'İşlemi onayla', message = '', detail = '', confirmLabel = 'Onayla', danger = false } = {}) {
+  const dlg = $('confirm-dialog');
+  if (!dlg) return Promise.resolve(window.confirm(message));
+  if (confirmResolver) finishConfirm(false);
+  $('confirm-dialog-heading').textContent = title;
+  $('confirm-dialog-message').textContent = message;
+  $('confirm-dialog-detail').textContent = detail;
+  const okBtn = $('confirm-ok-btn');
+  okBtn.textContent = confirmLabel;
+  okBtn.className = danger ? 'danger' : 'primary';
+  dlg.showModal();
+  okBtn.focus();
+  return new Promise(resolve => {
+    confirmResolver = resolve;
+  });
+}
+
+function confirmTargetsDetail(targets = []) {
+  if (!targets.length) return '';
+  const names = targets.slice(0, 5).map(t => t.modelId || t);
+  return targets.length > 5 ? `${names.join(', ')} (+${targets.length - 5} diğer)` : names.join(', ');
+}
 
 const quotaLevel = remaining => remaining >= 50 ? 'ok' : remaining >= 20 ? 'mid' : 'low';
 
@@ -1506,7 +1545,11 @@ function compactQuotaPills(q, modelId = '', error = '', issue = null) {
   const items = formatCompactQuotaWindows(q, modelId);
   if (items.length) {
     for (const item of items) {
-      const pill = element('span', `${item.label} %${item.remaining}`, `quota-pill level-${item.level}`);
+      const pill = element('span', null, `quota-pill level-${item.level}`);
+      pill.append(
+        element('span', item.label, 'quota-pill-period'),
+        element('span', `%${item.remaining}`, 'quota-pill-pct'),
+      );
       pill.title = `${item.name}: %${item.remaining} kalan`;
       wrap.append(pill);
     }
@@ -1561,7 +1604,7 @@ function quotaBody(q, modelId = '', error) {
   return cell;
 }
 
-function quotaCell(route, model, issue = null) {
+function quotaCell(route, model) {
   const cell = element('div', null, 'quota-cell');
   const q = snapshot?.quotas?.[route.id];
   const windows = quotaWindows(q, model.id);
@@ -1570,27 +1613,10 @@ function quotaCell(route, model, issue = null) {
     if (text) cell.append(element('small', text, 'quota-flat'));
     return cell;
   }
-  const details = element('details', null, `quota-details${displayMode === 'compact' ? ' is-compact-quota' : ''}`);
-  const key = JSON.stringify([route.id, model.id]);
-  details.dataset.quotaKey = key;
-  details.dataset.level = quotaLevel(Math.min(...windows.map(window => window.remaining)));
-  details.open = quotaStates.has(key) ? quotaStates.get(key) : displayMode === 'detailed';
-  const summary = element('summary');
-  if (displayMode === 'compact') {
-    summary.append(element('span', 'Kota'), compactQuotaPills(q, model.id, quotaErrors[route.id], issue));
-  } else {
-    summary.append(element('span', 'Kota'), element('strong', `%${Math.min(...windows.map(window => window.remaining)).toFixed(0)} kalan`));
-  }
-  details.append(summary, quotaBody(q, model.id, quotaErrors[route.id]));
-  details.addEventListener('toggle', () => {
-    if (!details.isConnected) return;
-    quotaStates.set(key, details.open);
-    document.querySelectorAll('.quota-details').forEach(other => {
-      if (other !== details && other.dataset.quotaKey === key) other.open = details.open;
-    });
-    rememberView();
-  });
-  cell.append(details);
+  const panel = element('div', null, 'quota-details');
+  panel.dataset.level = quotaLevel(Math.min(...windows.map(window => window.remaining)));
+  panel.append(quotaBody(q, model.id, quotaErrors[route.id]));
+  cell.append(panel);
   return cell;
 }
 
@@ -1624,9 +1650,25 @@ function makeHierarchyLevel(labelText, items, selectedVal, onPick, variant = 'fl
     const disabledSuffix = variant !== 'tool' && item.enabled === false ? ' (Kapalı)' : '';
     const btn = element('button', null);
     btn.type = 'button';
-    if (variant === 'tool' && item.id !== '__all__') btn.append(adapterIcon(item.id));
-    btn.append(document.createTextNode(`${item.label}${disabledSuffix} (${item.count})`));
-    btn.title = `${item.label}${disabledSuffix}`;
+    if (variant === 'tool' && item.id !== '__all__') {
+      btn.append(adapterIcon(item.id));
+      btn.append(document.createTextNode(`${item.label}${disabledSuffix} (${item.count})`));
+    } else if (item.id !== '__all__' && item.toolLabel) {
+      btn.classList.add('sub-pill-btn');
+      const top = element('span', null, 'sub-pill-top');
+      top.append(
+        element('span', `${item.subscriptionLabel || item.label}${disabledSuffix}`, 'sub-pill-mail'),
+        element('span', `(${item.count})`, 'sub-pill-count'),
+      );
+      const sub = element('small', null, 'sub-pill-tool');
+      if (item.tool) sub.append(adapterIcon(item.tool));
+      sub.append(element('span', item.toolLabel));
+      btn.append(top, sub);
+    } else {
+      if (variant === 'email' && item.id !== '__all__') btn.classList.add('mail-pill-btn');
+      btn.append(document.createTextNode(`${item.label}${disabledSuffix} (${item.count})`));
+    }
+    btn.title = `${item.label}${disabledSuffix} (${item.count})`;
     const isSelected = item.id === selectedVal;
     btn.classList.toggle('selected', isSelected);
     if (variant !== 'tool' && item.enabled === false) btn.classList.add('is-disabled');
@@ -1692,7 +1734,7 @@ function renderEmailHierarchyNav(container, entries, currentEmail, onSelectEmail
     rows.push(makeHierarchyLevel(extraTopRow.label, extraTopRow.items, extraTopRow.value, extraTopRow.onSelect, 'flat'));
   }
   if (entries.length) {
-    rows.push(makeHierarchyLevel('Hesaplar', mailItems, validEmail, id => onSelectEmail(id), 'flat'));
+    rows.push(makeHierarchyLevel('Hesaplar', mailItems, validEmail, id => onSelectEmail(id), 'email'));
     if (subResult.families.length > 1) {
       rows.push(makeHierarchyLevel('Model aileleri', subResult.families, subResult.family, famId => onSelectFamily(famId), 'flat'));
     }
@@ -1841,7 +1883,8 @@ function renderPoolBody() {
 
   const memberSort = $('member-sort')?.value || 'az';
   const sorted = sortModels(subFiltered, memberSort, false, sortContext(selectedGroup));
-  if ($('pool-member-count')) $('pool-member-count').textContent = `${sorted.length} model`;
+  const poolAccounts = new Set(sorted.map(({ route }) => route.id)).size;
+  if ($('pool-member-count')) $('pool-member-count').textContent = poolAccounts ? `${poolAccounts} hesap · ${sorted.length} model` : `${sorted.length} model`;
 
   const visibleMemberKeys = new Set();
   const rows = sorted.map((entry, idx) => {
@@ -1898,6 +1941,16 @@ function renderPoolBatchBar(visibleItems) {
       : `Havuzdan çıkar (${selectedCount})`;
     const removeSelected = button(removeLabel, async () => {
       const targets = getTargets();
+      const confirmed = await askConfirm({
+        title: 'Havuzdan çıkar',
+        message: isAllGroup(selectedGroup)
+          ? `${targets.length} modeli tüm havuzlardan çıkarmak istiyor musunuz?`
+          : `${targets.length} modeli "${groupLabel(selectedGroup)}" havuzundan çıkarmak istiyor musunuz?`,
+        detail: confirmTargetsDetail(targets),
+        confirmLabel: 'Çıkar',
+        danger: true,
+      });
+      if (!confirmed) return;
       for (const { routeId, modelId } of targets) {
         const r = settings.config.routes.find(item => item.id === routeId);
         const m = r?.models.find(item => item.id === modelId);
@@ -1910,6 +1963,13 @@ function renderPoolBatchBar(visibleItems) {
 
     const disableBtn = button('Devre dışı bırak', async () => {
       const targets = getTargets();
+      const confirmed = await askConfirm({
+        title: 'Modelleri devre dışı bırak',
+        message: `${targets.length} modeli devre dışı bırakmak istiyor musunuz?`,
+        detail: confirmTargetsDetail(targets),
+        confirmLabel: 'Devre dışı bırak',
+      });
+      if (!confirmed) return;
       for (const { routeId, modelId } of targets) {
         const m = settings.config.routes.find(r => r.id === routeId)?.models.find(item => item.id === modelId);
         if (m) m.enabled = false;
@@ -1931,6 +1991,13 @@ function renderPoolBatchBar(visibleItems) {
 
     const hideBtn = button('Gizle', async () => {
       const targets = getTargets();
+      const confirmed = await askConfirm({
+        title: 'Modelleri gizle',
+        message: `${targets.length} modeli gizlenenler listesine taşımak istiyor musunuz?`,
+        detail: confirmTargetsDetail(targets),
+        confirmLabel: 'Gizle',
+      });
+      if (!confirmed) return;
       const filters = settings.config.modelFilters ||= [];
       for (const { routeId, modelId } of targets) {
         const r = settings.config.routes.find(item => item.id === routeId);
@@ -2007,10 +2074,13 @@ function renderCatalogBody() {
 
   const viewMode = $('catalog-view').value;
   let filtered = searched;
+  let catalogHeaderMeta = '';
 
   if (viewMode === 'all') {
     $('route-nav').replaceChildren();
-    $('catalog-status').replaceChildren(element('small', `Tüm araç ve abonelikler bir arada (${searched.length} model)`));
+    $('catalog-status').replaceChildren();
+    const accountCount = new Set(searched.map(({ route }) => route.id)).size;
+    catalogHeaderMeta = `${accountCount} hesap · ${searched.length} model`;
   } else if (viewMode === 'email') {
     filtered = renderEmailHierarchyNav(
       $('route-nav'),
@@ -2033,9 +2103,11 @@ function renderCatalogBody() {
         renderCatalog();
       },
     );
-    const activeMail = selectedEmail && selectedEmail !== '__all__' ? (selectedEmail === '__no_email__' ? 'E-postasız / API' : selectedEmail) : 'Tüm hesaplar';
-    const activeFam = selectedFamily && selectedFamily !== '__all__' ? ` · ${familyLabel(selectedFamily)}` : '';
-    $('catalog-status').replaceChildren(element('small', `${activeMail}${activeFam} · Hesap bazlı model görünümü (${filtered.length} model).`));
+    $('catalog-status').replaceChildren();
+    const accountCount = new Set(filtered.map(({ route }) => route.id)).size;
+    catalogHeaderMeta = selectedEmail && selectedEmail !== '__all__'
+      ? `${selectedEmail === '__no_email__' ? 'E-postasız / API' : selectedEmail} · ${filtered.length} model`
+      : `Tüm hesaplar (${accountCount}) · ${filtered.length} model`;
   } else {
     const hierarchy = renderHierarchyNav($('route-nav'), searched, catalogNav, next => {
       catalogNav = next;
@@ -2045,28 +2117,30 @@ function renderCatalogBody() {
       renderCatalog();
     });
     filtered = hierarchy.filtered;
-    const status = element('div', null, 'actions');
-    const selectedToolObj = hierarchy.tools.find(t => t.id === hierarchy.tool);
     const route = hierarchy.routeId !== '__all__' ? routes.find(r => r.id === hierarchy.routeId) : null;
-    const toolText = hierarchy.tool === '__all__' ? 'Tüm araçlar' : (selectedToolObj?.label || hierarchy.tool);
-    const subText = hierarchy.routeId === '__all__'
-      ? ` · Tüm abonelikler (${Math.max(0, hierarchy.subscriptions.length - 1)} hesap)`
-      : ` · ${route ? `${adapterLabels[route.adapter] || route.adapter} · ${cleanRouteLabel(route, routeEmail(route.id))}` : cleanRouteLabel(route, routeEmail(route?.id))}`;
-    const famText = hierarchy.family === '__all__' ? '' : ` · ${familyLabel(hierarchy.family)}`;
-    const routeMeta = route
-      ? ` · ${billingLabels[route.billing]}${route.api ? ` · ${route.api.baseUrl}` : ''}${route.enabled ? '' : ' · Devre dışı'}`
-      : '';
-    status.append(element('small', `${toolText}${subText}${famText}${routeMeta} · ${filtered.length} model`));
+    const accountCount = Math.max(0, hierarchy.subscriptions.length - 1);
+    const selectedToolObj = hierarchy.tools.find(t => t.id === hierarchy.tool);
+    if (route) {
+      const subText = `${adapterLabels[route.adapter] || route.adapter} · ${cleanRouteLabel(route, routeEmail(route.id))}`;
+      catalogHeaderMeta = `${subText} · ${filtered.length} model`;
+    } else if (hierarchy.tool !== '__all__') {
+      catalogHeaderMeta = `${selectedToolObj?.label || hierarchy.tool} · ${accountCount} hesap · ${filtered.length} model`;
+    } else {
+      catalogHeaderMeta = `Tüm abonelikler · ${accountCount} hesap · ${filtered.length} model`;
+    }
 
     if (route && route.adapter !== 'codex' && !route.api && route.billing !== 'free' && !route.trustedSettings) {
+      const status = element('div', null, 'actions');
       const label = element('label', null, 'trust-field'), check = document.createElement('input');
       check.type = 'checkbox';
       check.checked = route.trustedSettings;
       check.addEventListener('change', () => { route.trustedSettings = check.checked; dirty(); });
       label.append(check, element('span', 'Yerel ayarları ve planı doğruladım'));
       status.append(label);
+      $('catalog-status').replaceChildren(status);
+    } else {
+      $('catalog-status').replaceChildren();
     }
-    $('catalog-status').replaceChildren(status);
   }
 
   const catalogSort = $('catalog-sort').value;
@@ -2088,7 +2162,7 @@ function renderCatalogBody() {
   if (!entries.length) {
     $('pool-models').append(element('p', 'Görünür model yok. Filtreleri kontrol edin veya Ayarlar → Modelleri tara seçeneğini kullanın.', 'empty'));
   }
-  $('catalog-count').textContent = `${entries.length} model`;
+  $('catalog-count').textContent = catalogHeaderMeta || `${entries.length} model`;
   $('pool-models').scrollTop = scroll;
 }
 
@@ -2119,6 +2193,13 @@ function renderCatalogBatchBar(entries) {
 
     const disableSelected = button('Devre dışı bırak', async () => {
       const list = targets();
+      const confirmed = await askConfirm({
+        title: 'Modelleri devre dışı bırak',
+        message: `${list.length} modeli devre dışı bırakmak istiyor musunuz?`,
+        detail: confirmTargetsDetail(list),
+        confirmLabel: 'Devre dışı bırak',
+      });
+      if (!confirmed) return;
       for (const { routeId, modelId } of list) {
         const m = settings.config.routes.find(r => r.id === routeId)?.models.find(item => item.id === modelId);
         if (m) m.enabled = false;
@@ -2128,8 +2209,16 @@ function renderCatalogBatchBar(entries) {
     });
 
     const hideSelected = button(`Gizle (${selectedCount})`, async () => {
+      const list = targets();
+      const confirmed = await askConfirm({
+        title: 'Modelleri gizle',
+        message: `${list.length} modeli katalogdan gizlemek istiyor musunuz?`,
+        detail: confirmTargetsDetail(list),
+        confirmLabel: 'Gizle',
+      });
+      if (!confirmed) return;
       const filters = settings.config.modelFilters ||= [];
-      for (const { routeId, modelId } of targets()) {
+      for (const { routeId, modelId } of list) {
         const r = settings.config.routes.find(item => item.id === routeId);
         const m = r?.models.find(item => item.id === modelId);
         const issue = modelIssueInfo(r, m || { id: modelId }, snapshot?.quotas?.[routeId], quotaErrors[routeId]);
@@ -2137,10 +2226,9 @@ function renderCatalogBatchBar(entries) {
         const rule = { match: 'model', value: modelId, routeId, reason };
         if (!filters.some(item => item.match === rule.match && item.routeId === rule.routeId && item.value === rule.value)) filters.push(rule);
       }
-      const count = selectedCatalogItems.size;
       selectedCatalogItems.clear();
       await savePreference('modelFilters');
-      notice(`${count} model katalogdan gizlendi.`);
+      notice(`${list.length} model katalogdan gizlendi.`);
     });
     actions.append(addSelected, disableSelected, hideSelected);
   }
@@ -2319,9 +2407,10 @@ function renderHidden() {
     }
   }
 
+  $('hidden-models').classList.toggle('is-mini-grid', displayMode === 'mini');
   $('hidden-models').replaceChildren(
     ...(sorted.length
-      ? sorted.map(({ route, model }) => modelCard(route, model, null, { hiddenView: true, reasonKey: hiddenReasonCategory(route, model) }))
+      ? sorted.map(({ route, model }) => modelCard(route, model, null, { hiddenView: true, reasonKey: hiddenReasonCategory(route, model), boardKey: 'hidden' }))
       : [element('p', scopedHidden.length ? 'Bu alt filtrede gizlenen model yok.' : viewMode === 'settings' ? 'Ayarlarda filtrelenen model yok.' : 'Gizlenen model yok. Model kartlarından "Gizle" düğmesiyle sorunlu veya eski modelleri buraya taşıyabilirsiniz.', 'empty')]),
   );
 }
@@ -2333,6 +2422,24 @@ function modelCard(route, model, member, options = {}) {
   row.setAttribute('aria-label', `${model.id} · ${route.id}`);
   row.dataset.routeId = route.id;
   row.dataset.modelId = model.id;
+
+  const effectiveBoard = boardKey || (hiddenView ? 'hidden' : member ? 'pool' : 'catalog');
+  const cardKey = JSON.stringify([effectiveBoard, route.id, model.id]);
+  const isMiniExpanded = displayMode === 'mini' && expandedMiniCards.has(cardKey);
+  const renderAsMini = displayMode === 'mini' && !isMiniExpanded;
+  if (displayMode === 'mini') {
+    if (isMiniExpanded) {
+      row.classList.add('is-mini-expanded');
+    }
+    row.addEventListener('dblclick', event => {
+      if (event.target.closest('button, input, select, a, summary')) return;
+      if (expandedMiniCards.has(cardKey)) expandedMiniCards.delete(cardKey);
+      else expandedMiniCards.add(cardKey);
+      if (hiddenView) renderHidden();
+      else if (member) renderPool();
+      else renderCatalog();
+    });
+  }
 
   const q = snapshot?.quotas?.[route.id];
   const issue = modelIssueInfo(route, model, q, quotaErrors[route.id] || '');
@@ -2421,13 +2528,17 @@ function modelCard(route, model, member, options = {}) {
   const email = routeEmail(route.id);
   const subLabel = cleanRouteLabel(route, email);
 
-  if (displayMode === 'mini' && !hiddenView) {
+  if (renderAsMini) {
     row.classList.add('is-mini');
-    row.title = `${model.id} · ${adapterLabels[route.adapter] || route.adapter} · ${subLabel}`;
+    row.title = `Ayrıntılı görünüm için çift tıklayın · ${model.id} · ${adapterLabels[route.adapter] || route.adapter} · ${subLabel}`;
     const miniTop = element('div', null, 'mini-row-top');
     const modelName = element('strong', model.id, 'mini-model-name');
-    const toolName = element('span', adapterLabels[route.adapter] || route.adapter, 'mini-tool-tag');
-    miniTop.append(check, adapterIcon(route.adapter, model.id), modelName, toolName);
+    const toolWrap = element('span', null, 'mini-tool-wrap');
+    toolWrap.append(
+      adapterIcon(route.adapter, model.id),
+      element('span', adapterLabels[route.adapter] || route.adapter, 'mini-tool-tag'),
+    );
+    miniTop.append(check, modelName, toolWrap);
     if (orderControls) miniTop.append(orderControls);
 
     const miniBottom = element('div', null, 'mini-row-bottom');
@@ -2435,56 +2546,6 @@ function modelCard(route, model, member, options = {}) {
     mailSpan.title = email || subLabel;
     const quotaWrap = compactQuotaPills(q, model.id, quotaErrors[route.id] || '', issue);
     const miniActions = element('div', null, 'mini-actions');
-
-    if (member && !isAllGroup(member.group)) {
-      const remBtn = button('−', async () => {
-        model.memberships = memberships(model).filter(item => item.group !== selectedGroup);
-        await saveModel(route.id, model.id);
-      });
-      remBtn.className = 'mini-btn';
-      remBtn.title = `${groupLabel(selectedGroup)} havuzundan çıkar`;
-      remBtn.setAttribute('aria-label', `${model.id} modelini havuzdan çıkar`);
-      miniActions.append(remBtn);
-    } else {
-      const addBtn = button('+', async () => openPoolPicker(route, model));
-      addBtn.className = 'mini-btn add-model-mini';
-      addBtn.title = 'Havuza ekle';
-      addBtn.setAttribute('aria-label', `${model.id} modelini havuza ekle`);
-      miniActions.append(addBtn);
-    }
-
-    const testMini = button('▷', async () => {
-      const savedRoute = baseConfig.routes.find(item => item.id === route.id);
-      const savedModel = savedRoute?.models.find(item => item.id === model.id);
-      if (!savedModel) throw new Error('Modeli test etmeden önce kaydedin.');
-      const activeMember = row.classList.contains('membership-row')
-        ? (isAllGroup(selectedGroup) ? memberships(savedModel)[0] : memberships(savedModel).find(item => item.group === selectedGroup))
-        : null;
-      const task = await call('probe_model', { routeId: route.id, modelId: model.id, ...(activeMember ? { group: activeMember.group } : {}) });
-      await refresh();
-      await openTask(task.id);
-    });
-    testMini.className = 'mini-btn';
-    testMini.title = 'Modeli test et';
-    testMini.setAttribute('aria-label', `${model.id} modelini test et`);
-
-    const toggleMini = button(model.enabled === false || !route.enabled ? 'Aç' : 'Kapat', async () => {
-      if (model.enabled === false || !route.enabled) {
-        if (!activeBillings.has(baseConfig.routes.find(item => item.id === route.id)?.billing)) {
-          routeSettings(route);
-          notice('Önce bağlantının ödeme / plan türünü doğrulayın.');
-          return;
-        }
-        model.enabled = true;
-        route.enabled = true;
-        await saveModel(route.id, model.id, true, `${model.id} etkinleştirildi.`);
-      } else {
-        model.enabled = false;
-        await saveModel(route.id, model.id, false, `${model.id} devre dışı bırakıldı.`);
-      }
-    });
-    toggleMini.className = 'mini-btn';
-    toggleMini.title = model.enabled === false || !route.enabled ? 'Etkinleştir' : 'Devre dışı bırak';
 
     const link = button('', async () => { if (link.dataset.taskId) await openTask(link.dataset.taskId); });
     link.className = 'model-call mini-call-dot';
@@ -2498,20 +2559,37 @@ function modelCard(route, model, member, options = {}) {
       link.dataset.taskId = task.id;
     }
 
-    miniActions.append(testMini, toggleMini, link);
+    const testMini = button('Test', async () => {
+      const savedRoute = baseConfig.routes.find(item => item.id === route.id);
+      const savedModel = savedRoute?.models.find(item => item.id === model.id);
+      if (!savedModel) throw new Error('Modeli test etmeden önce kaydedin.');
+      const activeMember = row.classList.contains('membership-row')
+        ? (isAllGroup(selectedGroup) ? memberships(savedModel)[0] : memberships(savedModel).find(item => item.group === selectedGroup))
+        : null;
+      const probeTask = await call('probe_model', { routeId: route.id, modelId: model.id, ...(activeMember ? { group: activeMember.group } : {}) });
+      await refresh();
+      await openTask(probeTask.id);
+    });
+    testMini.className = 'mini-btn mini-test-btn';
+    testMini.title = 'Modeli test et';
+    testMini.setAttribute('aria-label', `${model.id} modelini test et`);
+
+    miniActions.append(link, testMini);
     miniBottom.append(mailSpan, quotaWrap, miniActions);
     row.append(miniTop, miniBottom);
     return row;
   }
 
+  const accountStack = element('div', null, 'model-account-stack');
+  const emailRow = element('div', null, 'model-account-row');
+  emailRow.append(element('span', email || subLabel, email || route.profile ? 'model-email-badge' : 'badge subtle'));
   const accountRow = element('div', null, 'model-account-row');
-  accountRow.append(element('span', `${adapterLabels[route.adapter] || route.adapter}${route.api ? ' · API' : ''}`, 'model-provider-tag'));
-  if (email) {
-    accountRow.append(element('span', email, 'model-email-badge'));
-  } else {
-    accountRow.append(element('span', subLabel, route.profile ? 'model-email-badge' : 'badge subtle'));
-  }
-  accountRow.append(element('span', billingLabels[model.billing || route.billing] || route.billing, 'badge subtle'));
+  accountRow.append(
+    element('span', `${adapterLabels[route.adapter] || route.adapter}${route.api ? ' · API' : ''}`, 'model-provider-tag'),
+    element('span', billingLabels[model.billing || route.billing] || route.billing, 'badge subtle'),
+    element('span', capabilityLabel(route, model), 'badge subtle capability-badge'),
+  );
+  accountStack.append(emailRow, accountRow);
 
   const statusRow = element('div', null, 'model-status-row');
   if (issue.isError) {
@@ -2525,9 +2603,8 @@ function modelCard(route, model, member, options = {}) {
     statusRow.append(element('span', hiddenReasonLabels[reasonKey] || reasonKey, 'badge subtle'));
   }
 
-  info.title = `${model.id} · ${adapterLabels[route.adapter] || route.adapter} · ${subLabel}`;
-  accountRow.append(element('span', capabilityLabel(route, model), 'badge subtle capability-badge'));
-  info.append(titleRow, accountRow);
+  info.title = `${isMiniExpanded ? 'Mini görünüme dönmek için çift tıklayın · ' : ''}${model.id} · ${adapterLabels[route.adapter] || route.adapter} · ${subLabel}`;
+  info.append(titleRow, accountStack);
   if (statusRow.children.length) info.append(statusRow);
 
   if (model.enabled === false || !route.enabled) {
@@ -2570,6 +2647,14 @@ function modelCard(route, model, member, options = {}) {
     addAnother.classList.add('add-model');
     addAnother.title = 'Başka bir havuz kategorisine de ekle';
     const removeAll = button('Havuzdan çıkar', async () => {
+      const confirmed = await askConfirm({
+        title: 'Havuzdan çıkar',
+        message: `"${model.id}" modelini tüm havuzlardan çıkarmak istiyor musunuz?`,
+        detail: `${adapterLabels[route.adapter] || route.adapter} · ${subLabel}`,
+        confirmLabel: 'Havuzdan çıkar',
+        danger: true,
+      });
+      if (!confirmed) return;
       model.memberships = [];
       await saveModel(route.id, model.id, false, `${model.id} tüm havuzlardan çıkarıldı.`);
     });
@@ -2585,6 +2670,14 @@ function modelCard(route, model, member, options = {}) {
     }), ['', ...model.efforts], false);
     effort.querySelector('select').setAttribute('aria-label', `${model.id} · ${route.id} efor`);
     const remove = button('Çıkar', async () => {
+      const confirmed = await askConfirm({
+        title: 'Havuzdan çıkar',
+        message: `"${model.id}" modelini "${groupLabel(selectedGroup)}" havuzundan çıkarmak istiyor musunuz?`,
+        detail: `${adapterLabels[route.adapter] || route.adapter} · ${subLabel}`,
+        confirmLabel: 'Çıkar',
+        danger: true,
+      });
+      if (!confirmed) return;
       model.memberships = memberships(model).filter(item => item.group !== selectedGroup);
       await saveModel(route.id, model.id);
     });
@@ -2642,7 +2735,7 @@ function modelCard(route, model, member, options = {}) {
   link.hidden = true;
   controls.append(test, toggleEnabled, link);
 
-  row.append(info, quotaCell(route, model, issue), footer, controls);
+  row.append(info, quotaCell(route, model), footer, controls);
   const task = snapshot?.tasks.find(task => task.routeId === route.id && task.modelId === model.id);
   if (task) {
     row.classList.toggle('is-active', activeStates.has(task.state));
@@ -2876,7 +2969,16 @@ function openPoolPicker(route, model, batchTargets = null) {
     $('add-pool-effort').replaceChildren(new Option('Mevcut eforu koru', 'preserve'), new Option('CLI varsayılanı', ''), ...['low', 'medium', 'high'].map(effort => new Option(effortLabel(effort), effort)));
     $('add-pool-targets').replaceChildren(...poolGroups().map(group => button(groupLabel(group), async () => {
       const effortVal = $('add-pool-effort').value;
-      for (const { routeId, modelId } of pendingPoolBatch) {
+      const targets = [...(pendingPoolBatch || [])];
+      $('add-pool-dialog').close();
+      const confirmed = await askConfirm({
+        title: 'Havuza ekle',
+        message: `${targets.length} modeli "${groupLabel(group)}" havuzuna eklemek istiyor musunuz?`,
+        detail: confirmTargetsDetail(targets),
+        confirmLabel: 'Havuza ekle',
+      });
+      if (!confirmed) return;
+      for (const { routeId, modelId } of targets) {
         const targetRoute = settings.config.routes.find(item => item.id === routeId);
         const targetModel = targetRoute?.models.find(item => item.id === modelId);
         if (!targetModel) continue;
@@ -2887,8 +2989,6 @@ function openPoolPicker(route, model, batchTargets = null) {
         targetModel.enabled = true;
         targetRoute.enabled = true;
       }
-      const targets = [...pendingPoolBatch];
-      $('add-pool-dialog').close();
       selectedCatalogItems.clear();
       await saveModelsBatch(targets, true, `${targets.length} model ${groupLabel(group)} havuzuna eklendi.`);
     })));
@@ -2902,16 +3002,25 @@ function openPoolPicker(route, model, batchTargets = null) {
   $('add-pool-targets').replaceChildren(...poolGroups().map(group => {
     const existing = memberships(model).find(member => member.group === group);
     return button(`${groupLabel(group)}${existing ? ' · ekli' : ''}`, async () => {
-      const targetRoute = settings.config.routes.find(item => item.id === pendingPoolModel?.routeId);
-      const targetModel = targetRoute?.models.find(item => item.id === pendingPoolModel?.modelId);
+      const ref = pendingPoolModel ? { ...pendingPoolModel } : null;
+      const effortVal = $('add-pool-effort').value;
+      const targetRoute = settings.config.routes.find(item => item.id === ref?.routeId);
+      const targetModel = targetRoute?.models.find(item => item.id === ref?.modelId);
       if (!targetModel) throw new Error('Model kataloğu değişti. Modeli yeniden seçin.');
       if (!activeBillings.has(targetRoute.billing)) throw new Error('Bağlantı ayarlarından bu aracın plan türünü doğrulayın.');
+      $('add-pool-dialog').close();
+      const confirmed = await askConfirm({
+        title: 'Havuza ekle',
+        message: `"${targetModel.id}" modelini "${groupLabel(group)}" havuzuna eklemek istiyor musunuz?`,
+        detail: `${adapterLabels[targetRoute.adapter] || targetRoute.adapter} · ${cleanRouteLabel(targetRoute, routeEmail(targetRoute.id))}`,
+        confirmLabel: 'Havuza ekle',
+      });
+      if (!confirmed) return;
       const member = memberships(targetModel).find(item => item.group === group);
-      const changed = addMembership(targetModel, group, $('add-pool-effort').value === 'preserve' ? member?.effort || '' : $('add-pool-effort').value);
+      const changed = addMembership(targetModel, group, effortVal === 'preserve' ? member?.effort || '' : effortVal);
       const enabled = targetModel.enabled && targetRoute.enabled;
       targetModel.enabled = true;
       targetRoute.enabled = true;
-      $('add-pool-dialog').close();
       if (changed || !enabled || poolDirty) await saveModel(targetRoute.id, targetModel.id, true);
       else renderPool();
       [...$('pool-models').querySelectorAll('.add-model')].find(node => node.dataset.modelId === targetModel.id && node.dataset.routeId === targetRoute.id)?.focus();

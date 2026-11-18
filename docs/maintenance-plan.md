@@ -86,6 +86,23 @@
 - [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.17.0`.
 - [x] **Doğrulama kanıtı (2.17.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate` ve `npm test` (206/206; yeni `test/multi-account-and-ui.test.js` + güncellenmiş `test/opencode-quota.test.js`).
 
+## 2.18.0 — Normal/Mini Tek Geçiş, Çift Tıklama Genişletme, Onay Penceresi ve Sadeleştirilmiş Abonelik/Katalog Görünümü
+- [x] **Normal / Mini tek geçiş düğmesi ve kotaları gizlemenin kaldırılması (`web/index.html`, `web/pool-state.js`, `web/app.js`, `web/style.css`)**:
+  - Üçlü buton grubu (`#display-mode-group`) kaldırılarak `Normal` / `Mini` arasında geçiş yapan tek `#toggle-display-mode` düğmesi eklendi.
+  - Kotaları gizle/göster akışı tamamen kaldırıldı; `Normal` görünümde kotalar ince (`3px`) ilerleme çubuklarıyla her zaman açık gösterilir.
+- [x] **Mini kart düzeni, ince kota etiketi, çift tıklama ile aç/kapa ve tüm listelere yayılım (`web/app.js`, `web/style.css`)**:
+  - Mini kartta üst satırda `[seçim kutusu] [model adı] [ikon + araç] [sıralama]`, alt satırda `[küçük e-posta] [kotalar] [yalnız Test]`; Mini modda kart içi ekleme (`+`), çıkarma (`−`) ve kapatma/açma düğmeleri kaldırıldı.
+  - Kota haplarında dönem etiketi (`7g`, `5s`) ince (`font-weight: 400`), yüzde değeri kalın (`font-weight: 700`) yazılarak bakışta yüzde ayrımı netleştirildi.
+  - Havuzlarım, Model kataloğu ve Gizlenenler dahil tüm panellerde Mini karta çift tıklandığında (`expandedMiniCards`) yalnız o kart tam Normal görünümde açılır; tekrar çift tıklanınca Mini görünüme döner.
+- [x] **Küçük e-posta rozetleri ve iki satırlı Abonelikler şeridi (`web/pool-state.js`, `web/app.js`, `web/style.css`)**:
+  - `filterHierarchy` dönüşüne `subscriptionLabel` ve `toolLabel` eklendi; Abonelikler şeridinde üstte küçük mail/etiket (`11px`), hemen altında küçük araç ikonu + araç adı (`9.5px`, örn. `Antigravity`) gösterilir; Normal kartlarda da `.model-email-badge` küçültülerek `.model-account-stack` altında araç/plan bilgisi ayrıldı.
+- [x] **Havuz ekle/çıkar ve katalog toplu işlemleri için onay penceresi (`web/index.html`, `web/app.js`, `web/style.css`)**:
+  - `#confirm-dialog` ve `askConfirm` ile tekil/toplu havuzdan çıkarma, havuza ekleme (`openPoolPicker`) ve katalog/havuz toplu gizleme/devre dışı bırakma işlemlerinde onay sorulur.
+- [x] **Katalog üst özeti ve gereksiz alt satırın kaldırılması (`web/app.js`)**:
+  - `Tüm abonelikler · N hesap · M model` özeti üst başlık yanındaki `#catalog-count` alanına taşındı; güven onayı gerekmediğinde `#catalog-status` gizli kalır.
+- [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.18.0`.
+- [x] **Doğrulama kanıtı (2.18.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate` ve `npm test` çalıştırılarak doğrulandı.
+
 ## 2.13.0 — Düz Hiyerarşi Satırları ve Net Aç/Kapalı Anahtarı
 - [x] **Hiyerarşi ağaç yerine düz ve eşit hizada (`web/app.js`, `web/style.css`)**: Araçlar / Abonelikler / Model aileleri satırları artık üçü de aynı sol hizada, aynı başlık ve aynı çip görünümüyle sıralanır; önceki ray/dirsek iç içe yapım ve yol (breadcrumb) satırı kaldırıldı. Her düğmenin yanında model sayısı korunur.
 - [x] **Bağlantı aç/kapalı anahtarı (`web/app.js`, `web/style.css`)**: Ayarlar'daki bağlantı satırındaki "Devre dışı" etiketli kutu yerine gerçek bir anahtar (slider) geldi: solda kaydırıcı, sağda **Etkin** / **Kapalı** durumu. Anahtar çevrilince değişiklik **anında kaydedilir** (taslakta bırakılmaz) ve bağlantı etkinleştiğinde araç ve modelleri ana sayfada (Model kataloğu) görünür; durum rozeti "Kapalı" / "Etkin" olarak netleştirildi.

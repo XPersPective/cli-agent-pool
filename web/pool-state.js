@@ -216,9 +216,8 @@ export function formatCompactQuotaWindows(snapshot, modelId = '') {
   return [...seen.values()];
 }
 
-export function normalizeDisplayMode(mode, legacyQuotasOpen = true) {
-  if (mode === 'detailed' || mode === 'compact' || mode === 'mini') return mode;
-  return legacyQuotasOpen === false ? 'compact' : 'detailed';
+export function normalizeDisplayMode(mode) {
+  return mode === 'mini' ? 'mini' : 'detailed';
 }
 
 export function quotaApplies(window, modelId = '') {
@@ -461,6 +460,8 @@ export function filterHierarchy(entries = [], selection = {}, emails = {}, adapt
       subRows.push({
         id: w.id,
         label: tool === '__all__' ? `${group.label} · ${w.subscriptionLabel}` : w.subscriptionLabel,
+        subscriptionLabel: w.subscriptionLabel,
+        toolLabel: group.label,
         tool: group.adapter,
         email: w.email,
         isApi: w.isApi,
