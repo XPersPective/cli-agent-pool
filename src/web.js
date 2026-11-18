@@ -6,8 +6,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { configView, saveConfig, PoolError, dataDirectory } from './config.js';
 import { discover, routeCatalog, importDiscoveredRoutes, loginCommands, mergeCatalogModels, migrateFilterAliases, routeCommand, accountLoggedIn, routeAccountEmail, quota } from './adapters.js';
-import { nextAccountRoute, prepareWslProfile, prepareNativeAgyProfile } from './accounts.js';
-import { wslPrefix, wslLoginPath } from './profiles.js';
+import { nextAccountRoute, isolatedLoginRoute, prepareWslProfile, prepareNativeAgyProfile } from './accounts.js';
+import { accountProfileAdapters, clearProfileAuth, clearProfileDirectory, wslPrefix, wslLoginPath } from './profiles.js';
 import { codexControl } from './codex-control.js';
 import { saveSecret, hasSecret } from './secrets-store.js';
 import { childEnvironment, runProcess } from './process.js';
@@ -113,9 +113,41 @@ export function managementOperation(pool, management, body) {
   return annotateView(configView(management.directory), management.directory);
 }
 
-export function browserUI(pool, management) {
+export function browserUI(pool, management, { openLogin = openCliLogin } = {}) {
   let folderPicker = null;
   const pendingAccounts = new Map();
+  const pendingSwitches = new Map();
+  const cleanupUnusedProfile = (routes, candidate) => {
+    if (!candidate?.profile || candidate.runtime === 'wsl') return;
+    if ((routes || []).some(route => route.adapter === candidate.adapter && route.profile === candidate.profile && route.runtime !== 'wsl')) return;
+    clearProfileDirectory(candidate, management.directory);
+  };
+  const resolveRouteEmail = async route => {
+    const cached = pool.store.quota(route.id)?.email;
+    if (cached) return cached;
+    const fromFile = routeAccountEmail(route, management.directory);
+    if (fromFile) return fromFile;
+    if (route.adapter === 'agy' && !route.api) {
+      try {
+        const snapshot = await quota(route, management.directory, pool.config.python, management.directory);
+        if (snapshot?.email) {
+          try { pool.store.saveQuota(route.id, snapshot); } catch {}
+          return snapshot.email;
+        }
+      } catch {}
+    }
+    return null;
+  };
+  const findDuplicateEmailRoute = async (routes, candidate, candidateEmail, excludeRouteId = null) => {
+    if (!candidateEmail) return null;
+    const target = candidateEmail.toLowerCase();
+    for (const route of routes) {
+      if (route.adapter !== candidate.adapter || route.api || route.id === excludeRouteId) continue;
+      const existingEmail = await resolveRouteEmail(route);
+      if (existingEmail && existingEmail.toLowerCase() === target) return route;
+    }
+    return null;
+  };
   const liveCatalogAdapters = new Set(['codex', 'claude', 'agy', 'qoder', 'opencode', 'mimo', 'lmstudio', 'ollama']);
   const prepareCatalogRoute = async route => {
     if (route.runtime === 'wsl') await prepareWslProfile(route, pool.config.python, management.directory);
@@ -238,7 +270,8 @@ export function browserUI(pool, management) {
         const routeId = payload.routeId;
         if (typeof routeId !== 'string' || !routeId) throw new PoolError('INVALID_REQUEST', 'Silinecek bağlantıyı seçin.');
         const view = configView(management.directory);
-        if (!view.config.routes.some(route => route.id === routeId)) throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı.');
+        const deletedRoute = view.config.routes.find(route => route.id === routeId);
+        if (!deletedRoute) throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı.');
         const active = (pool.list?.(500, 0, true) || []).some(task => task.routeId === routeId && ['queued', 'starting', 'running', 'cancelling', 'needs_review'].includes(task.state)) ||
           (pool.store.held?.() || []).some(held => { try { return JSON.parse(pool.store.get(held.id)?.request || '{}').routeId === routeId; } catch { return false; } });
         if (active) throw new PoolError('ROUTE_BUSY', `${routeId} üzerinde çalışan, bekleyen veya inceleme bekleyen görev var. Önce görevi kapatın.`);
@@ -247,6 +280,8 @@ export function browserUI(pool, management) {
         pool.config = saveConfig(management.directory, { ...view.config, routes: nextRoutes, modelFilters: nextFilters }, view.revision);
         try { pool.store.deleteQuota?.(routeId); } catch {}
         pendingAccounts.delete(routeId);
+        pendingSwitches.delete(routeId);
+        cleanupUnusedProfile(nextRoutes, deletedRoute);
         pool.schedule();
         return { ...annotateView(configView(management.directory), management.directory), deletedRoute: routeId };
       }
@@ -259,17 +294,73 @@ export function browserUI(pool, management) {
         try { return await folderPicker; } finally { folderPicker = null; }
       }
       if (operation === 'login') {
-        const route = pool.config.routes.find(route => route.id === payload.routeId);
+        const view = configView(management.directory);
+        const route = view.config.routes.find(route => route.id === payload.routeId);
         if (!route) throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı.');
-        return openCliLogin(route, { directory: management.directory, python: pool.config.python });
+        if (payload.isolated === true && !route.api && route.runtime !== 'wsl' && accountProfileAdapters.has(route.adapter)) {
+          const extraUsed = [...pendingAccounts.values(), ...pendingSwitches.values()]
+            .filter(item => item.adapter === route.adapter)
+            .map(item => item.profile);
+          const staging = isolatedLoginRoute(view.config, route.id, extraUsed);
+          cleanupUnusedProfile(view.config.routes, staging);
+          if (staging.adapter === 'agy') prepareNativeAgyProfile(staging, management.directory);
+          const opened = await openLogin(staging, { directory: management.directory, python: pool.config.python, prepare: async () => {} });
+          pendingSwitches.set(route.id, staging);
+          return { pending: route.id, profile: staging.profile, isolated: true, opened: opened.opened, message: opened.message };
+        }
+        return openLogin(route, { directory: management.directory, python: pool.config.python });
+      }
+      if (operation === 'finish_switch') {
+        const candidate = pendingSwitches.get(payload.routeId);
+        if (!candidate) throw new PoolError('NO_PENDING_ACCOUNT', 'Bekleyen hesap değişimi yok.');
+        if (!await accountLoggedIn(candidate, management.directory, pool.config.python, management.directory)) return { pending: payload.routeId };
+        const view = configView(management.directory);
+        const target = view.config.routes.find(route => route.id === payload.routeId);
+        if (!target) {
+          cleanupUnusedProfile(view.config.routes, candidate);
+          pendingSwitches.delete(payload.routeId);
+          throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı.');
+        }
+        const candidateEmail = await resolveRouteEmail(candidate);
+        const duplicate = await findDuplicateEmailRoute(view.config.routes, candidate, candidateEmail, target.id);
+        if (duplicate) {
+          cleanupUnusedProfile(view.config.routes, candidate);
+          pendingSwitches.delete(payload.routeId);
+          throw new PoolError('DUPLICATE_ACCOUNT', `Bu hesap (${candidateEmail}) zaten ${duplicate.id} bağlantısında ekli. Kopya hesap bağlanmadı.`);
+        }
+        if (candidate.adapter === 'agy' && candidate.runtime !== 'wsl') {
+          try { prepareNativeAgyProfile(candidate, management.directory); } catch {}
+        }
+        const previous = structuredClone(target);
+        target.profile = candidate.profile;
+        delete target.runtime;
+        delete target.wsl;
+        pool.config = saveConfig(management.directory, view.config, view.revision);
+        try { pool.store.deleteQuota?.(target.id); } catch {}
+        pendingSwitches.delete(payload.routeId);
+        cleanupUnusedProfile(pool.config.routes, previous);
+        pool.schedule();
+        return { ...annotateView(configView(management.directory), management.directory), switchedRoute: target.id, profile: target.profile, ...(candidateEmail ? { email: candidateEmail } : {}) };
+      }
+      if (operation === 'logout_route') {
+        const routeId = payload.routeId;
+        const route = pool.config.routes.find(item => item.id === routeId);
+        if (!route) throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı.');
+        if (!route.profile || route.api || route.runtime === 'wsl') throw new PoolError('LOGOUT_UNSUPPORTED', 'Yalnızca izole hesap profillerinin oturumu buradan kapatılabilir.');
+        const active = (pool.list?.(500, 0, true) || []).some(task => task.routeId === routeId && ['queued', 'starting', 'running', 'cancelling', 'needs_review'].includes(task.state));
+        if (active) throw new PoolError('ROUTE_BUSY', `${routeId} üzerinde çalışan veya bekleyen görev var.`);
+        clearProfileAuth(route, management.directory);
+        try { pool.store.deleteQuota?.(routeId); } catch {}
+        return { ...annotateView(configView(management.directory), management.directory), loggedOutRoute: routeId };
       }
       if (operation === 'add_account') {
         const view = configView(management.directory);
         // Step 1: open the official sign-in for a new profile. Nothing is saved yet.
         const { route } = nextAccountRoute(view.config, payload.routeId, 'native');
+        cleanupUnusedProfile(view.config.routes, route);
         if (route.adapter === 'agy' && route.runtime !== 'wsl') prepareNativeAgyProfile(route, management.directory);
         else if (route.runtime === 'wsl') await prepareWslProfile(route, pool.config.python, management.directory);
-        const opened = await openCliLogin(route, { directory: management.directory, python: pool.config.python, prepare: async () => {} });
+        const opened = await openLogin(route, { directory: management.directory, python: pool.config.python, prepare: async () => {} });
         pendingAccounts.set(payload.routeId, route);
         return { pending: route.id, profile: route.profile, opened: opened.opened, message: opened.message };
       }
@@ -281,19 +372,16 @@ export function browserUI(pool, management) {
         const view = configView(management.directory);
         const base = view.config.routes.find(route => route.id === payload.routeId);
         if (view.config.routes.some(route => route.id === candidate.id || (route.adapter === candidate.adapter && route.profile === candidate.profile && (route.runtime || 'native') === (candidate.runtime || 'native')))) {
+          cleanupUnusedProfile(view.config.routes, candidate);
           pendingAccounts.delete(payload.routeId);
           throw new PoolError('ACCOUNT_EXISTS', `${candidate.id} zaten ekli.`);
         }
-        let candidateEmail = routeAccountEmail(candidate, management.directory);
-        if (!candidateEmail && candidate.adapter === 'agy') {
-          try { candidateEmail = (await quota(candidate, management.directory, pool.config.python, management.directory))?.email || null; } catch {}
-        }
-        if (candidateEmail) {
-          const duplicate = view.config.routes.find(route => route.adapter === candidate.adapter && !route.api && (pool.store.quota(route.id)?.email || routeAccountEmail(route, management.directory) || '').toLowerCase() === candidateEmail.toLowerCase());
-          if (duplicate) {
-            pendingAccounts.delete(payload.routeId);
-            throw new PoolError('DUPLICATE_ACCOUNT', `Bu hesap (${candidateEmail}) zaten ${duplicate.id} bağlantısında ekli. Kopya bağlantı eklenmedi.`);
-          }
+        const candidateEmail = await resolveRouteEmail(candidate);
+        const duplicate = await findDuplicateEmailRoute(view.config.routes, candidate, candidateEmail);
+        if (duplicate) {
+          cleanupUnusedProfile(view.config.routes, candidate);
+          pendingAccounts.delete(payload.routeId);
+          throw new PoolError('DUPLICATE_ACCOUNT', `Bu hesap (${candidateEmail}) zaten ${duplicate.id} bağlantısında ekli. Kopya bağlantı eklenmedi.`);
         }
         if (candidate.adapter === 'agy' && candidate.runtime !== 'wsl') {
           try { prepareNativeAgyProfile(candidate, management.directory); } catch {}
@@ -368,8 +456,8 @@ export function browserUI(pool, management) {
           ? await management.onUpdate()
           : await installDesktopAndSkills(management.directory);
         const restartScheduled = Boolean(res.restartRequired);
-        // Yeni sürüm kurulduysa çalışan servis eski varlıkları sunmaya devam eder; servisi yeniden başlat.
-        if (restartScheduled) scheduleServiceRestart(management.directory);
+        // Yeni sürüm kurulduysa çalışan servis eski varlıkları sunmaya devam eder; servisi yeni kurulumdan başlat.
+        if (restartScheduled) scheduleServiceRestart(management.directory, res.runtimePath ? path.join(res.runtimePath, 'bin', 'pool.js') : undefined);
         return {
           updated: true,
           version,

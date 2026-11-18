@@ -14,7 +14,7 @@ import { prepareWslProfile, prepareNativeAgyProfile } from '../src/accounts.js';
 import { stdioBridge } from '../src/stdio.js';
 import { rpcRequest } from '../src/rpc.js';
 import { version } from '../src/version.js';
-import { ensureInitialized, ensureDaemon, managementRequest, openDashboardWindow, withMcpClient, apiRequest, callPoolTool, runTaskFromCli, installDesktopAndSkills } from '../src/daemon.js';
+import { ensureInitialized, ensureDaemon, managementRequest, openDashboardWindow, withMcpClient, apiRequest, callPoolTool, runTaskFromCli, installDesktopAndSkills, scheduleServiceRestart } from '../src/daemon.js';
 import { waitForTask } from '../src/task-protocol.js';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -104,7 +104,13 @@ export async function main(args = process.argv.slice(2)) {
     return;
   }
   if (command === 'install' || command === 'setup') {
-    print(await installDesktopAndSkills(directory));
+    const res = await installDesktopAndSkills(directory);
+    if (res.restartRequired) {
+      const targetBin = res.runtimePath ? path.join(res.runtimePath, 'bin', 'pool.js') : undefined;
+      scheduleServiceRestart(directory, targetBin);
+      res.restartScheduled = true;
+    }
+    print(res);
     return;
   }
   if (command === 'open' || command === 'ui' || command === 'dashboard') {

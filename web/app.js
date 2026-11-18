@@ -23,8 +23,8 @@ import {
   toolGroupsForRoutes,
   filterHierarchy,
   settingsViewSignature,
-  quotaToggleState,
-  quotaToggleTarget,
+  formatCompactQuotaWindows,
+  normalizeDisplayMode,
 } from '/pool-state.js';
 import { dismissOnBackdrop } from '/dialogs.js';
 import { capabilityLabel } from '/capabilities.js';
@@ -89,6 +89,7 @@ const categoryPresetDefs = [
 ];
 const activeStates = new Set(['queued', 'starting', 'running', 'cancelling']);
 const accountWaits = new Set();
+const switchWaits = new Set();
 const accountAdapters = new Set(['codex', 'claude', 'agy', 'zcode', 'qwen', 'kimi', 'mcode', 'mmx', 'qoder', 'mimo']);
 
 let snapshot = null;
@@ -97,6 +98,7 @@ let baseConfig = null;
 let busy = false;
 let refreshing = false;
 let serviceStopped = false;
+let sessionExpired = false;
 let selectedTask = null;
 let selectedTaskStamp = '';
 let poolDirty = false;
@@ -111,7 +113,7 @@ let hiddenNav = { tool: '__all__', routeId: '__all__', family: '__all__' };
 let selectedSettingsTool = '';
 const selectedSettingsRoute = new Map();
 const routeModelsFamily = new Map();
-let quotasOpen = true;
+let displayMode = 'detailed';
 const quotaStates = new Map();
 let noticeTimer;
 let selectedFamily = '';
@@ -126,7 +128,7 @@ const selectedCatalogItems = new Set();
 const selectedHiddenItems = new Set();
 let categoryEditorStamp = '';
 let dragPayload = null;
-let refreshIntervalId = null;
+let refreshTimerId = null;
 let quotaIntervalId = null;
 let catalogIntervalId = null;
 let catalogSyncing = false;
@@ -161,7 +163,7 @@ if (viewPreferences.selectedSettingsRoute && typeof viewPreferences.selectedSett
 if (viewPreferences.selectedGroup === '__all__' || isCategoryId(viewPreferences.selectedGroup)) {
   selectedGroup = viewPreferences.selectedGroup;
 }
-if (typeof viewPreferences.quotasOpen === 'boolean') quotasOpen = viewPreferences.quotasOpen;
+displayMode = normalizeDisplayMode(viewPreferences.displayMode, viewPreferences.quotasOpen);
 if (typeof viewPreferences.showDisabledRoutes === 'boolean') showDisabledRoutes = viewPreferences.showDisabledRoutes;
 for (const [key, value] of Object.entries(viewPreferences.quotaStates || {})) {
   if (typeof value === 'boolean') quotaStates.set(key, value);
@@ -184,7 +186,8 @@ function rememberView() {
       catalogNav,
       hiddenNav,
       showDisabledRoutes,
-      quotasOpen,
+      displayMode,
+      quotasOpen: displayMode === 'detailed',
       quotaStates: Object.fromEntries(quotaStates),
     }));
   } catch { /* Current-page choices still work. */ }
@@ -331,6 +334,54 @@ function element(tag, text, className) {
   return node;
 }
 
+const ADAPTER_ICON_PATHS = {
+  agy: ['M12 3 4 19h4l4-8.2L16 19h4L12 3Z', 'M7.5 15h9'],
+  codex: ['M12 2.8 19.6 7.2v9.6L12 21.2 4.4 16.8V7.2L12 2.8Z', 'M12 7.5v9M8 9.8l8 4.4M16 9.8l-8 4.4'],
+  claude: ['M12 3v18M4.5 7.5l15 9M19.5 7.5l-15 9'],
+  opencode: ['M8.5 7.5 4 12l4.5 4.5M15.5 7.5 20 12l-4.5 4.5M13.5 5.5l-3 13'],
+  zcode: ['M5 6h14l-13 12h13'],
+  qwen: ['M12 3 20 9.5 16.5 20h-9L4 9.5 12 3Z', 'M12 8.5v7'],
+  mcode: ['M4 17V7l4.5 6L12 8l3.5 5L20 7v10'],
+  mmx: ['M4 17V7l4.5 6L12 8l3.5 5L20 7v10'],
+  kimi: ['M16.5 17.5A7.5 7.5 0 0 1 9 4.5a7.5 7.5 0 1 0 10.5 10.5 7.2 7.2 0 0 1-3 2.5Z'],
+  mimo: ['M5 6.5A2.5 2.5 0 0 1 7.5 4h9A2.5 2.5 0 0 1 19 6.5v11a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 5 17.5v-11Z', 'M9 9.5h6M9 14.5h4'],
+  qoder: ['M11.5 4.5a7 7 0 1 0 0 14 7 7 0 0 0 0-14Z', 'm15.5 15.5 4 4'],
+  lmstudio: ['M4 7.5 12 4l8 3.5v9L12 20l-8-3.5v-9Z', 'M4 7.5 12 11l8-3.5M12 11v9'],
+  ollama: ['M7 8a5 5 0 0 1 10 0v6a5 5 0 0 1-10 0V8Z', 'M9.5 10.5h.01M14.5 10.5h.01M10 14.5h4'],
+  omniroute: ['M6 6h4v4H6zM14 6h4v4h-4zM10 14h4v4h-4z', 'M10 8h4M8 10l3 4M16 10l-3 4'],
+  hermes: ['M5 7h14M5 12h10M5 17h14'],
+  custom: ['m14.5 6.5 3 3-9.5 9.5H5v-3l9.5-9.5Z'],
+};
+
+function iconKeyFor(adapter, modelId = '') {
+  const id = String(modelId || '').toLowerCase();
+  if (adapter === 'agy') {
+    if (/\b(claude|opus|sonnet|haiku|fable)\b/.test(id)) return 'claude';
+    if (/\bgpt\b/.test(id)) return 'codex';
+  }
+  return ADAPTER_ICON_PATHS[adapter] ? adapter : 'custom';
+}
+
+function adapterIcon(adapter, modelId = '') {
+  const key = iconKeyFor(adapter, modelId);
+  const wrap = element('span', null, `tool-icon tool-${key}`);
+  wrap.setAttribute('aria-hidden', 'true');
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '2');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  for (const d of ADAPTER_ICON_PATHS[key] || ADAPTER_ICON_PATHS.custom) {
+    const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    p.setAttribute('d', d);
+    svg.append(p);
+  }
+  wrap.append(svg);
+  return wrap;
+}
+
 function notice(message, error = false) {
   clearTimeout(noticeTimer);
   $('notice').textContent = message;
@@ -353,8 +404,13 @@ async function call(operation, payload = {}) {
       body: JSON.stringify({ operation, payload }),
       signal: controller.signal,
     });
-    const value = await response.json();
+    const value = await response.json().catch(() => ({}));
+    if (response.status === 401 || response.status === 403 || value?.error?.code === 'UNAUTHORIZED') {
+      sessionExpired = true;
+      throw new Error('Yönetim oturumu süresi doldu. Masaüstü kısayolundan veya "cli-agent-pool open" komutuyla yeniden açın.');
+    }
     if (!response.ok) throw new Error(value.error?.message || 'İşlem tamamlanamadı. Yeniden deneyin.');
+    sessionExpired = false;
     if (operation === 'save') {
       poolDirty = false;
       updateSave();
@@ -497,6 +553,36 @@ async function addAccount(routeId) {
   })();
 }
 
+async function switchAccount(routeId) {
+  const started = await call('login', { routeId, isolated: true });
+  notice(`${started.message} Giriş tamamlanınca bu bağlantı otomatik olarak kendi izole profiline geçecek (10 dakika beklenir).`);
+  if (switchWaits.has(routeId)) return;
+  switchWaits.add(routeId);
+  void (async () => {
+    try {
+      for (let attempt = 0; attempt < 150; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 4000));
+        const res = await call('finish_switch', { routeId });
+        if (res.pending) continue;
+        const draft = poolDirty ? structuredClone(settings.config) : null;
+        const before = baseConfig || settings?.config;
+        settings = { ...res, config: draft ? mergeScanDraft(res.config, before, draft) : res.config };
+        poolDirty = Boolean(draft && JSON.stringify(settings.config) !== JSON.stringify(res.config));
+        baseConfig = structuredClone(res.config);
+        updateSave();
+        renderPool();
+        if (!$('settings').hidden) renderSettings(true);
+        await refresh();
+        notice(`${res.switchedRoute}: izole hesap girişi tamamlandı${res.email ? ` (${res.email})` : ''}. Masaüstü uygulamasındaki hesap değişimleri artık bu bağlantıyı etkilemez.`);
+        void refreshQuotas(routeId);
+        return;
+      }
+      notice('İzole giriş 10 dakika içinde algılanmadı; mevcut ayar korundu.', true);
+    } catch (error) { notice(error.message, true); }
+    finally { switchWaits.delete(routeId); }
+  })();
+}
+
 async function waitForServiceVersion(target, timeoutMs = 45000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -513,20 +599,54 @@ async function triggerUpdate() {
   const res = await call('update_service');
   const details = [];
   if (res.installedVersion) details.push(`v${res.installedVersion}`);
-  if (res.shortcut) details.push('masaüstü kısayolu güncellendi');
-  if (res.skill) details.push('skill dağıtımı yenilendi');
+  if (res.desktopShortcut) details.push('kısayollar güncellendi');
+  if (res.skillsManager?.deployed) details.push('skill dağıtıldı');
   notice(`Güncelleme tamamlandı${details.length ? ` (${details.join(' · ')})` : ''}.`);
   if (res.restartScheduled) {
-    notice('Yeni sürüm kuruldu; servis yeniden başlatılıyor…');
+    notice('Yeni sürüm kuruldu; servis otomatik yeniden başlatılıyor…');
     const ready = await waitForServiceVersion(res.installedVersion);
     if (ready) {
       location.reload();
       return;
     }
-    notice('Servis yeniden başlatılamadı. "Güncelle" düğmesini tekrar deneyin.', true);
+    notice('Servis yeniden başlatılamadı. "Güncelle" düğmesini veya Bağlı göstergesini tıklayın.', true);
     return;
   }
   await refresh();
+}
+
+function stopPolling() {
+  clearTimeout(refreshTimerId);
+  refreshTimerId = null;
+  clearInterval(quotaIntervalId);
+  quotaIntervalId = null;
+  clearInterval(catalogIntervalId);
+  catalogIntervalId = null;
+}
+
+function scheduleNextRefresh() {
+  clearTimeout(refreshTimerId);
+  if (serviceStopped || sessionExpired) return;
+  const hasActiveTasks = Boolean(snapshot?.tasks?.some(t => activeStates.has(t.state)));
+  const intervalMs = hasActiveTasks ? 2000 : 5000;
+  refreshTimerId = setTimeout(() => {
+    if (!document.hidden && !busy && !serviceStopped && !sessionExpired) void refresh().finally(scheduleNextRefresh);
+    else scheduleNextRefresh();
+  }, intervalMs);
+}
+
+function startPolling() {
+  scheduleNextRefresh();
+  if (!quotaIntervalId) {
+    quotaIntervalId = setInterval(() => {
+      if (!document.hidden && snapshot && !busy && !serviceStopped && !sessionExpired) void refreshQuotas();
+    }, 60000);
+  }
+  if (!catalogIntervalId) {
+    catalogIntervalId = setInterval(() => {
+      if (!document.hidden && snapshot && !busy && !poolDirty && !serviceStopped && !sessionExpired) void autoSyncCatalogs();
+    }, 600_000);
+  }
 }
 
 async function triggerSafeExit() {
@@ -540,12 +660,10 @@ async function triggerSafeExit() {
   }
   if (res.stopping) {
     serviceStopped = true;
-    clearInterval(refreshIntervalId);
-    clearInterval(quotaIntervalId);
-    clearInterval(catalogIntervalId);
+    stopPolling();
     $('connection-state').textContent = 'Güvenli kapatıldı';
     $('connection-state').dataset.connected = 'false';
-    $('connection-state').title = 'Servis güvenli şekilde kapatıldı';
+    $('connection-state').title = 'Servis güvenli şekilde kapatıldı · Yeniden bağlanmak için tıklayın';
     notice(res.message || 'CLI Agent Pool servisi güvenli şekilde kapatıldı.');
   }
 }
@@ -555,11 +673,27 @@ $('settings-update')?.addEventListener('click', () => void action(triggerUpdate)
 $('safe-exit')?.addEventListener('click', () => void action(triggerSafeExit));
 $('settings-shutdown')?.addEventListener('click', () => void action(triggerSafeExit));
 
+async function reconnectPool() {
+  serviceStopped = false;
+  sessionExpired = false;
+  $('connection-state').textContent = 'Bağlanıyor…';
+  $('connection-state').dataset.connected = 'false';
+  $('connection-state').title = 'Bağlantı yenileniyor…';
+  await refresh();
+  if (snapshot && !sessionExpired && $('connection-state').dataset.connected === 'true') {
+    startPolling();
+    notice('Bağlantı yenilendi.');
+    void refreshQuotas();
+  }
+}
+
+$('connection-state')?.addEventListener('click', () => void reconnectPool());
+
 async function refresh() {
   if (refreshing || serviceStopped) return;
   refreshing = true;
   try {
-    const wasOffline = $('connection-state').textContent === 'Bağlantı yok';
+    const wasOffline = $('connection-state').dataset.connected !== 'true' && $('connection-state').textContent !== 'Bağlanıyor';
     snapshot = await call('snapshot');
     $('app-version').textContent = `v${snapshot.version || 'bilinmiyor'}`;
     if (!settings || (!poolDirty && settings.revision !== snapshot.revision)) {
@@ -580,7 +714,7 @@ async function refresh() {
     }
     $('connection-state').textContent = 'Bağlı';
     $('connection-state').dataset.connected = 'true';
-    $('connection-state').title = 'Bağlı';
+    $('connection-state').title = 'Bağlı · Yenilemek için tıklayın';
 
     renderCalls();
     updateCardActivity();
@@ -588,9 +722,11 @@ async function refresh() {
     if (wasOffline) notice('Bağlantı yeniden kuruldu.');
   } catch (error) {
     if (!serviceStopped) {
-      $('connection-state').textContent = 'Bağlantı yok';
+      $('connection-state').textContent = sessionExpired ? 'Oturum doldu' : 'Bağlantı yok';
       $('connection-state').dataset.connected = 'false';
-      $('connection-state').title = 'Bağlantı yok';
+      $('connection-state').title = sessionExpired
+        ? 'Oturum süresi doldu · Masaüstü kısayolundan yeniden açın veya tıklayarak tekrar deneyin'
+        : 'Bağlantı yok · Yeniden bağlanmak için tıklayın';
       notice(error.message, true);
     }
   } finally { refreshing = false; }
@@ -619,6 +755,7 @@ function renderSettingsSubscriptionPane(route, sub, email, issue) {
   const sessionBar = element('div', null, 'subscription-session-bar');
   const sessionInfo = element('div', null, 'subscription-session-info');
   sessionInfo.append(
+    adapterIcon(route.adapter),
     element('strong', adapterLabels[route.adapter] || route.adapter),
     element('span', email || sub.subscriptionLabel, email ? 'model-email-badge' : 'badge subtle'),
     element('span', billingLabels[route.billing] || route.billing, 'badge subtle'),
@@ -628,6 +765,13 @@ function renderSettingsSubscriptionPane(route, sub, email, issue) {
       `badge ${issue.isDisabled ? 'subtle' : issue.isError ? 'error' : issue.isUnknown ? 'warn' : 'ok'}`,
     ),
   );
+  if (!route.api && route.runtime !== 'wsl' && accountAdapters.has(route.adapter)) {
+    sessionInfo.append(element(
+      'span',
+      route.profile ? 'İzole profil' : 'Masaüstüyle paylaşımlı',
+      `badge ${route.profile ? 'subtle' : 'warn'}`,
+    ));
+  }
 
   const sessionActions = element('div', null, 'actions subscription-session-actions');
   const locked = !activeBillings.has(route.billing);
@@ -656,10 +800,29 @@ function renderSettingsSubscriptionPane(route, sub, email, issue) {
   if (!route.api && !['custom', 'lmstudio', 'ollama'].includes(route.adapter)) {
     const q = snapshot?.quotas?.[route.id];
     const hasSession = Boolean(q && (q.status === 'available' || q.status === 'rate_limited' || q.windows?.length > 0)) || Boolean(email && q?.status !== 'auth_required');
-    sessionActions.append(button(hasSession ? 'Hesabı değiştir / Yeniden giriş' : 'Giriş yap', async () => {
-      const result = await call('login', { routeId: route.id });
-      notice(result.message);
-    }));
+    if (route.runtime !== 'wsl' && accountAdapters.has(route.adapter)) {
+      const loginLabel = !route.profile
+        ? 'İzole oturuma geç / Giriş yap'
+        : hasSession ? 'Hesabı değiştir / Yeniden giriş' : 'Giriş yap';
+      sessionActions.append(button(loginLabel, () => switchAccount(route.id)));
+      if (route.profile && hasSession) {
+        sessionActions.append(button('Oturumu kapat', async () => {
+          const res = await call('logout_route', { routeId: route.id });
+          settings = { ...res, config: res.config };
+          baseConfig = structuredClone(res.config);
+          if (snapshot?.quotas) delete snapshot.quotas[route.id];
+          renderSettings(true);
+          renderPool();
+          await refresh();
+          notice(`${sub.subscriptionLabel} oturumu kapatıldı. İstediğiniz hesapla yeniden giriş yapabilirsiniz.`);
+        }));
+      }
+    } else {
+      sessionActions.append(button(hasSession ? 'Hesabı değiştir / Yeniden giriş' : 'Giriş yap', async () => {
+        const result = await call('login', { routeId: route.id });
+        notice(result.message);
+      }));
+    }
   }
 
   sessionActions.append(button('Kotayı kontrol et', async () => {
@@ -1023,6 +1186,7 @@ function renderSettingsBody() {
     tab.type = 'button';
     tab.setAttribute('aria-pressed', String(group.adapter === selectedSettingsTool));
     tab.append(
+      adapterIcon(group.adapter),
       element('strong', group.label),
       element('span', `${enabledCount}/${group.routes.length} abonelik`, 'badge subtle'),
     );
@@ -1047,6 +1211,7 @@ function renderSettingsBody() {
   const toolHeader = element('div', null, 'settings-tool-header');
   const toolTitle = element('div', null, 'settings-tool-title');
   toolTitle.append(
+    adapterIcon(activeTool.adapter),
     element('h4', activeTool.label),
     element('span', `${activeTool.routes.length} abonelik / bağlantı`, 'badge subtle'),
   );
@@ -1314,29 +1479,58 @@ $('discard-settings').addEventListener('click', () => void action(async () => {
   updateSave();
 }));
 
-$('toggle-quotas').addEventListener('click', () => {
-  const details = [...document.querySelectorAll('.quota-details')];
-  // One control for every quota block: open the detail bodies and show the
-  // flat quota lines, or collapse both.
-  quotasOpen = quotaToggleTarget(details);
-  quotaStates.clear();
-  details.forEach(node => { node.open = quotasOpen; });
-  updateQuotaToggle();
-  rememberView();
-});
-
-function updateQuotaToggle() {
-  const details = [...document.querySelectorAll('.quota-details')];
-  const button = $('toggle-quotas');
-  document.body.classList.toggle('quota-collapsed', !quotasOpen);
-  const state = quotaToggleState(details);
-  button.textContent = state.label;
-  button.setAttribute('aria-pressed', String(state.pressed));
-  button.disabled = state.disabled;
-  button.title = state.title;
+function updateDisplayModeUI() {
+  document.body.dataset.displayMode = displayMode;
+  for (const btn of document.querySelectorAll('#display-mode-group [data-display-mode]')) {
+    btn.setAttribute('aria-pressed', String(btn.dataset.displayMode === displayMode));
+  }
 }
 
+function setDisplayMode(mode) {
+  displayMode = normalizeDisplayMode(mode, true);
+  quotaStates.clear();
+  updateDisplayModeUI();
+  rememberView();
+  renderPool();
+}
+
+for (const btn of document.querySelectorAll('#display-mode-group [data-display-mode]')) {
+  btn.addEventListener('click', () => setDisplayMode(btn.dataset.displayMode));
+}
+updateDisplayModeUI();
+
 const quotaLevel = remaining => remaining >= 50 ? 'ok' : remaining >= 20 ? 'mid' : 'low';
+
+function compactQuotaPills(q, modelId = '', error = '', issue = null) {
+  const wrap = element('div', null, 'quota-compact-pills');
+  const items = formatCompactQuotaWindows(q, modelId);
+  if (items.length) {
+    for (const item of items) {
+      const pill = element('span', `${item.label} %${item.remaining}`, `quota-pill level-${item.level}`);
+      pill.title = `${item.name}: %${item.remaining} kalan`;
+      wrap.append(pill);
+    }
+    return wrap;
+  }
+  if (issue?.isDisabled) {
+    wrap.append(element('span', 'Kapalı', 'quota-pill level-muted'));
+    return wrap;
+  }
+  if (issue?.state === 'auth_error' || issue?.state === 'subscription_error') {
+    wrap.append(element('span', 'Giriş!', 'quota-pill level-low'));
+    return wrap;
+  }
+  if (error || q?.status === 'error') {
+    wrap.append(element('span', 'Hata', 'quota-pill level-low'));
+    return wrap;
+  }
+  if (q?.informational) {
+    wrap.append(element('span', q.balanceUsd != null ? `$${q.balanceUsd.toFixed(2)}` : 'Hazır', 'quota-pill level-ok'));
+    return wrap;
+  }
+  wrap.append(element('span', 'Kota ?', 'quota-pill level-unknown'));
+  return wrap;
+}
 
 function quotaBody(q, modelId = '', error) {
   const cell = element('div', null, 'quota-body');
@@ -1367,24 +1561,26 @@ function quotaBody(q, modelId = '', error) {
   return cell;
 }
 
-function quotaCell(route, model) {
+function quotaCell(route, model, issue = null) {
   const cell = element('div', null, 'quota-cell');
   const q = snapshot?.quotas?.[route.id];
   const windows = quotaWindows(q, model.id);
   if (!windows.length) {
-    // Without a percentage window there is nothing to expand. A disclosure row
-    // would only add an arrow and an empty "Bilinmiyor" pill to every card.
     const text = quotaFlatText(q, quotaErrors[route.id]);
     if (text) cell.append(element('small', text, 'quota-flat'));
     return cell;
   }
-  const details = element('details', null, 'quota-details');
+  const details = element('details', null, `quota-details${displayMode === 'compact' ? ' is-compact-quota' : ''}`);
   const key = JSON.stringify([route.id, model.id]);
   details.dataset.quotaKey = key;
   details.dataset.level = quotaLevel(Math.min(...windows.map(window => window.remaining)));
-  details.open = quotaStates.has(key) ? quotaStates.get(key) : quotasOpen;
+  details.open = quotaStates.has(key) ? quotaStates.get(key) : displayMode === 'detailed';
   const summary = element('summary');
-  summary.append(element('span', 'Kota'), element('strong', `%${Math.min(...windows.map(window => window.remaining)).toFixed(0)} kalan`));
+  if (displayMode === 'compact') {
+    summary.append(element('span', 'Kota'), compactQuotaPills(q, model.id, quotaErrors[route.id], issue));
+  } else {
+    summary.append(element('span', 'Kota'), element('strong', `%${Math.min(...windows.map(window => window.remaining)).toFixed(0)} kalan`));
+  }
   details.append(summary, quotaBody(q, model.id, quotaErrors[route.id]));
   details.addEventListener('toggle', () => {
     if (!details.isConnected) return;
@@ -1392,7 +1588,6 @@ function quotaCell(route, model) {
     document.querySelectorAll('.quota-details').forEach(other => {
       if (other !== details && other.dataset.quotaKey === key) other.open = details.open;
     });
-    updateQuotaToggle();
     rememberView();
   });
   cell.append(details);
@@ -1427,8 +1622,10 @@ function makeHierarchyLevel(labelText, items, selectedVal, onPick, variant = 'fl
   const pills = element('div', null, 'hierarchy-pills');
   for (const item of items) {
     const disabledSuffix = variant !== 'tool' && item.enabled === false ? ' (Kapalı)' : '';
-    const btn = element('button', `${item.label}${disabledSuffix} (${item.count})`);
+    const btn = element('button', null);
     btn.type = 'button';
+    if (variant === 'tool' && item.id !== '__all__') btn.append(adapterIcon(item.id));
+    btn.append(document.createTextNode(`${item.label}${disabledSuffix} (${item.count})`));
     btn.title = `${item.label}${disabledSuffix}`;
     const isSelected = item.id === selectedVal;
     btn.classList.toggle('selected', isSelected);
@@ -1561,12 +1758,12 @@ function renderPoolBody() {
       .map(model => ({ route, model })),
   );
 
-  // Render summary cards: UI-only "Tümünü Göster" (__all__) + each pool category
+  // Render compact top group tabs: UI-only "Tümünü Göster" (__all__) + each pool category
   const allCard = element('button', null, 'group-card group-__all__');
   allCard.type = 'button';
-  allCard.title = 'Dış havuzlara açık değil; tüm havuz kategorilerindeki modellerinizi tek ekranda görmenizi sağlar.';
+  allCard.title = 'Tüm havuz kategorilerindeki modelleri tek ekranda göster';
   allCard.setAttribute('aria-pressed', String(isAllGroup(selectedGroup)));
-  allCard.append(element('strong', groupLabels.__all__), element('span', `${baseMemberPool.length} model · Yalnızca UI`));
+  allCard.append(element('strong', groupLabels.__all__), element('span', `(${baseMemberPool.length})`));
   allCard.addEventListener('click', () => {
     selectedGroup = '__all__';
     selectedPoolSubgroup = '';
@@ -1580,7 +1777,7 @@ function renderPoolBody() {
     const card = element('button', null, `group-card group-${group}`);
     card.type = 'button';
     card.setAttribute('aria-pressed', String(selectedGroup === group));
-    card.append(element('strong', groupLabel(group)), element('span', `${count} model`));
+    card.append(element('strong', groupLabel(group)), element('span', `(${count})`));
     card.addEventListener('click', () => {
       selectedGroup = group;
       selectedPoolSubgroup = '';
@@ -1666,6 +1863,7 @@ function renderPoolBody() {
     if (!visibleMemberKeys.has(key)) selectedPoolItems.delete(key);
   }
   renderPoolBatchBar([...visibleMemberKeys].map(key => JSON.parse(key)));
+  $('pool-members').classList.toggle('is-mini-grid', displayMode === 'mini');
   $('pool-members').replaceChildren(
     ...(rows.length ? rows : [element('p', 'Bu görünümde model yok. Kota/ödeme filtresini kontrol edin veya aşağıdaki katalogdan model ekleyin.', 'empty')]),
   );
@@ -1879,6 +2077,7 @@ function renderCatalogBody() {
   }
   renderCatalogBatchBar(entries);
 
+  $('pool-models').classList.toggle('is-mini-grid', displayMode === 'mini');
   $('pool-models').replaceChildren(...entries.map(({ route, model }, idx) => modelCard(route, model, null, {
     reorderList: entries,
     index: idx,
@@ -1891,7 +2090,6 @@ function renderCatalogBody() {
   }
   $('catalog-count').textContent = `${entries.length} model`;
   $('pool-models').scrollTop = scroll;
-  updateQuotaToggle();
 }
 
 function renderCatalogBatchBar(entries) {
@@ -2126,7 +2324,6 @@ function renderHidden() {
       ? sorted.map(({ route, model }) => modelCard(route, model, null, { hiddenView: true, reasonKey: hiddenReasonCategory(route, model) }))
       : [element('p', scopedHidden.length ? 'Bu alt filtrede gizlenen model yok.' : viewMode === 'settings' ? 'Ayarlarda filtrelenen model yok.' : 'Gizlenen model yok. Model kartlarından "Gizle" düğmesiyle sorunlu veya eski modelleri buraya taşıyabilirsiniz.', 'empty')]),
   );
-  updateQuotaToggle();
 }
 
 function modelCard(route, model, member, options = {}) {
@@ -2162,10 +2359,11 @@ function modelCard(route, model, member, options = {}) {
 
   const info = element('div', null, 'model-info');
   const titleRow = element('div', null, 'model-title-row');
-  titleRow.append(check, element('strong', model.id));
+  titleRow.append(check, adapterIcon(route.adapter, model.id), element('strong', model.id));
 
+  let orderControls = null;
   if (!hiddenView && reorderList && reorderList.length > 1) {
-    const orderControls = element('div', null, 'order-controls');
+    orderControls = element('div', null, 'order-controls');
     const handle = element('span', '⋮⋮', 'drag-handle');
     handle.setAttribute('aria-hidden', 'true');
     handle.title = 'Kartı sürükleyip bırakarak sırala';
@@ -2222,6 +2420,90 @@ function modelCard(route, model, member, options = {}) {
 
   const email = routeEmail(route.id);
   const subLabel = cleanRouteLabel(route, email);
+
+  if (displayMode === 'mini' && !hiddenView) {
+    row.classList.add('is-mini');
+    row.title = `${model.id} · ${adapterLabels[route.adapter] || route.adapter} · ${subLabel}`;
+    const miniTop = element('div', null, 'mini-row-top');
+    const modelName = element('strong', model.id, 'mini-model-name');
+    const toolName = element('span', adapterLabels[route.adapter] || route.adapter, 'mini-tool-tag');
+    miniTop.append(check, adapterIcon(route.adapter, model.id), modelName, toolName);
+    if (orderControls) miniTop.append(orderControls);
+
+    const miniBottom = element('div', null, 'mini-row-bottom');
+    const mailSpan = element('span', email || subLabel, 'mini-email');
+    mailSpan.title = email || subLabel;
+    const quotaWrap = compactQuotaPills(q, model.id, quotaErrors[route.id] || '', issue);
+    const miniActions = element('div', null, 'mini-actions');
+
+    if (member && !isAllGroup(member.group)) {
+      const remBtn = button('−', async () => {
+        model.memberships = memberships(model).filter(item => item.group !== selectedGroup);
+        await saveModel(route.id, model.id);
+      });
+      remBtn.className = 'mini-btn';
+      remBtn.title = `${groupLabel(selectedGroup)} havuzundan çıkar`;
+      remBtn.setAttribute('aria-label', `${model.id} modelini havuzdan çıkar`);
+      miniActions.append(remBtn);
+    } else {
+      const addBtn = button('+', async () => openPoolPicker(route, model));
+      addBtn.className = 'mini-btn add-model-mini';
+      addBtn.title = 'Havuza ekle';
+      addBtn.setAttribute('aria-label', `${model.id} modelini havuza ekle`);
+      miniActions.append(addBtn);
+    }
+
+    const testMini = button('▷', async () => {
+      const savedRoute = baseConfig.routes.find(item => item.id === route.id);
+      const savedModel = savedRoute?.models.find(item => item.id === model.id);
+      if (!savedModel) throw new Error('Modeli test etmeden önce kaydedin.');
+      const activeMember = row.classList.contains('membership-row')
+        ? (isAllGroup(selectedGroup) ? memberships(savedModel)[0] : memberships(savedModel).find(item => item.group === selectedGroup))
+        : null;
+      const task = await call('probe_model', { routeId: route.id, modelId: model.id, ...(activeMember ? { group: activeMember.group } : {}) });
+      await refresh();
+      await openTask(task.id);
+    });
+    testMini.className = 'mini-btn';
+    testMini.title = 'Modeli test et';
+    testMini.setAttribute('aria-label', `${model.id} modelini test et`);
+
+    const toggleMini = button(model.enabled === false || !route.enabled ? 'Aç' : 'Kapat', async () => {
+      if (model.enabled === false || !route.enabled) {
+        if (!activeBillings.has(baseConfig.routes.find(item => item.id === route.id)?.billing)) {
+          routeSettings(route);
+          notice('Önce bağlantının ödeme / plan türünü doğrulayın.');
+          return;
+        }
+        model.enabled = true;
+        route.enabled = true;
+        await saveModel(route.id, model.id, true, `${model.id} etkinleştirildi.`);
+      } else {
+        model.enabled = false;
+        await saveModel(route.id, model.id, false, `${model.id} devre dışı bırakıldı.`);
+      }
+    });
+    toggleMini.className = 'mini-btn';
+    toggleMini.title = model.enabled === false || !route.enabled ? 'Etkinleştir' : 'Devre dışı bırak';
+
+    const link = button('', async () => { if (link.dataset.taskId) await openTask(link.dataset.taskId); });
+    link.className = 'model-call mini-call-dot';
+    link.hidden = true;
+    const task = snapshot?.tasks.find(task => task.routeId === route.id && task.modelId === model.id);
+    if (task) {
+      row.classList.toggle('is-active', activeStates.has(task.state));
+      link.hidden = false;
+      link.textContent = activeStates.has(task.state) ? '●' : '•';
+      link.title = activeStates.has(task.state) ? 'Çalışıyor (ayrıntılar için tıkla)' : `Son çağrı: ${labels[task.state] || task.state}`;
+      link.dataset.taskId = task.id;
+    }
+
+    miniActions.append(testMini, toggleMini, link);
+    miniBottom.append(mailSpan, quotaWrap, miniActions);
+    row.append(miniTop, miniBottom);
+    return row;
+  }
+
   const accountRow = element('div', null, 'model-account-row');
   accountRow.append(element('span', `${adapterLabels[route.adapter] || route.adapter}${route.api ? ' · API' : ''}`, 'model-provider-tag'));
   if (email) {
@@ -2360,7 +2642,7 @@ function modelCard(route, model, member, options = {}) {
   link.hidden = true;
   controls.append(test, toggleEnabled, link);
 
-  row.append(info, quotaCell(route, model), footer, controls);
+  row.append(info, quotaCell(route, model, issue), footer, controls);
   const task = snapshot?.tasks.find(task => task.routeId === route.id && task.modelId === model.id);
   if (task) {
     row.classList.toggle('is-active', activeStates.has(task.state));
@@ -2509,7 +2791,13 @@ function renderCategoryEditor() {
   }));
 }
 
-$('manage-categories').addEventListener('click', () => { $('category-editor').open = !$('category-editor').open; });
+$('open-category-dialog')?.addEventListener('click', () => {
+  renderCategoryEditor();
+  if (!$('category-dialog').open) $('category-dialog').showModal();
+  $('category-name')?.focus();
+});
+$('close-category-dialog')?.addEventListener('click', () => $('category-dialog').close());
+$('category-dialog')?.addEventListener('close', () => $('open-category-dialog')?.focus());
 $('add-category').addEventListener('click', () => void action(async () => {
   const name = $('category-name').value.trim();
   if (!name) throw new Error('Kategori adı gerekli.');
@@ -2546,9 +2834,11 @@ function loginNotice(route, compact = false) {
   const qwenVerified = route.adapter === 'qwen' && q?.auth === 'verified';
   const activeSession = Boolean(q && (q.status === 'available' || q.status === 'rate_limited' || q.windows?.length > 0)) || Boolean(email && q?.status !== 'auth_required');
   const unverified = !activeSession && (!q || ['auth_required', 'error'].includes(q.status) || q.auth === 'unknown' || (q.status === 'unknown' && q.auth !== 'verified'));
+  const nativeAccountProfile = native && route.runtime !== 'wsl' && accountAdapters.has(route.adapter);
+  const triggerLogin = () => nativeAccountProfile ? switchAccount(route.id) : action(async () => { const result = await call('login', { routeId: route.id }); notice(result.message); });
   if (qwenVerified) {
     box.append(element('span', q.note || 'Qwen API anahtarı doğrulandı · kota yüzdesi sağlayıcıdan alınamıyor'));
-    box.append(button('Hesabı değiştir', async () => { const result = await call('login', { routeId: route.id }); notice(result.message); }));
+    box.append(button('Hesabı değiştir', triggerLogin));
     const check = button(compact ? '↻' : 'Kontrol et', async () => { await refreshQuotas(route.id); await refresh(); renderPool(); });
     check.setAttribute('aria-label', `${route.id} bağlantısını ve kota durumunu kontrol et`);
     check.title = 'Bağlantıyı ve kota durumunu kontrol et';
@@ -2558,7 +2848,7 @@ function loginNotice(route, compact = false) {
   if (!unverified && !(route.adapter !== 'codex' && !route.api && !route.trustedSettings)) {
     if (!compact && native) {
       box.append(element('span', `Oturum açık${email ? `: ${email}` : ''}`, 'badge ok'));
-      box.append(button('Hesabı değiştir / Yeniden giriş yap', async () => { const result = await call('login', { routeId: route.id }); notice(result.message); }));
+      box.append(button('Hesabı değiştir / Yeniden giriş yap', triggerLogin));
       const check = button('Kotayı kontrol et', async () => { await refreshQuotas(route.id); await refresh(); renderPool(); if (!$('settings').hidden) renderSettings(); });
       box.append(check);
     }
@@ -2569,7 +2859,7 @@ function loginNotice(route, compact = false) {
     : q?.status === 'available' && q?.note ? q.note
     : configured ? 'Kimlik bilgisi kayıtlı' : 'Oturum doğrulanmadı';
   box.append(element('span', statusLine));
-  if (native) box.append(button(configured ? 'Yeniden giriş yap' : 'Giriş yap', async () => { const result = await call('login', { routeId: route.id }); notice(result.message); }));
+  if (native) box.append(button(configured ? 'Yeniden giriş yap' : 'Giriş yap', triggerLogin));
   if (route.api || (route.adapter !== 'codex' && !route.trustedSettings)) box.append(button('Ayarlar', async () => routeSettings(route)));
   const check = button(compact ? '↻' : 'Kontrol et', async () => { await refreshQuotas(route.id); await refresh(); renderPool(); if (!$('settings').hidden) renderSettings(); });
   check.setAttribute('aria-label', `${route.id} giriş durumunu kontrol et`);
@@ -2847,11 +3137,15 @@ function fillOriginPlaceholders() {
 
 void refresh().then(() => {
   fillOriginPlaceholders();
+  startPolling();
   if (snapshot) {
     void refreshQuotas();
     void autoSyncCatalogs();
   }
 });
-refreshIntervalId = setInterval(() => { if (!document.hidden && !busy && !serviceStopped) void refresh(); }, 5000);
-quotaIntervalId = setInterval(() => { if (!document.hidden && snapshot && !busy && !serviceStopped) void refreshQuotas(); }, 60000);
-catalogIntervalId = setInterval(() => { if (!document.hidden && snapshot && !busy && !poolDirty && !serviceStopped) void autoSyncCatalogs(); }, 600_000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && !busy && !serviceStopped && !sessionExpired) void refresh();
+});
+window.addEventListener('focus', () => {
+  if (!document.hidden && !busy && !serviceStopped && !sessionExpired) void refresh();
+});

@@ -20,7 +20,7 @@
       <button id="refresh" class="quiet-icon" type="button" aria-label="Bağlantı ve kotaları yenile" title="Bağlantı ve kotaları yenile">↻</button>
       <button id="update-app" class="topbar-btn" type="button" title="Kurulumu, kısayolları ve skill dağıtımını yenile; sürüm değişirse servis otomatik yeniden başlar">Güncelle</button>
       <button id="safe-exit" class="topbar-btn danger-soft" type="button" title="Arka plan servisini güvenli şekilde kapat ve çık">Güvenli çıkış</button>
-      <span id="connection-state" class="connection-state" role="status" title="Bağlanıyor">Bağlanıyor</span>
+      <button id="connection-state" type="button" class="connection-state" role="status" title="Bağlantıyı yenile / yeniden bağlan">Bağlanıyor</button>
     </div>
   </header>
   <main>
@@ -43,7 +43,11 @@
           <option value="disabled">Devre dışı modeller</option>
         </select>
         <button id="toggle-disabled-routes" type="button" aria-pressed="false" title="Devre dışı bırakılan bağlantı ve modelleri listede göster/gizle">Kapalıları da göster</button>
-        <button id="toggle-quotas" type="button" aria-pressed="true">Kotaları gizle</button>
+        <div id="display-mode-group" class="display-mode-group" role="group" aria-label="Kart ve kota görünümü">
+          <button id="mode-detailed" type="button" data-display-mode="detailed" aria-pressed="true" title="Tam kartlar ve ayrıntılı kota çubukları">Kotalı</button>
+          <button id="mode-compact" type="button" data-display-mode="compact" aria-pressed="false" title="Normal kartlar ve tek satır yüzde kota özeti">Normal</button>
+          <button id="mode-mini" type="button" data-display-mode="mini" aria-pressed="false" title="Dar mini kartlar: araç ikonu, model, e-posta, yüzde kota ve sıralama">Mini</button>
+        </div>
         <button id="open-filters" type="button">Gizlenenler <span id="filter-count">0</span></button>
       </div>
       <section class="pool-area" id="pool-area" aria-labelledby="toggle-pool">
@@ -56,6 +60,7 @@
               <option value="email">E-postaya göre</option>
               <option value="all">Tümünü bir arada (Filtresiz)</option>
             </select>
+            <button id="open-category-dialog" type="button" title="Kategori ekle, yeniden adlandır, sırala veya kaldır">+ Kategori ekle</button>
             <select id="member-billing-filter" aria-label="Havuz ödeme türü filtresi">
               <option value="all">Tüm ödeme türleri</option>
               <option value="subscription">Abonelik</option>
@@ -76,21 +81,9 @@
               <option value="quota_weekly">Haftalık kota %</option>
               <option value="status">Sorunlular önce</option>
             </select>
-            <button id="manage-categories" type="button">Kategorileri düzenle</button>
           </div>
         </div>
         <div id="pool-content">
-          <details id="category-editor" class="settings-section">
-            <summary>Kategori yönetimi · Ekle, yeniden adlandır ve sırala</summary>
-            <div class="settings-body">
-              <div class="category-create-row">
-                <input id="category-name" maxlength="100" aria-label="Yeni kategori adı" placeholder="Kategori adı (ör. Argon Hızlı, Kodlama)">
-                <button id="add-category" type="button" class="primary">Kategori ekle</button>
-              </div>
-              <div id="category-presets" class="category-presets" aria-label="Hazır kategori önerileri"></div>
-              <div id="category-list" class="category-grid"></div>
-            </div>
-          </details>
           <div class="pool-toolbar">
             <div id="group-summary" class="group-summary" aria-label="Havuzlar"></div>
           </div>
@@ -275,6 +268,7 @@
     <dialog id="detail" class="card" aria-labelledby="detail-heading" hidden><div class="section-heading"><h2 id="detail-heading">Görev / kota ayrıntısı</h2><button id="close-detail" type="button">Kapat</button></div><div id="detail-content" tabindex="0"></div></dialog>
     <dialog id="model-filter-dialog" aria-labelledby="filter-heading"><div class="section-heading"><h2 id="filter-heading">Model filtresi</h2><button id="close-filters" type="button" aria-label="Filtreleri kapat">×</button></div><div id="filter-actions"></div><div id="filter-list"></div></dialog>
     <dialog id="add-pool-dialog" aria-labelledby="add-pool-heading"><div class="section-heading"><h2 id="add-pool-heading">Havuza ekle</h2><button id="close-add-pool" type="button" aria-label="Havuz seçimini kapat">×</button></div><p id="add-pool-model"></p><label class="setting-field" for="add-pool-effort">Efor<select id="add-pool-effort"></select></label><div id="add-pool-targets" class="actions"></div></dialog>
+    <dialog id="category-dialog" aria-labelledby="category-dialog-heading"><div class="section-heading"><h2 id="category-dialog-heading">Kategoriler</h2><button id="close-category-dialog" type="button" aria-label="Kategorileri kapat">×</button></div><div class="category-dialog-body"><div class="category-create-row"><input id="category-name" maxlength="100" aria-label="Yeni kategori adı" placeholder="Kategori adı (ör. Argon Hızlı, Kodlama)"><button id="add-category" type="button" class="primary">Kategori ekle</button></div><div id="category-presets" class="category-presets" aria-label="Hazır kategori önerileri"></div><div id="category-list" class="category-grid"></div></div></dialog>
     <footer>Kimlik bilgileri ve API anahtarları yalnızca bilgisayarınızdaki yerel veri klasöründe tutulur.</footer>
   </main>
 </body>

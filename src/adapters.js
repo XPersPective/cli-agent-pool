@@ -464,9 +464,28 @@ export function discover() {
   });
 }
 
+function resolveWindowsCodexNative(executable) {
+  if (process.platform !== 'win32' || !/[\\/]codex\.js$/i.test(executable)) return null;
+  const archPkg = process.arch === 'arm64' ? 'codex-win32-arm64' : 'codex-win32-x64';
+  const triple = process.arch === 'arm64' ? 'aarch64-pc-windows-msvc' : 'x86_64-pc-windows-msvc';
+  const root = path.resolve(path.dirname(executable), '..');
+  const candidates = [
+    path.join(root, 'node_modules', '@openai', archPkg, 'vendor', triple, 'bin', 'codex.exe'),
+    path.join(root, 'vendor', triple, 'bin', 'codex.exe'),
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
+    } catch { /* fallback to JS entrypoint */ }
+  }
+  return null;
+}
+
 export function executableArgv(executable) {
   if (!path.isAbsolute(executable) || !existsSync(executable) || !statSync(executable).isFile()) throw new PoolError('EXECUTABLE_MISSING', 'CLI dosyasını yeniden seçin.');
   if (/\.(?:cmd|bat|ps1)$/i.test(executable)) throw new PoolError('SHELL_SHIM_DENIED', 'Shell kısayolu yerine gerçek .exe veya JavaScript CLI giriş dosyasını seçin.');
+  const nativeCodex = resolveWindowsCodexNative(executable);
+  if (nativeCodex) return [nativeCodex];
   if (process.platform !== 'win32') accessSync(executable, /\.[cm]?js$/i.test(executable) ? constants.R_OK : constants.X_OK);
   return /\.[cm]?js$/i.test(executable) ? [process.execPath, executable] : [executable];
 }
@@ -614,7 +633,7 @@ export function buildArguments(route, model, task, context = null) {
     const built = route.argsTemplate.map(token => token.replace(/\{(model|effort|workspace|prompt|kind)\}/g, (_, k) => String(values[k] ?? '')));
     return [...argv, ...built];
   }
-  if (route.adapter === 'codex') return [...argv, '-a', 'never', ...(task.mode === 'execute' ? ['--search'] : []), 'exec', '--ignore-user-config', '--ephemeral', '--skip-git-repo-check', '--json', '--sandbox', task.kind === 'write' ? 'workspace-write' : 'read-only', '-C', task.workspace, ...(process.platform === 'win32' ? ['-c', 'windows.sandbox="elevated"'] : []), '-c', 'model_provider="openai"', ...(directorRun ? codexDirectorArguments(route, context) : []), '-m', model.id, ...(effort ? ['-c', `model_reasoning_effort=${JSON.stringify(effort)}`] : []), '-'];
+  if (route.adapter === 'codex') return [...argv, '-a', 'never', ...(task.mode === 'execute' ? ['--search'] : []), 'exec', '--ignore-user-config', '--ephemeral', '--skip-git-repo-check', '--json', '--sandbox', task.kind === 'write' ? 'workspace-write' : 'read-only', '-C', task.workspace, ...(process.platform === 'win32' ? ['-c', 'windows.sandbox="elevated"'] : []), ...(route.profile ? ['-c', 'cli_auth_credentials_store="file"'] : []), '-c', 'model_provider="openai"', ...(directorRun ? codexDirectorArguments(route, context) : []), '-m', model.id, ...(effort ? ['-c', `model_reasoning_effort=${JSON.stringify(effort)}`] : []), '-'];
   if (route.adapter === 'claude') return [...argv, '-p', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--permission-mode', task.kind === 'write' ? 'acceptEdits' : 'dontAsk', '--permission-prompts', 'none', '--strict-mcp-config', '--mcp-config', directorRun ? JSON.stringify({ mcpServers: { 'cli-agent-pool': poolMcpServer(context) } }) : '{"mcpServers":{}}', '--disable-slash-commands', ...claudeSettingSources(route), '--tools', task.kind === 'text' ? '' : task.kind === 'read' ? 'Read,Glob,Grep' : task.mode === 'execute' ? 'default' : 'Read,Glob,Grep,Edit,Write', ...(directorRun && context.readPaths?.length ? ['--allowedTools', ...context.readPaths.map(claudeReadRule)] : []), '--model', model.id, ...(effort ? ['--effort', effort] : [])];
   if (route.adapter === 'opencode' || route.adapter === 'mimo') return [...argv, 'run', '--format', 'json', '--pure', '-m', opencodeModelId(route, model.id), '--agent', task.kind === 'write' ? 'build' : 'plan', ...(effort ? ['--variant', effort] : [])];
   // ZCode -p has no model flag: it runs the default model selected in ZCode itself.
@@ -663,7 +682,7 @@ export async function checkAuth(route, cwd, python, directory = dataDirectory(),
     return;
   }
   if (route.adapter === 'codex') {
-    const result = await capture([...argv, 'login', 'status'], cwd, python, env);
+    const result = await capture([...argv, ...(route.profile ? ['-c', 'cli_auth_credentials_store="file"'] : []), 'login', 'status'], cwd, python, env);
     if (result.code !== 0 || !/Logged in using ChatGPT/i.test(result.output + result.stderr)) throw new PoolError('AUTH_REQUIRED', `Codex CLI içinde hesabınızla giriş yapın (${route.profile ? `${route.id} bağlantısının Giriş yap düğmesi` : loginCommands.codex}).`);
   } else if (route.adapter === 'qoder') {
     const result = await capture([...argv, 'status', '-o', 'json'], cwd, python, env);
@@ -713,7 +732,7 @@ export async function accountLoggedIn(route, cwd, python, directory = dataDirect
   }
   const { argv, env } = routeCommand(route, directory);
   if (route.adapter === 'codex') {
-    const result = await capture([...argv, 'login', 'status'], cwd, python, env);
+    const result = await capture([...argv, ...(route.profile ? ['-c', 'cli_auth_credentials_store="file"'] : []), 'login', 'status'], cwd, python, env);
     return result.code === 0 && /Logged in using ChatGPT/i.test(result.output + result.stderr);
   }
   if (route.adapter === 'claude') {
@@ -1149,10 +1168,13 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
     const tokenFile = isWsl
       ? wslWindowsPath(route, `${wslProfileHome(route)}/.gemini/antigravity-cli/antigravity-oauth-token`)
       : (route.profile ? path.join(agyHome, '.gemini', 'antigravity-cli', 'antigravity-oauth-token') : undefined);
-    const [result, windows] = await Promise.all([
-      antigravityQuota(agyHome, { tokenFile, credentialStore: !route.profile && !isWsl }),
-      !isWsl ? capture([...argv, '-p', '/usage', '--output-format', 'json'], cwd, python, env, 30_000).then(usage => agyUsageWindows(JSON.parse(usage.output))).catch(() => []) : Promise.resolve([]),
-    ]);
+    const result = await antigravityQuota(agyHome, { tokenFile, credentialStore: !route.profile && !isWsl });
+    if (result.status === 'auth_required') {
+      return { ...base, account: route.profile || 'default', ...result };
+    }
+    const windows = !isWsl
+      ? await capture([...argv, '-p', '/usage', '--output-format', 'json'], cwd, python, env, 30_000).then(usage => agyUsageWindows(JSON.parse(usage.output))).catch(() => [])
+      : [];
     if (windows.length) {
       const status = windows.every(window => window.remainingPercent <= 0) ? 'rate_limited' : 'available';
       const cloudOk = result && result.status !== 'auth_required' && !result.networkError;

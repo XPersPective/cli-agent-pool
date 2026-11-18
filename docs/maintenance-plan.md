@@ -68,6 +68,24 @@
 - [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.16.0`.
 - [x] **Depo hijyeni (`git`)**: Uzak sunucudaki 13 eski etiket (`v1.0.0` … `v2.1.1`, eski sürüm çizgisi) silindi; güncel sürüme açıklamalı `v2.16.0` etiketi kondu. Uzak sunucuda yalnız `main` dalı var (`git push --prune` ile budandı), yerel dal listesi de tek dal. 57 commit'in tamamı `main` içinde olduğu için etiket silmek hiçbir commit'i kaybettirmedi. Depo ağacı zaten çöpsüz: 96 takip edilen dosya, `.bak`/`.log`/geçici dosya yok, büyük blob yok, geçmişte sızmış anahtar bulunmadı ve bu projeye ait bir Project Brain dosyası (`PROJECT_BRAIN.md` / `.project-brain/`) hiçbir commit'te bulunmuyor.
 
+## 2.17.0 — Çoklu Hesap İzolasyonu, Terminal Gizleme, Bağlantı Yenileme ve Üçlü Görünüm
+- [x] **Çoklu hesap izolasyonu ve kopya önleme (`src/profiles.js`, `src/accounts.js`, `src/quotas.js`, `src/codex-control.js`, `src/adapters.js`, `src/web.js`)**:
+  - Codex profilleri (`CODEX_HOME`) için `cli_auth_credentials_store = "file"` zorlanarak paylaşılan Windows Credential Manager / masaüstü ChatGPT oturumu ile çakışma önlendi (`profileEnvironment`, `codexControl`, `buildArguments`, `checkAuth`, `accountLoggedIn`).
+  - `extractAntigravityEmail` / `antigravityToken` artık Windows Credential Manager (`gemini:antigravity`) içindeki e-postayı ve JWT `email` alanını da okuyor; `agy` kotası `auth_required` durumunda `/usage` alt sürecini boşuna beklemeden anında dönüyor.
+  - Yeni `isolated` giriş/değişim akışı (`isolatedLoginRoute`, `login { isolated: true }`, `finish_switch`, `logout_route`): masaüstüyle paylaşımlı `codex-local` / `agy-local` bağlantıları tek tıkla kendi izole `acc1`…`accN` profillerine geçebilir, başka hesap eklerken veya silerken kullanılmayan/kopya (`DUPLICATE_ACCOUNT`) profil klasörleri diskten temizlenir.
+- [x] **Windows arka plan terminal pencerelerinin kaldırılması (`src/adapters.js`)**: `executableArgv` Windows üzerinde `codex.js` sarmalayıcısı yerine kardeş yerel `codex.exe` ikilisini doğrudan çözümleyerek `supervisor.py` (`CREATE_NO_WINDOW`) altında çalıştırır; arka planda periyodik kota/katalog yoklamalarında terminal penceresi açılmaz.
+- [x] **Bağlantı yenileme, çağrı takibi ve güncelleme yeniden başlatması (`src/daemon.js`, `src/web.js`, `bin/pool.js`, `web/index.html`, `web/app.js`)**:
+  - Üst çubuktaki `#connection-state` göstergesi tıklanabilir yenileme düğmesine (`reconnectPool`) dönüştürüldü; güvenli çıkış veya bağlantı kopması sonrası tek tıkla yeniden bağlanır ve 401/403 oturum süresi dolması açıkça bildirilir.
+  - Çalışan görev varken yoklama 2 saniyeye hızlanır ve pencere odağa/görünürlüğe dönünce anında yenilenir.
+  - `scheduleServiceRestart` ve `bin/pool.js install` yeni kurulan `runtimePath/bin/pool.js` üzerinden servisi yeniden başlatır; `triggerUpdate` bildirim alanları düzeltildi.
+- [x] **Üçlü görünüm, araç ikonları, ok hatası ve kategori düzeni (`web/index.html`, `web/pool-state.js`, `web/app.js`, `web/style.css`)**:
+  - Açılır menülerde (`select:focus-visible` + `:hover`) arka planda okların döşenmesine yol açan `background:` kısaltması `background-color:` ile düzeltildi; `.quota-details` simsiyah arka planı kaldırılıp kart zeminiyle aynı (`transparent`) yapıldı.
+  - Tüm kartlarda ve araç filtrelerinde SVG araç ikonları (`adapterIcon`) eklendi.
+  - Üçlü görünüm (`Kotalı`, `Normal`, `Mini`): her modda kota gösterilir; `Mini` modda yalnızca onay kutusu, araç ikonu, model, e-posta, tek satır yüzde kota (`5s %97 · 7g %98`), sıralama ve kompakt işlem düğmeleriyle ~1/3 yükseklikte dar kartlar sunulur.
+  - `#category-editor` ve `Kategorileri düzenle` ana ekrandan kaldırıldı; `Araç / Abonelik / Model ailesi` seçicisinin yanına `+ Kategori ekle` (`#category-dialog`) kondu ve `Tümünü Göster / Yüksek / Orta / Hafif` seçicisi yukarıya yaslı kompakt hap satırına dönüştürüldü.
+- [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.17.0`.
+- [x] **Doğrulama kanıtı (2.17.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate` ve `npm test` (206/206; yeni `test/multi-account-and-ui.test.js` + güncellenmiş `test/opencode-quota.test.js`).
+
 ## 2.13.0 — Düz Hiyerarşi Satırları ve Net Aç/Kapalı Anahtarı
 - [x] **Hiyerarşi ağaç yerine düz ve eşit hizada (`web/app.js`, `web/style.css`)**: Araçlar / Abonelikler / Model aileleri satırları artık üçü de aynı sol hizada, aynı başlık ve aynı çip görünümüyle sıralanır; önceki ray/dirsek iç içe yapım ve yol (breadcrumb) satırı kaldırıldı. Her düğmenin yanında model sayısı korunur.
 - [x] **Bağlantı aç/kapalı anahtarı (`web/app.js`, `web/style.css`)**: Ayarlar'daki bağlantı satırındaki "Devre dışı" etiketli kutu yerine gerçek bir anahtar (slider) geldi: solda kaydırıcı, sağda **Etkin** / **Kapalı** durumu. Anahtar çevrilince değişiklik **anında kaydedilir** (taslakta bırakılmaz) ve bağlantı etkinleştiğinde araç ve modelleri ana sayfada (Model kataloğu) görünür; durum rozeti "Kapalı" / "Etkin" olarak netleştirildi.

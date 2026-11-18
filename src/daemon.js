@@ -203,8 +203,9 @@ export function updateNeedsRestart(runningVersion, installedVersion) {
   return installedVersion !== runningVersion;
 }
 
-export function scheduleServiceRestart(directory) {
-  const child = spawn(process.execPath, [poolBinPath, 'restart'], {
+export function scheduleServiceRestart(directory, targetPoolBin = poolBinPath) {
+  const entry = targetPoolBin || poolBinPath;
+  const child = spawn(process.execPath, [entry, 'restart'], {
     cwd: directory,
     detached: true,
     stdio: 'ignore',

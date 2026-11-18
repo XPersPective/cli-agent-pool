@@ -68,10 +68,27 @@ export function claudeAccountEmail(home = homedir(), configDir = null) {
   } catch { return null; }
 }
 
+export function extractAntigravityEmail(stored) {
+  if (!stored || typeof stored !== 'object') return null;
+  if (typeof stored.id_token_email === 'string' && stored.id_token_email.includes('@')) return stored.id_token_email;
+  if (typeof stored.email === 'string' && stored.email.includes('@')) return stored.email;
+  const idToken = stored.id_token || stored.token?.id_token;
+  if (typeof idToken === 'string') {
+    try {
+      const payload = idToken.split('.')[1];
+      if (payload) {
+        const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+        if (typeof parsed?.email === 'string' && parsed.email.includes('@')) return parsed.email;
+      }
+    } catch { /* ignore malformed JWT */ }
+  }
+  return null;
+}
+
 export function antigravityAccountEmail(home = homedir(), tokenFile = null) {
   try {
-    const stored = readJson(tokenFile || path.join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'));
-    if (typeof stored?.id_token_email === 'string' && stored.id_token_email.includes('@')) return stored.id_token_email;
+    const email = extractAntigravityEmail(readJson(tokenFile || path.join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token')));
+    if (email) return email;
   } catch {}
   try {
     const active = readJson(path.join(home, '.gemini', 'google_accounts.json'))?.active;
@@ -157,19 +174,20 @@ async function antigravityToken(home, { tokenFile, credentialStore = true, fetch
   if (!stored.token && credentialStore && process.platform === 'win32') {
     try { stored = JSON.parse(await windowsCredential('gemini:antigravity') || '{}'); } catch { stored = {}; }
   }
+  const email = extractAntigravityEmail(stored);
   const token = stored.token || (stored.access_token || stored.refresh_token ? stored : {});
-  if (token.access_token && Date.parse(token.expiry) > Date.now() + 60_000) return { token: token.access_token, reason: 'ok' };
-  if (!token.refresh_token) return { token: null, reason: 'auth_required' };
+  if (token.access_token && Date.parse(token.expiry) > Date.now() + 60_000) return { token: token.access_token, reason: 'ok', ...(email ? { email } : {}) };
+  if (!token.refresh_token) return { token: null, reason: 'auth_required', ...(email ? { email } : {}) };
   // Refresh in memory only; the CLI keeps owning its stored credential.
   try {
     const response = await fetchImpl('https://oauth2.googleapis.com/token', { method: 'POST', body: new URLSearchParams({ client_id: ANTIGRAVITY_CLIENT.id, client_secret: ANTIGRAVITY_CLIENT.secret, refresh_token: token.refresh_token, grant_type: 'refresh_token' }), signal: AbortSignal.timeout(TIMEOUT_MS) });
     if (response.ok) {
       const accessToken = (await response.json()).access_token || null;
-      return accessToken ? { token: accessToken, reason: 'ok' } : { token: null, reason: 'auth_required' };
+      return accessToken ? { token: accessToken, reason: 'ok', ...(email ? { email } : {}) } : { token: null, reason: 'auth_required', ...(email ? { email } : {}) };
     }
-    if (response.status === 400 || response.status === 401) return { token: null, reason: 'auth_required' };
-    return { token: null, reason: 'network_error' };
-  } catch { return { token: null, reason: 'network_error' }; }
+    if (response.status === 400 || response.status === 401) return { token: null, reason: 'auth_required', ...(email ? { email } : {}) };
+    return { token: null, reason: 'network_error', ...(email ? { email } : {}) };
+  } catch { return { token: null, reason: 'network_error', ...(email ? { email } : {}) }; }
 }
 
 export function antigravityModelWindows(body) {
@@ -205,16 +223,16 @@ export async function antigravityQuota(home = homedir(), options = {}) {
   const tokenFile = options.tokenFile || path.join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token');
   let email = null;
   try {
-    const stored = readJson(tokenFile);
-    email = stored?.id_token_email || null;
+    email = extractAntigravityEmail(readJson(tokenFile));
   } catch {}
+  const tokenRes = await antigravityToken(home, options);
+  if (!email && tokenRes.email) email = tokenRes.email;
   if (!email) {
     try {
       const accounts = readJson(path.join(home, '.gemini', 'google_accounts.json'));
       email = accounts?.active || null;
     } catch {}
   }
-  const tokenRes = await antigravityToken(home, options);
   if (!tokenRes.token) {
     if (tokenRes.reason === 'network_error') {
       return unknown('antigravity-cloudcode', 'Antigravity oturum yenileme servisine ulaşılamadı (ağ hatası olabilir).', { auth: 'credentials_present', networkError: true, ...(email ? { email } : {}) });

@@ -6,7 +6,8 @@ export async function codexControl(route, cwd, python, method, directory = dataD
   let nextId = 1;
   const pending = new Map();
   const command = routeCommand(route, directory);
-  const handle = runProcess({ extraEnv: command.env, argv: [...command.argv, 'app-server', '--stdio', '-c', 'model_provider="openai"'], cwd, python, relay: true, timeoutMs: 20_000,
+  const storeOverride = route.profile ? ['-c', 'cli_auth_credentials_store="file"'] : [];
+  const handle = runProcess({ extraEnv: command.env, argv: [...command.argv, ...storeOverride, 'app-server', '--stdio', '-c', 'model_provider="openai"'], cwd, python, relay: true, timeoutMs: 20_000,
     onLine(line) {
       const message = JSON.parse(line);
       if (message.method && message.id != null) {

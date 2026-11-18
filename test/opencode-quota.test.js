@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { opencodeAuthKeys, parseOpenCodeGoUsage, parseOpenCodeStats, opencodeStatsNote } from '../src/quotas.js';
-import { modelIssueInfo, quotaToggleState, quotaToggleTarget } from '../web/pool-state.js';
+import { modelIssueInfo, formatCompactQuotaWindows, normalizeDisplayMode } from '../web/pool-state.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 
@@ -128,24 +128,33 @@ test('panel: yüzde penceresi yoksa açılır ok satırı kurulmaz', () => {
   assert.doesNotMatch(app, /'Bilinmiyor'/);
 });
 
-test('kota düğmesi sayfadaki gerçek durumu gösterir', () => {
-  const closed = quotaToggleState([{ open: false }]);
-  assert.equal(closed.label, 'Kotaları göster');
-  assert.equal(closed.pressed, false);
-  assert.equal(closed.disabled, false);
-  const open = quotaToggleState([{ open: true }, { open: true }]);
-  assert.equal(open.label, 'Kotaları gizle');
-  assert.equal(open.pressed, true);
-  const empty = quotaToggleState([]);
-  assert.equal(empty.disabled, true);
-  assert.equal(empty.label, 'Kota ayrıntısı yok');
-  assert.equal(quotaToggleTarget([{ open: true }, { open: false }]), true);
-  assert.equal(quotaToggleTarget([{ open: true }]), false);
+test('üçlü kart/kota görünümü ve kompakt yüzde formatı her durumda kota gösterir', () => {
+  const items = formatCompactQuotaWindows({
+    windows: [
+      { name: 'five_hour', remainingPercent: 84.4, windowMinutes: 300 },
+      { name: 'seven_day', remainingPercent: 61.7, windowMinutes: 10080 },
+    ],
+  });
+  assert.deepEqual(items.map(i => `${i.label} %${i.remaining}`), ['5s %84', '7g %62']);
+  assert.equal(normalizeDisplayMode('mini', true), 'mini');
+  assert.equal(normalizeDisplayMode('compact', true), 'compact');
+  assert.equal(normalizeDisplayMode(undefined, false), 'compact');
+  assert.equal(normalizeDisplayMode(undefined, true), 'detailed');
 });
 
-test('kapalı kota durumunda tüm kota blokları gizlenir', () => {
+test('panelde üçlü görünüm, araç ikonları, saydam kota zemini, kategori penceresi ve tıklanabilir bağlantı düğmesi bulunur', () => {
+  const html = readFileSync(path.join(root, 'web', 'index.html'), 'utf8');
   const app = readFileSync(path.join(root, 'web', 'app.js'), 'utf8');
   const css = readFileSync(path.join(root, 'web', 'style.css'), 'utf8');
-  assert.match(app, /classList\.toggle\('quota-collapsed', !quotasOpen\)/);
-  assert.match(css, /\.quota-collapsed \.quota-cell \{ display: none; \}/);
+  assert.match(html, /<button id="connection-state"[^>]*class="connection-state"/);
+  assert.match(html, /id="display-mode-group"/);
+  assert.match(html, /id="open-category-dialog"/);
+  assert.match(html, /id="category-dialog"/);
+  assert.equal(html.includes('id="category-editor"'), false);
+  assert.equal(html.includes('id="manage-categories"'), false);
+  assert.match(app, /function adapterIcon\(/);
+  assert.match(app, /function reconnectPool\(/);
+  assert.match(css, /\.quota-details\s*\{[^}]*background:\s*transparent/);
+  assert.match(css, /select:focus-visible[^}]*background-color:\s*var\(--raised\)/);
+  assert.doesNotMatch(css, /select:focus-visible[^}]*\bbackground:\s*var\(--raised\)/);
 });

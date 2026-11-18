@@ -184,7 +184,7 @@
     padding: 6px 10px;
     border: 1px solid var(--border-strong);
     border-radius: var(--r-sm);
-    background: var(--raised);
+    background-color: var(--raised);
     color: var(--text);
     font-size: 13px;
     box-shadow: inset 0 1px 1px light-dark(#1a22330a, #0006);
@@ -192,7 +192,7 @@
   }
   input::placeholder, textarea::placeholder { color: color-mix(in oklab, var(--muted) 80%, transparent); }
   input:hover, select:hover, textarea:hover { border-color: color-mix(in oklab, var(--accent) 40%, var(--border-strong)); }
-  input:focus-visible, select:focus-visible, textarea:focus-visible { outline: none; border-color: var(--accent); box-shadow: var(--ring); background: var(--raised); }
+  input:focus-visible, select:focus-visible, textarea:focus-visible { outline: none; border-color: var(--accent); box-shadow: var(--ring); background-color: var(--raised); }
   select {
     cursor: pointer;
     padding-right: 30px;
@@ -201,7 +201,11 @@
     background-repeat: no-repeat;
     background-position: right 10px center;
   }
-  select:hover { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none' stroke='%23c3ccdb' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m3 5 3 3 3-3'/%3E%3C/svg%3E"); }
+  select:hover, select:focus-visible {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none' stroke='%23c3ccdb' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m3 5 3 3 3-3'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+  }
   select option { background: var(--raised); color: var(--text); }
   textarea { resize: vertical; line-height: 1.5; }
   input[type=checkbox] { width: 18px; height: 18px; min-height: 18px; padding: 0; flex-shrink: 0; margin: 0; cursor: pointer; accent-color: var(--accent); box-shadow: none; }
@@ -288,6 +292,12 @@
     font-size: 11.5px;
     font-weight: 600;
     white-space: nowrap;
+    box-shadow: none;
+    cursor: pointer;
+  }
+  .connection-state:hover:not(:disabled) {
+    border-color: color-mix(in oklab, currentColor 50%, transparent);
+    background: color-mix(in oklab, currentColor 18%, transparent);
   }
   .connection-state::before {
     content: "";
@@ -301,6 +311,10 @@
     border-color: color-mix(in oklab, var(--success) 30%, transparent);
     background: var(--success-soft);
     color: var(--success);
+  }
+  .connection-state[data-connected=true]:hover:not(:disabled) {
+    border-color: color-mix(in oklab, var(--success) 55%, transparent);
+    background: color-mix(in oklab, var(--success) 20%, transparent);
   }
 
   .quiet-icon { width: var(--control-h); padding: 0; border-color: transparent; background: transparent; box-shadow: none; font-size: 17px; color: var(--muted); }
@@ -436,11 +450,37 @@
   .pool-view-tools > .hint { margin-right: auto; font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
   .pool-view-tools select { width: auto; max-width: 240px; }
   .pool-view-tools button { font-size: 12.5px; }
-  #toggle-quotas[aria-pressed=true], #toggle-disabled-routes[aria-pressed=true] { background: var(--accent-soft); border-color: color-mix(in oklab, var(--accent) 35%, transparent); }
+  #toggle-disabled-routes[aria-pressed=true] { background: var(--accent-soft); border-color: color-mix(in oklab, var(--accent) 35%, transparent); }
+  .display-mode-group {
+    display: inline-flex;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    background: var(--sunken);
+  }
+  .display-mode-group button {
+    min-height: 30px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: var(--r-xs);
+    background: transparent;
+    box-shadow: none;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 550;
+  }
+  .display-mode-group button:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+  .display-mode-group button[aria-pressed=true],
+  .display-mode-group button[aria-pressed=true]:hover:not(:disabled) {
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 650;
+  }
   #filter-count { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px; border-radius: var(--r-pill); background: var(--hover); font-size: 11px; font-variant-numeric: tabular-nums; }
 
   /* Pool + catalog panels */
-  .pool-area, .catalog-panel { display: flex; flex-direction: column; gap: var(--s-3); padding: var(--s-3) var(--s-4) var(--s-4); flex: 0 0 auto; overflow: visible; }
+  .pool-area, .catalog-panel { display: flex; flex-direction: column; gap: var(--s-2); padding: var(--s-3) var(--s-4) var(--s-4); flex: 0 0 auto; overflow: visible; }
   .pool-area { background: linear-gradient(180deg, var(--accent-softer), transparent 140px), var(--surface); }
   .hidden-panel { background: linear-gradient(180deg, color-mix(in oklab, var(--warning) 6%, transparent), transparent 140px), var(--surface); }
   .pool-area:focus-within, .catalog-panel:focus-within { border-color: color-mix(in oklab, var(--accent) 40%, var(--border)); }
@@ -450,16 +490,18 @@
   .catalog-panel > .panel-heading {
     position: sticky;
     top: 0;
-    z-index: 2;
+    z-index: 3;
     margin: calc(-1 * var(--s-3)) calc(-1 * var(--s-4)) 0;
     padding: var(--s-3) var(--s-4);
     border-radius: var(--r-lg) var(--r-lg) 0 0;
-    background: var(--glass);
+    background: color-mix(in oklab, var(--surface) 96%, transparent);
     backdrop-filter: blur(12px);
   }
   .panel-heading select { width: auto; max-width: 200px; }
   .pool-area > .panel-heading > select, .catalog-controls { margin-left: auto; }
-  .catalog-controls { display: flex; gap: 6px; min-width: 0; flex-wrap: wrap; }
+  .catalog-controls { display: flex; gap: 6px; min-width: 0; flex-wrap: wrap; align-items: center; }
+  #open-category-dialog { min-height: var(--control-h); padding: 0 11px; font-size: 12.5px; white-space: nowrap; background: var(--accent-softer); border-color: color-mix(in oklab, var(--accent) 30%, transparent); color: var(--accent); }
+  #open-category-dialog:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); }
   #catalog-count, #pool-member-count, #hidden-panel-count { font-variant-numeric: tabular-nums; padding: 1px 8px; border-radius: var(--r-pill); background: var(--hover); }
   #catalog-count:empty, #pool-member-count:empty { display: none; }
 
@@ -480,45 +522,47 @@
   }
   .panel-toggle[aria-expanded=false] .panel-chevron { transform: rotate(-90deg); }
 
-  #pool-content, #catalog-content, #hidden-content { display: flex; flex-direction: column; gap: var(--s-3); min-height: 0; flex: 0 0 auto; overflow: visible; }
-  .pool-toolbar { display: flex; align-items: center; justify-content: flex-start; gap: var(--s-3); flex-shrink: 0; flex-wrap: wrap; }
+  #pool-content, #catalog-content, #hidden-content { display: flex; flex-direction: column; gap: var(--s-2); min-height: 0; flex: 0 0 auto; overflow: visible; }
+  .pool-toolbar { display: flex; align-items: center; justify-content: flex-start; gap: var(--s-2); flex-shrink: 0; flex-wrap: wrap; margin-top: 0; }
 
-  /* Group selector cards */
-  .group-summary { display: flex; gap: var(--s-2); max-width: 100%; overflow-x: auto; padding: 2px 2px 4px; scrollbar-width: thin; }
+  /* Compact flush group selector pills */
+  .group-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: 100%; padding: 0; }
   .group-card {
     flex-shrink: 0;
-    flex-direction: column;
-    align-items: flex-start;
+    flex-direction: row;
+    align-items: center;
     justify-content: center;
-    gap: 2px;
-    min-width: 136px;
-    min-height: 54px;
-    padding: var(--s-2) var(--s-3);
-    border-radius: var(--r-md);
+    gap: 5px;
+    min-width: 0;
+    min-height: 30px;
+    padding: 0 12px;
+    border-radius: var(--r-pill);
     background: var(--raised);
-    text-align: left;
+    box-shadow: none;
+    font-size: 12.5px;
   }
-  .group-card.group-__all__ { border-style: dashed; border-color: color-mix(in oklab, var(--info) 45%, var(--border)); }
-  .group-card strong { font-size: 13.5px; font-weight: 600; }
+  .group-card strong { font-size: 12.5px; font-weight: 600; }
   .group-card span { font-size: 11.5px; color: var(--muted); font-weight: 500; font-variant-numeric: tabular-nums; }
-  .group-card[aria-pressed=true] { border-style: solid; border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 1px var(--accent) inset; }
-  .group-card[aria-pressed=true] span { color: color-mix(in oklab, var(--accent), var(--text) 35%); }
+  .group-card[aria-pressed=true] { border-style: solid; border-color: color-mix(in oklab, var(--accent) 45%, transparent); background: var(--accent-soft); color: var(--accent); box-shadow: none; }
+  .group-card[aria-pressed=true] span { color: var(--accent); }
 
   .batch-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-left: auto; }
   .batch-bar:empty { display: none; }
   .batch-bar button { font-size: 12.5px; min-height: var(--control-h-sm); white-space: nowrap; }
   .batch-bar small { display: inline; }
 
-  /* Category editor */
-  #category-editor { margin: 0; box-shadow: none; background: var(--sunken); }
+  /* Category dialog */
+  .category-dialog-body { display: grid; gap: var(--s-3); }
   .category-create-row { display: flex; align-items: center; gap: var(--s-2); flex-wrap: wrap; }
+  .category-create-row input { flex: 1; min-width: 180px; }
   .category-presets { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .category-presets button { min-height: var(--control-h-sm); font-size: 12px; padding: 0 10px; border-radius: var(--r-pill); }
-  #category-list, .category-grid { display: grid; gap: var(--s-2); margin-top: var(--s-2); }
+  #category-list, .category-grid { display: grid; gap: var(--s-2); margin-top: var(--s-1); }
   #category-list .actions, .category-row { flex-wrap: wrap; }
   #category-list input { flex: 1; min-width: 140px; }
   #category-list button { min-height: var(--control-h-sm); white-space: nowrap; font-size: 12px; }
-  #category-name { max-width: 320px; }
+  #close-category-dialog { width: var(--control-h); padding: 0; border-color: transparent; background: transparent; box-shadow: none; font-size: 20px; color: var(--muted); }
+  #close-category-dialog:hover { background: var(--hover); color: var(--text); }
 
   /* Model grids */
   .membership-panel { display: flex; flex-direction: column; min-height: 0; flex: 0 0 auto; overflow: visible; padding: 0; }
@@ -714,14 +758,115 @@
   .login-notice.ok-notice { color: var(--success); }
   .login-notice button { min-height: 26px; padding: 0 8px; font-size: 11.5px; }
 
-  /* Quota */
+  /* Tool SVG icons */
+  .tool-icon {
+    display: inline-grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+    border-radius: 5px;
+    background: var(--hover);
+    color: var(--accent);
+  }
+  .tool-icon svg { width: 13px; height: 13px; display: block; }
+  .tool-icon.tool-agy { color: var(--info); background: var(--info-soft); }
+  .tool-icon.tool-codex { color: var(--success); background: var(--success-soft); }
+  .tool-icon.tool-claude { color: var(--warning); background: var(--warning-soft); }
+  .tool-icon.tool-zcode { color: #a78bfa; background: color-mix(in oklab, #a78bfa 16%, transparent); }
+  .tool-icon.tool-qwen { color: #60a5fa; background: color-mix(in oklab, #60a5fa 16%, transparent); }
+  .tool-icon.tool-kimi { color: #f472b6; background: color-mix(in oklab, #f472b6 16%, transparent); }
+  .tool-icon.tool-opencode { color: #34d399; background: color-mix(in oklab, #34d399 16%, transparent); }
+  .hierarchy-pills button .tool-icon { width: 16px; height: 16px; }
+  .settings-tool-tab.selected .tool-icon { background: color-mix(in oklab, var(--accent-text) 16%, transparent); color: var(--accent-text); }
+
+  /* Mini card layout (~1/3 normal height) */
+  .membership-panel #pool-members.is-mini-grid,
+  .catalog-models.is-mini-grid {
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 440px), 1fr));
+    gap: 6px;
+  }
+  .model-card.is-mini {
+    padding: 6px 10px;
+    gap: 4px;
+    border-radius: var(--r-sm);
+  }
+  .mini-row-top, .mini-row-bottom {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .mini-model-name {
+    flex: 1;
+    min-width: 0;
+    font-size: 12.5px;
+    font-weight: 650;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .mini-tool-tag {
+    flex-shrink: 0;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--muted);
+    padding: 1px 6px;
+    border-radius: var(--r-pill);
+    background: var(--hover);
+  }
+  .mini-email {
+    flex: 1;
+    min-width: 0;
+    font-size: 11px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .mini-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    flex-shrink: 0;
+    margin-left: auto;
+  }
+  .mini-btn {
+    min-width: 22px;
+    min-height: 22px;
+    padding: 0 6px;
+    font-size: 11px;
+    border-radius: var(--r-xs);
+    box-shadow: none;
+    background: transparent;
+    border-color: var(--border);
+  }
+  .mini-btn.add-model-mini {
+    background: var(--accent-soft);
+    border-color: color-mix(in oklab, var(--accent) 35%, transparent);
+    color: var(--accent);
+    font-weight: 700;
+  }
+  .mini-call-dot {
+    min-width: 18px;
+    min-height: 22px;
+    padding: 0 4px;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .model-card.is-mini.is-active .mini-call-dot { color: var(--info); }
+
+  /* Quota (card's own background, no dark/black sunken box) */
   .quota-cell { min-width: 0; }
-  .quota-details { font-size: 13px; color: var(--text); border-radius: var(--r-sm); background: var(--sunken); border: 1px solid color-mix(in oklab, var(--border) 70%, transparent); }
+  .quota-details { font-size: 13px; color: var(--text); border-radius: var(--r-sm); background: transparent; border: 1px solid color-mix(in oklab, var(--border) 60%, transparent); }
   .quota-details > summary {
     display: flex;
     align-items: center;
     gap: var(--s-2);
-    min-height: 32px;
+    min-height: 30px;
     padding: 0 10px;
     list-style: none;
     border-radius: var(--r-sm);
@@ -737,8 +882,27 @@
   .quota-details:is([data-level=mid]) > summary > strong { background: var(--warning-soft); color: var(--warning); }
   .quota-details:is([data-level=low]) > summary > strong { background: var(--danger-soft); color: var(--danger); }
   .quota-details:is([data-level=unknown]) > summary > strong { background: transparent; border: 1px dashed var(--border); color: var(--muted); font-weight: 500; }
-  .quota-details[open] > summary > strong { display: none; }
-  .quota-details .quota-body { padding: 2px 10px 10px; }
+  .quota-details[open]:not(.is-compact-quota) > summary > strong { display: none; }
+  .quota-details .quota-body { padding: 4px 10px 10px; }
+
+  .quota-compact-pills { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-left: auto; }
+  .quota-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 6px;
+    border-radius: var(--r-pill);
+    font-size: 11px;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    background: var(--hover);
+    color: var(--text);
+  }
+  .quota-pill.level-ok { background: var(--success-soft); color: var(--success); }
+  .quota-pill.level-mid { background: var(--warning-soft); color: var(--warning); }
+  .quota-pill.level-low { background: var(--danger-soft); color: var(--danger); }
+  .quota-pill.level-unknown { border: 1px dashed var(--border); background: transparent; color: var(--muted); font-weight: 500; }
+  .quota-pill.level-muted { background: transparent; color: var(--muted); font-weight: 500; }
 
   .quota-body { display: grid; grid-template-columns: 1fr; gap: 10px; }
   .quota-body > .hint { font-size: 12px; }
@@ -768,8 +932,6 @@
   .quota-stamp { display: block; font-size: 10.5px !important; color: var(--muted); }
   .quota-note { font-size: 11px; color: var(--muted); line-height: 1.45; overflow-wrap: anywhere; }
   .quota-flat { display: block; font-size: 11px; color: var(--muted); line-height: 1.45; overflow-wrap: anywhere; }
-  /* "Kotaları gizle" hides every quota block, expanded or not. */
-  .quota-collapsed .quota-cell { display: none; }
 
   /* Calls */
   .calls-toolbar, .routes-toolbar { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); flex-wrap: wrap; margin-bottom: var(--s-3); }
@@ -1026,7 +1188,7 @@
     .topbar { flex-wrap: wrap; gap: 10px; padding: 10px var(--s-3); }
     .brand > div { flex-direction: row; align-items: baseline; gap: var(--s-2); }
     .header-actions { flex: 1; justify-content: flex-end; gap: 4px; }
-    .connection-state { padding: 0; width: 24px; height: 24px; justify-content: center; font-size: 0; gap: 0; }
+    .connection-state { padding: 0 8px; min-height: 28px; }
     .main-tabs { order: 10; flex: 1 0 100%; margin: 0; }
     .main-tabs button { flex: 1; padding: 0 var(--s-2); }
     main { padding: var(--s-3) var(--s-3) var(--s-2); gap: 10px; }
@@ -1034,7 +1196,7 @@
     .catalog-panel > .panel-heading, .pool-area > .panel-heading { position: static; margin: 0; padding: 0; border-radius: 0; background: transparent; backdrop-filter: none; }
     .panel-heading select, .catalog-controls select { max-width: 160px; }
     .pool-view-tools { gap: 6px; }
-    .group-card { min-width: 120px; }
+    .group-card { min-width: 0; }
     .catalog-search-row > input[type=search] { min-width: 0; flex-basis: 100%; }
     .calls-filters, .routes-filters { width: 100%; }
     .calls-filters input[type=search], .routes-filters input[type=search], .calls-filters select, .routes-filters select { flex: 1; width: auto; min-width: 140px; max-width: none; }

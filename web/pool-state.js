@@ -175,6 +175,52 @@ export function quotaMatches(snapshot, modelId, mode = 'all', route = null, mode
   return true;
 }
 
+export function quotaWindowShortLabel(window) {
+  const known = {
+    five_hour: '5s',
+    '5h': '5s',
+    seven_day: '7g',
+    '7d': '7g',
+    weekly: '7g',
+    thirty_day: '30g',
+    '30d': '30g',
+    monthly: '30g',
+    opus: 'Opus 7g',
+    'opus:7d': 'Opus 7g',
+    'sonnet:7d': 'Sonnet 7g',
+    primary: 'Kısa',
+    secondary: '7g',
+  };
+  if (known[window?.name]) return known[window.name];
+  if (Number.isFinite(window?.windowMinutes)) {
+    if (window.windowMinutes >= 43_200) return `${Math.round(window.windowMinutes / 1440)}g`;
+    if (window.windowMinutes >= 1440) return `${Math.round(window.windowMinutes / 1440)}g`;
+    return `${Math.round(window.windowMinutes / 60)}s`;
+  }
+  const raw = String(window?.name || 'kota');
+  return raw.includes(':') ? raw.split(':').at(-1) : raw;
+}
+
+export function formatCompactQuotaWindows(snapshot, modelId = '') {
+  const wins = quotaWindows(snapshot, modelId);
+  const seen = new Map();
+  for (const w of wins) {
+    const label = quotaWindowShortLabel(w);
+    const remaining = Math.round(w.remaining);
+    const level = remaining >= 50 ? 'ok' : remaining >= 20 ? 'mid' : 'low';
+    const prev = seen.get(label);
+    if (!prev || remaining < prev.remaining) {
+      seen.set(label, { label, remaining, level, name: w.name });
+    }
+  }
+  return [...seen.values()];
+}
+
+export function normalizeDisplayMode(mode, legacyQuotasOpen = true) {
+  if (mode === 'detailed' || mode === 'compact' || mode === 'mini') return mode;
+  return legacyQuotasOpen === false ? 'compact' : 'detailed';
+}
+
 export function quotaApplies(window, modelId = '') {
   const id = modelId.toLowerCase();
   return !id || !window.models?.length || window.models.some(scope => ['gemini-flash', 'gemini-pro'].includes(scope) ? id.includes('gemini') && id.includes(scope.slice(7)) : id.includes(scope.toLowerCase()));

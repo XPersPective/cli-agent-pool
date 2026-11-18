@@ -1,7 +1,7 @@
 // Account profiles: one official CLI login per route, kept by the CLI itself.
 // The Pool only points each CLI at its own directory; it never reads, copies
 // or moves credential contents between profiles.
-import { mkdirSync, readFileSync, readdirSync, writeFileSync, renameSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync, renameSync, existsSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,13 +17,67 @@ export function profileDirectory(route, directory) {
   return path.join(directory, 'profiles', route.adapter, route.profile);
 }
 
+function ensureCodexFileStoreConfig(target) {
+  const configFile = path.join(target, 'config.toml');
+  try {
+    if (!existsSync(configFile)) {
+      writeFileSync(configFile, 'cli_auth_credentials_store = "file"\n', { mode: 0o600 });
+      return;
+    }
+    const text = readFileSync(configFile, 'utf8');
+    if (!/^\s*cli_auth_credentials_store\s*=/m.test(text)) {
+      writeFileSync(configFile, `cli_auth_credentials_store = "file"\n${text}`, { mode: 0o600 });
+    }
+  } catch { /* Profile config stays optional if read-only. */ }
+}
+
 export function profileEnvironment(route, directory, create = true) {
   if (!route.profile || route.api || route.runtime === 'wsl' || !(profileAdapters.has(route.adapter) || homeProfileAdapters.has(route.adapter))) return {};
   const target = profileDirectory(route, directory);
   if (create) mkdirSync(target, { recursive: true, mode: 0o700 });
   if (route.adapter === 'agy') return { USERPROFILE: target, HOME: target, WSL_DISTRO_NAME: 'cli-agent-pool' };
   if (homeProfileAdapters.has(route.adapter)) return { USERPROFILE: target, HOME: target };
-  return route.adapter === 'codex' ? { CODEX_HOME: target } : { CLAUDE_CONFIG_DIR: target };
+  if (route.adapter === 'codex') {
+    if (create) ensureCodexFileStoreConfig(target);
+    return { CODEX_HOME: target };
+  }
+  return { CLAUDE_CONFIG_DIR: target };
+}
+
+export function clearProfileDirectory(route, directory) {
+  if (!route?.profile || route.api || route.runtime === 'wsl' || !accountProfileAdapters.has(route.adapter)) return;
+  try {
+    rmSync(profileDirectory(route, directory), { recursive: true, force: true });
+  } catch { /* Best-effort cleanup of unused profile directories. */ }
+}
+
+export function clearProfileAuth(route, directory) {
+  if (!route?.profile || route.api || route.runtime === 'wsl' || !accountProfileAdapters.has(route.adapter)) return;
+  const target = profileDirectory(route, directory);
+  const targets = {
+    codex: [path.join(target, 'auth.json')],
+    claude: [path.join(target, '.credentials.json'), path.join(target, '.claude.json')],
+    agy: [path.join(target, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'), path.join(target, '.gemini', 'google_accounts.json')],
+    zcode: [path.join(target, '.zcode', 'v2', 'credentials.json')],
+    mcode: [path.join(target, '.minimax', 'local-runtime.auth.json')],
+    kimi: [path.join(target, '.kimi-code', 'credentials')],
+    qoder: [path.join(target, '.qoder')],
+    mimo: [path.join(target, '.mimocode')],
+    mmx: [path.join(target, '.mmx')],
+  }[route.adapter] || [];
+  for (const item of targets) {
+    try { rmSync(item, { recursive: true, force: true }); } catch { /* Ignore absent auth file. */ }
+  }
+}
+
+export function nextFreeProfile(routes, adapter, start = 2, extraUsed = []) {
+  const used = new Set([
+    ...(routes || []).filter(route => route.adapter === adapter).map(route => route.profile).filter(Boolean),
+    ...extraUsed.filter(Boolean),
+  ]);
+  let number = start;
+  while (used.has(`acc${number}`) || (routes || []).some(route => route.id === `${adapter}-acc${number}`)) number++;
+  return `acc${number}`;
 }
 
 // The home whose CLI files belong to this route (profile home or the real home).

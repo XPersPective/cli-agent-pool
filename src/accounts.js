@@ -4,7 +4,7 @@
 import { PoolError } from './config.js';
 import { capture } from './process.js';
 import { writeFileSync } from 'node:fs';
-import { accountProfileAdapters, mirrorAgyPermissions, profileDirectory, wslExecutable, wslProfileHome, wslWindowsPath, wslHelperDirectory, wslBrowserHelper } from './profiles.js';
+import { accountProfileAdapters, mirrorAgyPermissions, profileDirectory, nextFreeProfile, wslExecutable, wslProfileHome, wslWindowsPath, wslHelperDirectory, wslBrowserHelper } from './profiles.js';
 import path from 'node:path';
 import { homedir } from 'node:os';
 
@@ -46,11 +46,9 @@ export function nextAccountRoute(config, baseRouteId, wsl = 'native') {
   const base = config.routes.find(route => route.id === baseRouteId);
   if (!base) throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı.');
   if (base.api || !accountAdapters.has(base.adapter)) throw new PoolError('ACCOUNT_UNSUPPORTED', 'Bu CLI bağlantısına ek hesap eklenemez.');
-  const used = new Set(config.routes.filter(route => route.adapter === base.adapter).map(route => route.profile).filter(Boolean));
-  let number = 2;
-  while (used.has(`acc${number}`) || config.routes.some(route => route.id === `${base.adapter}-acc${number}`)) number++;
+  const profile = nextFreeProfile(config.routes, base.adapter, 2);
   const route = structuredClone(base);
-  Object.assign(route, { id: `${base.adapter}-acc${number}`, profile: `acc${number}`, enabled: false });
+  Object.assign(route, { id: `${base.adapter}-${profile}`, profile, enabled: false });
   if (base.adapter === 'agy') {
     if (wsl && typeof wsl === 'object') {
       Object.assign(route, { runtime: 'wsl', executable: wsl.executable, wsl: { distro: wsl.distro, home: wsl.home } });
@@ -66,6 +64,18 @@ export function nextAccountRoute(config, baseRouteId, wsl = 'native') {
     delete route.wsl;
   }
   return { config: { ...config, routes: [...config.routes, route] }, route };
+}
+
+export function isolatedLoginRoute(config, routeId, extraUsed = []) {
+  const base = config.routes.find(route => route.id === routeId);
+  if (!base) throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı.');
+  if (base.api || !accountAdapters.has(base.adapter)) throw new PoolError('ACCOUNT_UNSUPPORTED', 'Bu CLI bağlantısı için izole hesap profili kullanılamaz.');
+  const profile = nextFreeProfile(config.routes, base.adapter, 1, extraUsed);
+  const route = structuredClone(base);
+  Object.assign(route, { profile });
+  delete route.runtime;
+  delete route.wsl;
+  return route;
 }
 
 export function prepareNativeAgyProfile(route, directory) {
