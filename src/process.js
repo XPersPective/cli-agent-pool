@@ -155,7 +155,21 @@ export function spawnDetachedHidden(argv, { cwd, env = process.env, python = pro
   if (process.platform === 'win32') {
     const pyw = resolveWindowsPython(python, { preferWindowless: true });
     if (/pythonw\.exe$/i.test(pyw)) {
-      const launcher = 'import json, subprocess, sys\ncmd = json.loads(sys.argv[1])\ncwd = sys.argv[2]\nflags = 0x08000000 | 0x00000200\nsi = subprocess.STARTUPINFO()\nsi.dwFlags |= subprocess.STARTF_USESHOWWINDOW\nsi.wShowWindow = subprocess.SW_HIDE\nsubprocess.Popen(cmd, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags, startupinfo=si, close_fds=True)\n';
+      const launcher = [
+        'import json, subprocess, sys',
+        'cmd = json.loads(sys.argv[1])',
+        'cwd = sys.argv[2]',
+        'base = 0x08000000 | 0x00000200',
+        'si = subprocess.STARTUPINFO()',
+        'si.dwFlags |= subprocess.STARTF_USESHOWWINDOW',
+        'si.wShowWindow = subprocess.SW_HIDE',
+        'for flags in (base | 0x01000000, base):',
+        '  try:',
+        '    subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags, startupinfo=si, close_fds=True)',
+        '    break',
+        '  except OSError:',
+        '    if flags == base: raise',
+      ].join('\n');
       const child = spawn(pyw, ['-c', launcher, JSON.stringify(argv), cwd || process.cwd()], {
         cwd,
         env,
