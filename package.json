@@ -1,12 +1,13 @@
 {
   "name": "cli-agent-pool",
-  "version": "2.19.0",
+  "version": "2.20.0",
   "private": false,
   "type": "module",
   "files": [
     "bin",
     "src",
     "web",
+    "remote",
     "skills",
     "scripts/setup.js",
     "README.md",
@@ -22,6 +23,7 @@
   "scripts": {
     "start": "node bin/pool.js serve",
     "open": "node bin/pool.js open",
+    "remote": "node bin/pool.js remote",
     "setup": "node scripts/setup.js",
     "test": "node --test --test-timeout=15000 --test-concurrency=1",
     "check": "node scripts/check.js",

@@ -103,6 +103,19 @@
 - [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.18.0`.
 - [x] **Doğrulama kanıtı (2.18.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate` ve `npm test` (206/206) çalıştırılarak doğrulandı.
 
+## 2.20.0 — Mobil ve Masaüstü Uzaktan Ajan Sohbet ve Kontrol Arayüzü (`remote/`)
+- [x] **Bağımsız `remote/` uzaktan kontrol ve mobil PWA uygulaması (`remote/server.js`, `remote/store.js`, `remote/qr.js`, `remote/public/*`)**:
+  - `cli-agent-pool` yerel loopback (`127.0.0.1:43127`) mimarisi bozulmadan, aynı repo içinde `remote/` alt klasöründe ayrı bir istemci/köprü sunucusu eklendi; böylece `cli-agent-pool` güncellendikçe mobil arayüz de otomatik güncel kalır.
+  - **Güvenli uzaktan erişim**: Varsayılan yalnızca `127.0.0.1:43128` dinler; `cli-agent-pool remote --host tailscale` ile yalnızca `127.0.0.1` + otomatik algılanan Tailscale CGNAT IP (`100.64.0.0/10`) dinlenir. Sıfır bağımlılıklı saf JS QR üreticisi (`remote/qr.js`), 5 dakikalık tek kullanımlık eşleştirme bağlantısı (`/?pair=<code>`), HMAC imzalı `HttpOnly; SameSite=Strict` cihaz çerezi, cihaz listesi ve tek tıkla oturum iptali (`POST /r/devices/revoke`) eklendi.
+  - **Çoklu sohbet ve akıllı kompakt bağlam (`remote/store.js`)**: Sohbetler, favori/son klasörler ve eşleşmiş cihazlar yerel uygulama veri dizinindeki `remote-state.json` (0600) dosyasında saklanır. `buildCompactPrompt` ile model değiştirirken tüm geçmiş yerine son 3 tamamlanan turun kısa özeti (`<= 3200` karakter) veya istenirse sıfır geçmiş gönderilir.
+  - **Mobil + masaüstü sohbet ve kontrol özellikleri (`remote/public/index.html`, `style.css`, `app.js`, `manifest.webmanifest`, `icon.svg`)**:
+    - Varsayılan **Koyu tema**, **Açık** ve **Sistem** seçenekleriyle (`<meta name="color-scheme">` + `light-dark()` + FOUC önleyici başlangıç betiği).
+    - Tek dokunuşlu **Havuz → Model → Efor** seçicisi (canlı `%` kotalarla), **Sohbet / Analiz / Kod Yaz** mod geçişi, güvenli web klasör tarayıcısı (`GET /r/dirs`) + favori/son klasör çipleri, Türkçe sesle yazdırma (Web Speech API `tr-TR`), otomatik büyüyen `<textarea>` (`field-sizing: content`), IME-güvenli `Enter` gönderimi ve canlı SSE görev akışı (`GET /r/stream`) + tek tıkla iptal.
+    - **Çağrılar**, **Havuzlar** ve **Ayarlar** sekmeleri; arayüzden `cli-agent-pool` arka plan servisini **Başlat / Yeniden Başlat / Güvenli Durdur** kontrolleri ve kopyalanabilir Tailscale ACL şablonu.
+- [x] **CLI ve paketleme entegrasyonu (`bin/pool.js`, `package.json`, `scripts/check.js`)**: `cli-agent-pool remote [--host 127.0.0.1|tailscale] [--port 43128] [--allow-host ...] [--open]` komutu eklendi; `package.json` `files` ve `scripts/check.js` `remote/` klasörünü kapsayacak şekilde güncellendi.
+- [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.20.0`.
+- [x] **Doğrulama kanıtı (2.20.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate`, `npm test` (`218/218`, yeni `test/remote.test.js` dahil) ve canlı `cli-agent-pool` servisi üzerinden `/r/state` uçtan uca entegrasyon testi doğrulandı.
+
 ## 2.19.0 — Onay/Ekleme Kilidi Düzeltmesi, Windows Pythonw İzolasyonu, 300 Model Sınırı, Neon/Ağ Hata Düzeltmeleri ve Otomatik Güncelleme Bildirimi
 - [x] **Model ekleme/çıkarma ve toplu işlem kilidi giderildi (`web/app.js`)**:
   - `button()` sarmalayıcısının `action()` üzerinden tüm sayfa düğmelerini (`#confirm-dialog` ve `#add-pool-targets` dahil) devre dışı bırakması nedeniyle onay penceresinde ekleme/çıkarma yapılamaması hatası giderildi.

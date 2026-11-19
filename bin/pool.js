@@ -15,6 +15,7 @@ import { stdioBridge } from '../src/stdio.js';
 import { rpcRequest } from '../src/rpc.js';
 import { version } from '../src/version.js';
 import { ensureInitialized, ensureDaemon, managementRequest, openDashboardWindow, withMcpClient, apiRequest, callPoolTool, runTaskFromCli, installDesktopAndSkills, scheduleServiceRestart } from '../src/daemon.js';
+import { createRemoteServer } from '../remote/server.js';
 import { waitForTask } from '../src/task-protocol.js';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -70,6 +71,7 @@ export async function main(args = process.argv.slice(2)) {
       '',
       '  install                 Set up local pool, scan CLIs, create Desktop shortcut & deploy skill',
       '  open                    Auto-start background service if needed and open desktop app window',
+      '  remote                  Start mobile/desktop Remote Agent Chat PWA (--host 127.0.0.1|tailscale --port 43128 --open)',
       '  ensure                  Ensure background pool service is running',
       '  stop                    Safely stop the background pool service (--force to stop during active tasks)',
       '  restart                 Stop the background service and start a fresh one (used after an update)',
@@ -118,6 +120,37 @@ export async function main(args = process.argv.slice(2)) {
     const info = await ensureDaemon(directory, config);
     const windowInfo = await openDashboardWindow(info.dashboard);
     print({ ...info, ...windowInfo });
+    return;
+  }
+  if (command === 'remote') {
+    ownerOnly();
+    const { values } = multiFlags(rest);
+    const host = String(values.host?.[values.host.length - 1] || '127.0.0.1');
+    const portArg = values.port?.[values.port.length - 1];
+    const port = portArg !== undefined ? Number(portArg) : 43128;
+    if (!Number.isInteger(port) || port < 0 || port > 65535) {
+      throw new PoolError('INVALID_REQUEST', '--port 0 ile 65535 arasında tam sayı olmalıdır.');
+    }
+    const allowHosts = (values['allow-host'] || []).filter(v => typeof v === 'string');
+    const remote = createRemoteServer({ directory, port, host, allowHosts });
+    const info = await remote.listen();
+    print({
+      status: 'listening',
+      ...info,
+      pairingHint: 'Tek kullanımlık eşleştirme bağlantısını açın veya arayüzdeki QR kodu telefonunuzdan okutun.',
+    });
+    if (values.open) {
+      try { await openDashboardWindow(info.localUrl); } catch { /* headless fallback */ }
+    }
+    let closing = false;
+    const shutdown = async () => {
+      if (closing) return;
+      closing = true;
+      await remote.close();
+      process.exit(0);
+    };
+    process.once('SIGINT', () => { void shutdown(); });
+    process.once('SIGTERM', () => { void shutdown(); });
     return;
   }
   if (command === 'ensure' || command === 'start') {
