@@ -11,7 +11,7 @@ import { accountProfileAdapters, clearProfileAuth, clearProfileDirectory, wslPre
 import { codexControl } from './codex-control.js';
 import { saveSecret, hasSecret } from './secrets-store.js';
 import { childEnvironment, runProcess } from './process.js';
-import { installDesktopAndSkills, scheduleServiceRestart } from './daemon.js';
+import { installDesktopAndSkills, scheduleServiceRestart, checkUpdateStatus, readInstalledVersion, updateNeedsRestart } from './daemon.js';
 
 const execPicker = async (file, args, options) => {
   const result = await runProcess({ argv: [file, ...args], cwd: process.cwd(), extraEnv: options.env, timeoutMs: options.timeout, maxBytes: options.maxBuffer, windowsHide: options.windowsHide }).done;
@@ -164,6 +164,7 @@ export function browserUI(pool, management, { openLogin = openCliLogin } = {}) {
     return routeCatalog(route, cwd, pool.config.python, management.directory);
   };
   let launchToken = randomBytes(32).toString('hex');
+  let cachedUpdateStatus = null;
   const cookieSecret = createHmac('sha256', Buffer.from(management.token, 'hex')).update('cli-agent-pool-browser-cookie-v1').digest();
   const assets = new Map([
     ['/categories.js', ['text/javascript; charset=utf-8', readFileSync(new URL('../web/categories.js', import.meta.url))]],
@@ -217,8 +218,29 @@ export function browserUI(pool, management, { openLogin = openCliLogin } = {}) {
           const email = cached?.email || routeAccountEmail(route, management.directory);
           return [route.id, cached ? (email && !cached.email ? { ...cached, email } : cached) : null];
         }).filter(([, q]) => q));
+        const installedVersion = readInstalledVersion() || version;
+        const restartRequired = updateNeedsRestart(version, installedVersion);
+        const updateStatus = cachedUpdateStatus
+          ? {
+            ...cachedUpdateStatus,
+            runningVersion: version,
+            installedVersion,
+            restartRequired,
+            updateAvailable: Boolean(restartRequired || cachedUpdateStatus.remoteNewer),
+            targetVersion: cachedUpdateStatus.remoteNewer ? cachedUpdateStatus.latestVersion : installedVersion,
+          }
+          : {
+            runningVersion: version,
+            installedVersion,
+            latestVersion: installedVersion,
+            restartRequired,
+            remoteNewer: false,
+            updateAvailable: restartRequired,
+            targetVersion: installedVersion,
+          };
         return {
           version,
+          updateStatus,
           revision: configView(management.directory).revision,
           connections: pool.config.routes.map(route => {
             const { id, adapter, enabled, billing, autoSelect, api, profile, runtime } = route;
@@ -408,7 +430,7 @@ export function browserUI(pool, management, { openLogin = openCliLogin } = {}) {
       if (operation === 'save') return managementOperation(pool, management, { ...payload, operation: 'save' });
       if (operation === 'scan_import') {
         const view = configView(management.directory);
-        const imported = importDiscoveredRoutes(view.config);
+        const imported = importDiscoveredRoutes(view.config, management.directory);
         const targetRoutes = imported.config.routes.filter(route =>
           !route.api && (payload.routeId ? route.id === payload.routeId : liveCatalogAdapters.has(route.adapter)),
         );
@@ -423,12 +445,20 @@ export function browserUI(pool, management, { openLogin = openCliLogin } = {}) {
         }));
         for (const { route, catalog, error } of fetched) {
           if (error) { catalogErrors.push({ routeId: route.id, message: error }); continue; }
-          migrateFilterAliases(imported.config.modelFilters, route.id, catalog);
-          imported.addedModels += mergeCatalogModels(route, catalog, []);
+          try {
+            migrateFilterAliases(imported.config.modelFilters, route.id, catalog);
+            imported.addedModels += mergeCatalogModels(route, catalog, []);
+          } catch (mergeError) {
+            catalogErrors.push({ routeId: route.id, message: mergeError instanceof PoolError ? mergeError.message : 'Model kataloğu birleştirilemedi.' });
+          }
         }
         pool.config = saveConfig(management.directory, imported.config, view.revision);
         pool.schedule();
         return { ...annotateView(configView(management.directory), management.directory), addedRoutes: imported.addedRoutes, addedModels: imported.addedModels, refreshedModels: imported.refreshedModels, discoveredCount: imported.discoveredCount, catalogErrors };
+      }
+      if (operation === 'check_update') {
+        cachedUpdateStatus = await checkUpdateStatus({ runningVersion: version, force: Boolean(payload.force) });
+        return cachedUpdateStatus;
       }
       if (operation === 'secret') {
         saveSecret(management.directory, payload.secretRef, payload.secret);

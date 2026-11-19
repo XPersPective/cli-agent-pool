@@ -169,7 +169,7 @@ function windowsCredential(target) {
   });
 }
 
-async function antigravityToken(home, { tokenFile, credentialStore = true, fetchImpl = fetch } = {}) {
+export async function antigravityToken(home, { tokenFile, credentialStore = true, fetchImpl = fetch } = {}) {
   let stored = readJson(tokenFile || path.join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'));
   if (!stored.token && credentialStore && process.platform === 'win32') {
     try { stored = JSON.parse(await windowsCredential('gemini:antigravity') || '{}'); } catch { stored = {}; }
@@ -206,7 +206,7 @@ export function antigravityModelWindows(body) {
 export function antigravityGroupWindows(body) {
   return (body?.groups || []).flatMap(group => {
     const label = `${group.displayName || group.name || ''} ${group.description || ''}`.toLowerCase();
-    const explicit = [...label.matchAll(/gemini\s+(flash|pro)|\b(argon|hydrogen|claude|opus|sonnet|haiku|fable|gpt)\b/g)].map(match => match[1] ? `gemini-${match[1]}` : match[2]);
+    const explicit = [...label.matchAll(/gemini\s+(flash|pro)|\b(argon|hydrogen|neon|claude|opus|sonnet|haiku|fable|gpt)\b/g)].map(match => match[1] ? `gemini-${match[1]}` : match[2]);
     const models = [...new Set(explicit.length ? explicit : label.match(/gemini|claude|gpt/g) || [])];
     return (group.buckets || []).flatMap(bucket => {
       const remaining = typeof bucket?.remainingFraction === 'number' ? percent(bucket.remainingFraction * 100) : null;
@@ -244,7 +244,7 @@ export async function antigravityQuota(home = homedir(), options = {}) {
   let sawNetworkError = false;
   for (const base of ANTIGRAVITY_ENDPOINTS) {
     const load = await request(`${base}/v1internal:loadCodeAssist`, { method: 'POST', headers: headers('antigravity/windows/amd64'), body: { metadata: { ideType: 'ANTIGRAVITY' } } });
-    if (load.status === 401) return unknown('antigravity-cloudcode', 'Antigravity oturumu yenilenemedi; agy ile tekrar giriş gerekebilir.', { ...(email ? { email } : {}) });
+    if (load.status === 401) return authRequired('antigravity-cloudcode', 'Antigravity oturumu geçersiz veya süresi dolmuş; agy ile tekrar giriş yapın.', { ...(email ? { email } : {}) });
     if (load.status === 0 || load.status >= 500) sawNetworkError = true;
     const project = typeof load.data?.cloudaicompanionProject === 'string' ? load.data.cloudaicompanionProject : load.data?.cloudaicompanionProject?.id;
     if (load.status !== 200 || !project) continue;
@@ -271,7 +271,7 @@ export async function antigravityQuota(home = homedir(), options = {}) {
 // separate Gemini 4 Argon bucket; the Cloud Code API below is the fallback.
 const AGY_GROUP_MODELS = [
   [/argon/i, ['gemini-4-argon']],
-  [/gemini/i, ['gemini-flash', 'gemini-pro', 'hydrogen']],
+  [/gemini/i, ['gemini-flash', 'gemini-pro', 'hydrogen', 'neon']],
   [/claude|gpt/i, ['claude', 'gpt', 'opus', 'sonnet', 'haiku', 'fable']],
 ];
 export function agyUsageWindows(report) {

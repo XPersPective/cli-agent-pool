@@ -93,7 +93,7 @@ export const configSchema = z.object({
       defaultEffort: label.optional(),
       memberships: z.array(z.object({ group: label.refine(isCategoryId), effort: label.optional(), order: z.number().int().min(0).max(10000).optional() }).strict()).max(64).optional(),
       kinds: z.array(z.enum(['text', 'read', 'write'])).min(1),
-    }).strict()).max(100),
+    }).strict()).max(300),
   }).strict()).max(50),
 }).strict().superRefine((config, ctx) => {
   if (config.categories && new Set(config.categories.map(c => c.id)).size !== config.categories.length)

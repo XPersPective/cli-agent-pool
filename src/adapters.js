@@ -9,8 +9,10 @@ import { fileURLToPath } from 'node:url';
 import { capture, runProcess } from './process.js';
 import { PoolError, redact, activeBillings, dataDirectory } from './config.js';
 import { loadSecret, hasSecret } from './secrets-store.js';
-import { claudeQuota, zaiQuota, zaiKeys, kimiLoggedIn, antigravityQuota, agyUsageWindows, kimiQuota, minimaxQuota, minimaxWindows, openrouterQuota, opencodeGoWindows, parseOpenCodeStats, opencodeStatsNote, apiRouteQuota, codexAccountEmail, claudeAccountEmail, antigravityAccountEmail } from './quotas.js';
+import { claudeQuota, zaiQuota, zaiKeys, kimiLoggedIn, antigravityToken, antigravityQuota, agyUsageWindows, kimiQuota, minimaxQuota, minimaxWindows, openrouterQuota, opencodeGoWindows, parseOpenCodeStats, opencodeStatsNote, apiRouteQuota, codexAccountEmail, claudeAccountEmail, antigravityAccountEmail } from './quotas.js';
 import { profileDirectory, profileEnvironment, profileHome, claudeConfigDirectory, wslPrefix, wslProfileHome, wslWindowsPath, wslUriToWindows } from './profiles.js';
+
+const MAX_ROUTE_MODELS = 300;
 
 export function routeAccountEmail(route, directory = dataDirectory(), home = homedir()) {
   if (!route || route.api) return null;
@@ -386,7 +388,7 @@ export function localModelsFor(adapter, home = homedir()) {
   } else if (adapter === 'hermes' || adapter === 'aider' || adapter === 'kilocode') {
     add('default', `${adapter} Varsayılan`, adapter, [], ['text', 'read']);
   }
-  return models.slice(0, 100);
+  return models.slice(0, MAX_ROUTE_MODELS);
 }
 
 // Yeni çekilen model listesini mevcut rotanın modellerine uygular: yeni model ekler, mevcut
@@ -400,7 +402,7 @@ export function applyDiscoveredModels(route, discoveredModels = [], adapter = ro
     if (adapter === 'claude' && ['opus', 'sonnet', 'haiku'].includes(model.id) && route.models.some(existing => existing.id.startsWith(`claude-${model.id}-`))) continue;
     const existing = route.models.find(item => item.id === model.id);
     if (!existing) {
-      if (route.models.length < 100) {
+      if (route.models.length < MAX_ROUTE_MODELS) {
         const { free, ...cleanModel } = model;
         route.models.push({ ...cleanModel, ...(free === true ? { billing: 'free' } : {}) });
         added++;
@@ -425,14 +427,16 @@ export function applyDiscoveredModels(route, discoveredModels = [], adapter = ro
 // Tarama yalnızca kullanıcının eklediği bağlantıları tazeler: yeni bağlantı otomatik kurulmaz,
 // böylece silinen bir abonelik (ör. Hermes, Kimi) taramadan sonra geri gelmez. Bağlantı ekleme
 // yalnızca paneldeki "Kurulu CLI bağlantısı ekle" akışı ile olur.
-export function importDiscoveredRoutes(config) {
+export function importDiscoveredRoutes(config, directory = dataDirectory()) {
   const cloned = structuredClone(config);
   const discovered = discover().filter(cli => cli.status === 'installed' && cli.executable);
   let addedModels = 0;
   let refreshedModels = 0;
   for (const cli of discovered) {
     for (const route of cloned.routes.filter(r => r.adapter === cli.adapter && !r.api)) {
-      const result = applyDiscoveredModels(route, cli.discoveredModels || [], cli.adapter);
+      const profileModels = route.profile ? localModelsFor(cli.adapter, profileHome(route, directory)) : [];
+      const models = profileModels.length ? profileModels : (cli.discoveredModels || []);
+      const result = applyDiscoveredModels(route, models, cli.adapter);
       addedModels += result.added;
       refreshedModels += result.refreshed;
     }
@@ -703,6 +707,17 @@ export async function checkAuth(route, cwd, python, directory = dataDirectory(),
     if (status.status === 'auth_required') throw new PoolError('AUTH_REQUIRED', status.note);
   } else if (route.adapter === 'opencode' || route.adapter === 'mimo' || route.adapter === 'lmstudio' || route.adapter === 'ollama') {
     if (route.billing !== 'free' && !route.trustedSettings) throw new PoolError('SETTINGS_NOT_TRUSTED', 'Yerel CLI ayarları incelenerek trustedSettings etkinleştirilmeli.');
+  } else if (route.adapter === 'agy') {
+    if (!route.trustedSettings) throw new PoolError('SETTINGS_NOT_TRUSTED', 'Bu bağlantının abonelik/plan ve CLI ayarları yerel olarak doğrulanmalı.');
+    const isWsl = route.runtime === 'wsl';
+    const agyHome = profileHome(route, directory);
+    const tokenFile = isWsl
+      ? wslWindowsPath(route, `${wslProfileHome(route)}/.gemini/antigravity-cli/antigravity-oauth-token`)
+      : (route.profile ? path.join(agyHome, '.gemini', 'antigravity-cli', 'antigravity-oauth-token') : undefined);
+    const tokenRes = await antigravityToken(agyHome, { tokenFile, credentialStore: !route.profile && !isWsl });
+    if (tokenRes.reason === 'auth_required') {
+      throw new PoolError('AUTH_REQUIRED', `Antigravity (${route.id}) oturumu geçersiz veya süresi dolmuş; Ayarlar'dan yeniden giriş yapın.`);
+    }
   } else {
     if (!route.trustedSettings) throw new PoolError('SETTINGS_NOT_TRUSTED', 'Bu bağlantının abonelik/plan ve CLI ayarları yerel olarak doğrulanmalı.');
     if (route.adapter === 'zcode') assertZcodePlanSelection(route, zcodeSelection(profileHome(route, directory)));
@@ -764,11 +779,11 @@ export function classifyFailure(message) {
   if (/requires? usage credits|usage credits (?:are )?(?:required|exhausted)|no (?:remaining )?usage credits/i.test(message)) return 'CREDITS_REQUIRED';
   if (/current subscription does not have access|active subscription (?:is )?required|no resource package|\b1113\b/i.test(message)) return 'SUBSCRIPTION_REQUIRED';
   if (/only (?:available|usable|supported) (?:within|in official)|only use official|unsupported client|client.*not allowed/i.test(message)) return 'PROVIDER_RESTRICTION';
-  if (/unauthorized|unauthenticated|not logged|login required|token expired|invalid_grant|refresh_token_expired|invalid.{0,20}(?:api.?key|token)|(?:http|status|code|error)\s*[:=]?\s*401\b/i.test(message)) return 'AUTH_REQUIRED';
+  if (/unauthorized|unauthenticated|not logged|login required|failed to authenticate|oauth session expired|session expired|token expired|invalid_grant|refresh_token_expired|invalid.{0,20}(?:api.?key|token)|(?:http|status|code|error)\s*[:=]?\s*401\b/i.test(message)) return 'AUTH_REQUIRED';
   if (/rate.?limit|quota|resource_exhausted|insufficient_quota|usage_limit_reached|credit balance is too low|insufficient.{0,20}(?:credit|balance)|(?:http|status|code|error)\s*[:=]?\s*429\b/i.test(message)) return 'QUOTA_EXHAUSTED';
-  if (/model.{0,30}(?:not found|unavailable|not exist|not supported)|unknown model|select a model/i.test(message)) return 'MODEL_UNAVAILABLE';
+  if (/model.{0,30}(?:not found|unavailable|not exist|not supported)|unknown model|unrecognized[_ ]model|select a model/i.test(message)) return 'MODEL_UNAVAILABLE';
   if (/workspace.{0,20}trust|permission denied|permission check failed/i.test(message)) return 'PERMISSION_REQUIRED';
-  if (/\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT)\b|fetch failed|socket hang up|tls handshake timeout|dial tcp|network (?:is )?(?:unreachable|unavailable)|Post "https?:\/\/[^"]+": EOF/i.test(message)) return 'NETWORK_UNAVAILABLE';
+  if (/\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT)\b|fetch failed|socket hang up|tls handshake timeout|(?:dial|read|write) tcp\b|wsarecv|wsasend|i\/o timeout|connection reset by peer|broken pipe|network issue connecting to the server|network (?:is )?(?:unreachable|unavailable)|Post "https?:\/\/[^"]+": EOF/i.test(message)) return 'NETWORK_UNAVAILABLE';
   if (/overloaded_error|service_unavailable|temporarily unavailable|server is overloaded|(?:http|status|code)\s*[:=]?\s*(?:502|503|504|529)\b/i.test(message)) return 'PROVIDER_OVERLOADED';
   return 'CLI_FAILED';
 }
@@ -778,7 +793,7 @@ export function parseQoderModels(output) {
   if (lines.shift() !== 'MODEL' || !lines.length || lines.some(line => !/^[a-zA-Z0-9][a-zA-Z0-9_.:+/-]{0,99}$/.test(line))) {
     throw new PoolError(classifyFailure(output) === 'AUTH_REQUIRED' ? 'AUTH_REQUIRED' : 'DISCOVERY_FAILED', 'Qoder model kataloğu alınamadı; qodercli login ve --list-models çıktısını kontrol edin.');
   }
-  return [...new Set(lines)].slice(0, 100).map(id => ({ id, name: id, efforts: [], free: false }));
+  return [...new Set(lines)].slice(0, MAX_ROUTE_MODELS).map(id => ({ id, name: id, efforts: [], free: false }));
 }
 
 const strictJsonlAdapters = new Set(['codex', 'claude', 'qoder', 'qwen', 'opencode', 'mimo', 'agy', 'mcode']);
@@ -959,7 +974,7 @@ export async function opencodeCatalog(route, cwd, python, directory = dataDirect
   // route limit; otherwise free OpenRouter models near the end stay mislabeled
   // as paid_api and never become eligible for the free pool.
   const prioritized = [...models.filter(model => model.free), ...models.filter(model => !model.free)];
-  return { connection: route.id, models: prioritized.slice(0, 100), nextCursor: null };
+  return { connection: route.id, models: prioritized.slice(0, MAX_ROUTE_MODELS), nextCursor: null };
 }
 
 export async function claudeCatalog(route, cwd, python, directory = dataDirectory()) {
@@ -985,7 +1000,7 @@ export async function claudeCatalog(route, cwd, python, directory = dataDirector
     if (existing) { if (row.value) existing.aliases.push(row.value); continue; }
     models.push({ id, name: id, aliases: [row.value].filter(Boolean), efforts: (row.supportedEffortLevels || []).filter(value => typeof value === 'string').slice(0, 10), free: false });
   }
-  return { connection: route.id, models: models.slice(0, 100), nextCursor: null };
+  return { connection: route.id, models: models.slice(0, MAX_ROUTE_MODELS), nextCursor: null };
 }
 
 export function migrateFilterAliases(filters, routeId, catalog) {
@@ -1057,9 +1072,16 @@ function mergeCatalogModelsInto(route, catalog, filters) {
       existing.efforts = item.efforts;
       if (item.variants) existing.variants = item.variants;
       if (!item.efforts.includes(existing.defaultEffort)) delete existing.defaultEffort;
-    } else if (route.models.length < 100) {
-      route.models.push({ id: item.id, alias: (item.name || item.id).slice(0, 100), group: 'unassigned', memberships: [], enabled: true, efforts: item.efforts, ...(route.adapter === 'opencode' && item.free === true ? { billing: 'free' } : {}), ...(item.variants?{variants:item.variants}:{}), kinds: ['mmx', 'ollama', 'lmstudio', 'omniroute'].includes(route.adapter) ? ['text'] : ['text', 'read', 'write'] });
-      added++;
+    } else {
+      if (route.models.length >= MAX_ROUTE_MODELS && (route.adapter === 'opencode' || route.adapter === 'mimo')) {
+        const liveIds = new Set(catalog.models.map(m => m.id));
+        const pruneIdx = route.models.findIndex(m => !liveIds.has(m.id) && !(m.memberships?.length) && !['high', 'medium', 'low'].includes(m.group));
+        if (pruneIdx >= 0) route.models.splice(pruneIdx, 1);
+      }
+      if (route.models.length < MAX_ROUTE_MODELS) {
+        route.models.push({ id: item.id, alias: (item.name || item.id).slice(0, 100), group: 'unassigned', memberships: [], enabled: true, efforts: item.efforts, ...(route.adapter === 'opencode' && item.free === true ? { billing: 'free' } : {}), ...(item.variants?{variants:item.variants}:{}), kinds: ['mmx', 'ollama', 'lmstudio', 'omniroute'].includes(route.adapter) ? ['text'] : ['text', 'read', 'write'] });
+        added++;
+      }
     }
   }
   if (route.adapter === 'zcode') {
@@ -1094,7 +1116,7 @@ export async function routeCatalog(route, cwd, python, directory = dataDirectory
   }
   if (route.adapter === 'agy' && !route.api) {
     const command = routeCommand(route, directory);
-    const result = await capture([...command.argv, 'models'], cwd, python, command.env, route.runtime === 'wsl' ? 45_000 : 15_000);
+    const result = await capture([...command.argv, 'models'], cwd, python, command.env, route.runtime === 'wsl' ? 45_000 : 35_000);
     if (result.code !== 0 || result.stopReason) throw new PoolError(/sign in/i.test(result.output + result.stderr) ? 'AUTH_REQUIRED' : 'DISCOVERY_FAILED', `Antigravity model listesi alınamadı. ${route.runtime === 'wsl' ? `${route.id} bağlantısında Giriş yap ile bu hesaba giriş yapın.` : 'CLI giriş durumunu kontrol edin.'}`);
     const models = result.output.split(/\r?\n/).flatMap(line => {
       const match = line.match(/^([a-zA-Z0-9][a-zA-Z0-9._:/-]{0,99})\t+(.+)$/);
@@ -1110,7 +1132,7 @@ export async function routeCatalog(route, cwd, python, directory = dataDirectory
       if(effort){entry.efforts.push(effort);entry.variants[effort]=model.id;entry.aliases.push(model.id);}
       grouped.set(id,entry);
     }
-    return { connection: route.id, models: [...grouped.values()].slice(0,100), nextCursor: null };
+    return { connection: route.id, models: [...grouped.values()].slice(0, MAX_ROUTE_MODELS), nextCursor: null };
   }
   if (route.adapter === 'claude' && !route.api) return claudeCatalog(route, cwd, python, directory);
   if (['lmstudio', 'ollama'].includes(route.adapter)) {
@@ -1124,7 +1146,7 @@ export async function routeCatalog(route, cwd, python, directory = dataDirectory
       if (!Array.isArray(entries)) throw new PoolError('DISCOVERY_FAILED', 'LM Studio model listesi tanınmadı.');
       entries = entries.map(model => ({ id: model.modelKey || model.key || model.id, name: model.modelKey || model.key || model.id }));
     } else entries = result.output.trim().split(/\r?\n/).slice(1).map(line => { const [id, digest] = line.trim().split(/\s+/); return { id, name: `${id} · ${digest}` }; });
-    return { connection: route.id, models: entries.filter(model => typeof model.id === 'string' && model.id && model.id.length <= 100).slice(0, 100).map(model => ({ ...model, efforts: [], free: true })), nextCursor: null };
+    return { connection: route.id, models: entries.filter(model => typeof model.id === 'string' && model.id && model.id.length <= 100).slice(0, MAX_ROUTE_MODELS).map(model => ({ ...model, efforts: [], free: true })), nextCursor: null };
   }
   if (route.adapter === 'opencode' || route.adapter === 'mimo') {
     try {
@@ -1136,7 +1158,7 @@ export async function routeCatalog(route, cwd, python, directory = dataDirectory
           merged.push({ id: item.id, name: item.alias, free: Boolean(item.free), efforts: item.efforts || [], defaultEffort: null });
         }
       }
-      return { connection: route.id, models: merged.slice(0, 100), nextCursor: null };
+      return { connection: route.id, models: merged.slice(0, MAX_ROUTE_MODELS), nextCursor: null };
     } catch {
       const fallback = localModelsFor(route.adapter, profileHome(route, directory));
       return { connection: route.id, models: fallback.map(m => ({ id: m.id, name: m.alias, free: Boolean(m.free), efforts: m.efforts || [], defaultEffort: null })), nextCursor: null };

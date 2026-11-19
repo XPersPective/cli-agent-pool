@@ -12,7 +12,7 @@ test('agy /usage report maps Gemini, Claude/GPT and Argon buckets with reset tim
   ] } } };
   const windows = agyUsageWindows(report);
   assert.equal(windows.length, 4);
-  assert.deepEqual(windows[0], { name: 'Gemini Models:weekly', remainingPercent: 71.3051, resetsAt: '2026-11-11T13:58:45Z', windowMinutes: 10080, models: ['gemini-flash', 'gemini-pro', 'hydrogen'] });
+  assert.deepEqual(windows[0], { name: 'Gemini Models:weekly', remainingPercent: 71.3051, resetsAt: '2026-11-11T13:58:45Z', windowMinutes: 10080, models: ['gemini-flash', 'gemini-pro', 'hydrogen', 'neon'] });
   assert.equal(windows[1].windowMinutes, 300);
   assert.deepEqual(windows[3].models, ['gemini-4-argon']);
   assert.equal(windows[3].remainingPercent, 0);

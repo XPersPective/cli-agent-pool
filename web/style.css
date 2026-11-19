@@ -320,6 +320,22 @@
   .quiet-icon { width: var(--control-h); padding: 0; border-color: transparent; background: transparent; box-shadow: none; font-size: 17px; color: var(--muted); }
   .quiet-icon:hover:not(:disabled) { color: var(--text); background: var(--hover); border-color: transparent; }
   .topbar-btn { min-height: var(--control-h-sm); padding: 0 11px; font-size: 12px; white-space: nowrap; }
+  .topbar-btn.has-update {
+    background: var(--accent-soft);
+    border-color: color-mix(in oklab, var(--accent) 45%, transparent);
+    color: var(--accent);
+    font-weight: 650;
+  }
+  .topbar-btn.has-update::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 28%, transparent);
+  }
+  .topbar-btn.has-update:hover:not(:disabled) { background: var(--accent); border-color: transparent; color: var(--accent-text); }
+  .topbar-btn.has-update:hover:not(:disabled)::before { background: var(--accent-text); }
   #save-pool:not(:disabled) { color: var(--accent-text); background: var(--accent); border-color: transparent; box-shadow: 0 4px 14px -4px color-mix(in oklab, var(--accent) 70%, transparent); }
   #discard-settings:not([hidden]) { color: var(--warning); }
 

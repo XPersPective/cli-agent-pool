@@ -197,10 +197,86 @@ export async function runTaskFromCli(directory, options) {
   });
 }
 
+export function compareSemver(a, b) {
+  const parse = v => String(v || '').replace(/^v/i, '').split('.').map(n => Number.parseInt(n, 10) || 0);
+  const pa = parse(a), pb = parse(b);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+  }
+  return 0;
+}
+
 export function updateNeedsRestart(runningVersion, installedVersion) {
   if (typeof installedVersion !== 'string' || !installedVersion) return false;
   if (typeof runningVersion !== 'string' || !runningVersion) return true;
   return installedVersion !== runningVersion;
+}
+
+export function resolveRuntimeRoot(installedRoot = null) {
+  const appData = process.env.APPDATA || path.join(homedir(), 'AppData', 'Roaming');
+  const globalPoolBin = path.join(appData, 'npm', 'node_modules', 'cli-agent-pool', 'bin', 'pool.js');
+  return installedRoot ? path.resolve(installedRoot) : existsSync(globalPoolBin) ? path.resolve(path.dirname(globalPoolBin), '..') : repoRootPath;
+}
+
+export function readInstalledVersion(installedRoot = null) {
+  const activeRoot = resolveRuntimeRoot(installedRoot);
+  try {
+    return JSON.parse(readFileSync(path.join(activeRoot, 'package.json'), 'utf8')).version || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function liveServiceVersion(config, fetchImpl = fetch) {
+  try {
+    const res = await fetchImpl(`http://127.0.0.1:${config.port}/api/health`, { signal: AbortSignal.timeout(2000) });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return typeof data?.version === 'string' && data.version ? data.version : null;
+  } catch {
+    return null;
+  }
+}
+
+let remoteUpdateCache = { checkedAt: 0, latestVersion: null };
+
+export async function checkUpdateStatus({ runningVersion = version, installedRoot = null, fetchImpl = fetch, checkRemote = true, force = false } = {}) {
+  const installedVersion = readInstalledVersion(installedRoot) || runningVersion;
+  const restartRequired = updateNeedsRestart(runningVersion, installedVersion);
+  let latestVersion = remoteUpdateCache.latestVersion;
+  const now = Date.now();
+  if (checkRemote && (force || now - remoteUpdateCache.checkedAt > 10 * 60_000)) {
+    try {
+      const res = await fetchImpl('https://api.github.com/repos/XPersPective/cli-agent-pool/tags?per_page=10', {
+        headers: { Accept: 'application/vnd.github+json', 'User-Agent': `cli-agent-pool/${runningVersion}` },
+        signal: AbortSignal.timeout(4000),
+      });
+      if (res.ok) {
+        const tags = await res.json();
+        const versions = (Array.isArray(tags) ? tags : [])
+          .map(t => String(t?.name || '').replace(/^v/i, ''))
+          .filter(v => /^\d+\.\d+\.\d+$/.test(v))
+          .sort((a, b) => compareSemver(b, a));
+        latestVersion = versions[0] || null;
+        remoteUpdateCache = { checkedAt: now, latestVersion };
+      }
+    } catch {
+      remoteUpdateCache = { checkedAt: now, latestVersion: remoteUpdateCache.latestVersion };
+    }
+  }
+  const remoteNewer = Boolean(latestVersion && compareSemver(latestVersion, installedVersion || runningVersion) > 0);
+  const updateAvailable = restartRequired || remoteNewer;
+  const targetVersion = remoteNewer ? latestVersion : installedVersion;
+  return {
+    runningVersion,
+    installedVersion,
+    latestVersion: latestVersion || installedVersion,
+    restartRequired,
+    remoteNewer,
+    updateAvailable,
+    targetVersion,
+    checkedAt: new Date().toISOString(),
+  };
 }
 
 export function scheduleServiceRestart(directory, targetPoolBin = poolBinPath) {
@@ -219,23 +295,19 @@ export function scheduleServiceRestart(directory, targetPoolBin = poolBinPath) {
 export async function installDesktopAndSkills(directory, installedRoot = null) {
   const config = ensureInitialized(directory, true);
   const daemonInfo = await ensureDaemon(directory, config);
-  const appData = process.env.APPDATA || path.join(homedir(), 'AppData', 'Roaming');
-  const globalPoolBin = path.join(appData, 'npm', 'node_modules', 'cli-agent-pool', 'bin', 'pool.js');
-  const activeRoot = installedRoot ? path.resolve(installedRoot) : existsSync(globalPoolBin) ? path.resolve(path.dirname(globalPoolBin), '..') : repoRootPath;
+  const activeRoot = resolveRuntimeRoot(installedRoot);
   const activePoolBin = path.join(activeRoot, 'bin', 'pool.js');
-  let installedVersion = null;
-  try {
-    installedVersion = JSON.parse(readFileSync(path.join(activeRoot, 'package.json'), 'utf8')).version || null;
-  } catch { /* An unreadable manifest simply cannot request a restart. */ }
+  const installedVersion = readInstalledVersion(activeRoot);
+  const liveVersion = (await liveServiceVersion(config)) || version;
 
   const results = {
     dataDirectory: directory,
     runtimePath: activeRoot,
     endpoint: daemonInfo.endpoint,
     routesConfigured: config.routes.length,
-    runningVersion: version,
+    runningVersion: liveVersion,
     installedVersion,
-    restartRequired: updateNeedsRestart(version, installedVersion),
+    restartRequired: updateNeedsRestart(liveVersion, installedVersion),
     desktopShortcut: null,
     startMenuShortcut: null,
     skillsManager: null,

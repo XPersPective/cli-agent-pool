@@ -424,7 +424,9 @@ async function call(operation, payload = {}) {
 async function action(operation) {
   if (busy) return;
   busy = true;
-  document.querySelectorAll('input,select,textarea,button').forEach(node => { node.disabled = true; });
+  document.querySelectorAll('input,select,textarea,button').forEach(node => {
+    if (!node.closest('#confirm-dialog')) node.disabled = true;
+  });
   try { await operation(); }
   catch (error) { notice(error.message, true); }
   finally {
@@ -449,6 +451,26 @@ function button(text, operation) {
   node.disabled = busy;
   node.addEventListener('click', () => void action(operation));
   return node;
+}
+
+function plainButton(text, onClick) {
+  const node = element('button', text);
+  node.type = 'button';
+  node.addEventListener('click', event => {
+    if (busy) return;
+    void Promise.resolve(onClick(event)).catch(error => notice(error.message, true));
+  });
+  return node;
+}
+
+function confirmedButton(text, getConfirmOptions, operation) {
+  return plainButton(text, async () => {
+    const opts = typeof getConfirmOptions === 'function' ? getConfirmOptions() : getConfirmOptions;
+    if (!opts) return;
+    const confirmed = await askConfirm(opts);
+    if (!confirmed) return;
+    await action(() => operation(opts));
+  });
 }
 
 function formatQuotaSummary(conn, q) {
@@ -610,6 +632,44 @@ async function triggerUpdate() {
   await refresh();
 }
 
+let notifiedUpdateVersion = '';
+let updateIntervalId = null;
+
+function applyUpdateStatus(status) {
+  if (!status) return;
+  const btn = $('update-app');
+  const available = Boolean(status.updateAvailable);
+  const target = status.targetVersion || status.latestVersion || status.installedVersion || '';
+  if (btn) {
+    btn.classList.toggle('has-update', available);
+    btn.textContent = available && target ? `Güncelle (v${target})` : 'Güncelle';
+    btn.title = available
+      ? (status.restartRequired
+        ? `Yeni sürüm kurulu (v${status.installedVersion}); çalışan servis v${status.runningVersion}. Yeniden başlatıp uygulamak için tıklayın.`
+        : `Yeni sürüm yayınlandı (v${target}). Mevcut sürüm: v${status.runningVersion}.`)
+      : `Güncel (v${status.runningVersion || ''}) · Kurulumu, kısayolları ve skill dağıtımını yenile`;
+  }
+  if (available && target && notifiedUpdateVersion !== target) {
+    notifiedUpdateVersion = target;
+    notice(
+      status.restartRequired
+        ? `Yeni sürüm kurulu (v${status.installedVersion}). Üst çubuktaki "Güncelle" düğmesiyle servisi yenileyin.`
+        : `Yeni sürüm mevcut (v${target}). Mevcut sürüm: v${status.runningVersion}.`,
+    );
+  }
+}
+
+async function checkForUpdates(force = false) {
+  if (serviceStopped || sessionExpired) return null;
+  try {
+    const status = await call('check_update', { force });
+    applyUpdateStatus(status);
+    return status;
+  } catch {
+    return null;
+  }
+}
+
 function stopPolling() {
   clearTimeout(refreshTimerId);
   refreshTimerId = null;
@@ -617,6 +677,8 @@ function stopPolling() {
   quotaIntervalId = null;
   clearInterval(catalogIntervalId);
   catalogIntervalId = null;
+  clearInterval(updateIntervalId);
+  updateIntervalId = null;
 }
 
 function scheduleNextRefresh() {
@@ -640,6 +702,11 @@ function startPolling() {
   if (!catalogIntervalId) {
     catalogIntervalId = setInterval(() => {
       if (!document.hidden && snapshot && !busy && !poolDirty && !serviceStopped && !sessionExpired) void autoSyncCatalogs();
+    }, 600_000);
+  }
+  if (!updateIntervalId) {
+    updateIntervalId = setInterval(() => {
+      if (!document.hidden && snapshot && !serviceStopped && !sessionExpired) void checkForUpdates(false);
     }, 600_000);
   }
 }
@@ -691,6 +758,7 @@ async function refresh() {
     const wasOffline = $('connection-state').dataset.connected !== 'true' && $('connection-state').textContent !== 'Bağlanıyor';
     snapshot = await call('snapshot');
     $('app-version').textContent = `v${snapshot.version || 'bilinmiyor'}`;
+    if (snapshot.updateStatus) applyUpdateStatus(snapshot.updateStatus);
     if (!settings || (!poolDirty && settings.revision !== snapshot.revision)) {
       const firstLoad = !settings;
       settings = await call('settings');
@@ -1523,8 +1591,13 @@ function askConfirm({ title = 'İşlemi onayla', message = '', detail = '', conf
   $('confirm-dialog-message').textContent = message;
   $('confirm-dialog-detail').textContent = detail;
   const okBtn = $('confirm-ok-btn');
+  const cancelBtn = $('confirm-cancel-btn');
+  const cancelX = $('confirm-cancel-x');
   okBtn.textContent = confirmLabel;
   okBtn.className = danger ? 'danger' : 'primary';
+  okBtn.disabled = false;
+  if (cancelBtn) cancelBtn.disabled = false;
+  if (cancelX) cancelX.disabled = false;
   dlg.showModal();
   okBtn.focus();
   return new Promise(resolve => {
@@ -1939,9 +2012,9 @@ function renderPoolBatchBar(visibleItems) {
     const removeLabel = isAllGroup(selectedGroup)
       ? `Tüm havuzlardan çıkar (${selectedCount})`
       : `Havuzdan çıkar (${selectedCount})`;
-    const removeSelected = button(removeLabel, async () => {
+    const removeSelected = confirmedButton(removeLabel, () => {
       const targets = getTargets();
-      const confirmed = await askConfirm({
+      return {
         title: 'Havuzdan çıkar',
         message: isAllGroup(selectedGroup)
           ? `${targets.length} modeli tüm havuzlardan çıkarmak istiyor musunuz?`
@@ -1949,8 +2022,9 @@ function renderPoolBatchBar(visibleItems) {
         detail: confirmTargetsDetail(targets),
         confirmLabel: 'Çıkar',
         danger: true,
-      });
-      if (!confirmed) return;
+        targets,
+      };
+    }, async ({ targets }) => {
       for (const { routeId, modelId } of targets) {
         const r = settings.config.routes.find(item => item.id === routeId);
         const m = r?.models.find(item => item.id === modelId);
@@ -1961,15 +2035,16 @@ function renderPoolBatchBar(visibleItems) {
     });
     removeSelected.classList.add('danger');
 
-    const disableBtn = button('Devre dışı bırak', async () => {
+    const disableBtn = confirmedButton('Devre dışı bırak', () => {
       const targets = getTargets();
-      const confirmed = await askConfirm({
+      return {
         title: 'Modelleri devre dışı bırak',
         message: `${targets.length} modeli devre dışı bırakmak istiyor musunuz?`,
         detail: confirmTargetsDetail(targets),
         confirmLabel: 'Devre dışı bırak',
-      });
-      if (!confirmed) return;
+        targets,
+      };
+    }, async ({ targets }) => {
       for (const { routeId, modelId } of targets) {
         const m = settings.config.routes.find(r => r.id === routeId)?.models.find(item => item.id === modelId);
         if (m) m.enabled = false;
@@ -1989,15 +2064,16 @@ function renderPoolBatchBar(visibleItems) {
       await saveModelsBatch(targets, true, `${targets.length} model etkinleştirildi.`);
     });
 
-    const hideBtn = button('Gizle', async () => {
+    const hideBtn = confirmedButton('Gizle', () => {
       const targets = getTargets();
-      const confirmed = await askConfirm({
+      return {
         title: 'Modelleri gizle',
         message: `${targets.length} modeli gizlenenler listesine taşımak istiyor musunuz?`,
         detail: confirmTargetsDetail(targets),
         confirmLabel: 'Gizle',
-      });
-      if (!confirmed) return;
+        targets,
+      };
+    }, async ({ targets }) => {
       const filters = settings.config.modelFilters ||= [];
       for (const { routeId, modelId } of targets) {
         const r = settings.config.routes.find(item => item.id === routeId);
@@ -2032,6 +2108,7 @@ function familyLabel(value) {
   return ({
     argon: 'Argon',
     hydrogen: 'Hydrogen',
+    neon: 'Neon',
     sol: 'Sol',
     terra: 'Terra',
     astra: 'Astra',
@@ -2186,20 +2263,21 @@ function renderCatalogBatchBar(entries) {
 
   if (selectedCount > 0) {
     const targets = () => [...selectedCatalogItems].map(key => { const [routeId, modelId] = JSON.parse(key); return { routeId, modelId }; });
-    const addSelected = button(`Seçilenleri havuza ekle (${selectedCount})`, async () => {
+    const addSelected = plainButton(`Seçilenleri havuza ekle (${selectedCount})`, () => {
       openPoolPicker(null, null, targets());
     });
     addSelected.classList.add('primary');
 
-    const disableSelected = button('Devre dışı bırak', async () => {
+    const disableSelected = confirmedButton('Devre dışı bırak', () => {
       const list = targets();
-      const confirmed = await askConfirm({
+      return {
         title: 'Modelleri devre dışı bırak',
         message: `${list.length} modeli devre dışı bırakmak istiyor musunuz?`,
         detail: confirmTargetsDetail(list),
         confirmLabel: 'Devre dışı bırak',
-      });
-      if (!confirmed) return;
+        list,
+      };
+    }, async ({ list }) => {
       for (const { routeId, modelId } of list) {
         const m = settings.config.routes.find(r => r.id === routeId)?.models.find(item => item.id === modelId);
         if (m) m.enabled = false;
@@ -2208,15 +2286,16 @@ function renderCatalogBatchBar(entries) {
       await saveModelsBatch(list, false, `${list.length} model devre dışı bırakıldı.`);
     });
 
-    const hideSelected = button(`Gizle (${selectedCount})`, async () => {
+    const hideSelected = confirmedButton(`Gizle (${selectedCount})`, () => {
       const list = targets();
-      const confirmed = await askConfirm({
+      return {
         title: 'Modelleri gizle',
         message: `${list.length} modeli katalogdan gizlemek istiyor musunuz?`,
         detail: confirmTargetsDetail(list),
         confirmLabel: 'Gizle',
-      });
-      if (!confirmed) return;
+        list,
+      };
+    }, async ({ list }) => {
       const filters = settings.config.modelFilters ||= [];
       for (const { routeId, modelId } of list) {
         const r = settings.config.routes.find(item => item.id === routeId);
@@ -2643,18 +2722,16 @@ function modelCard(route, model, member, options = {}) {
     const groups = memberships(model);
     footer.append(element('small', groups.map(item => groupLabel(item.group)).join(' · '), 'model-memberships'));
     const actions = element('div', null, 'model-actions');
-    const addAnother = button('Ekle', async () => openPoolPicker(route, model));
+    const addAnother = plainButton('Ekle', () => openPoolPicker(route, model));
     addAnother.classList.add('add-model');
     addAnother.title = 'Başka bir havuz kategorisine de ekle';
-    const removeAll = button('Havuzdan çıkar', async () => {
-      const confirmed = await askConfirm({
-        title: 'Havuzdan çıkar',
-        message: `"${model.id}" modelini tüm havuzlardan çıkarmak istiyor musunuz?`,
-        detail: `${adapterLabels[route.adapter] || route.adapter} · ${subLabel}`,
-        confirmLabel: 'Havuzdan çıkar',
-        danger: true,
-      });
-      if (!confirmed) return;
+    const removeAll = confirmedButton('Havuzdan çıkar', {
+      title: 'Havuzdan çıkar',
+      message: `"${model.id}" modelini tüm havuzlardan çıkarmak istiyor musunuz?`,
+      detail: `${adapterLabels[route.adapter] || route.adapter} · ${subLabel}`,
+      confirmLabel: 'Havuzdan çıkar',
+      danger: true,
+    }, async () => {
       model.memberships = [];
       await saveModel(route.id, model.id, false, `${model.id} tüm havuzlardan çıkarıldı.`);
     });
@@ -2669,15 +2746,13 @@ function modelCard(route, model, member, options = {}) {
       await saveModel(route.id, model.id);
     }), ['', ...model.efforts], false);
     effort.querySelector('select').setAttribute('aria-label', `${model.id} · ${route.id} efor`);
-    const remove = button('Çıkar', async () => {
-      const confirmed = await askConfirm({
-        title: 'Havuzdan çıkar',
-        message: `"${model.id}" modelini "${groupLabel(selectedGroup)}" havuzundan çıkarmak istiyor musunuz?`,
-        detail: `${adapterLabels[route.adapter] || route.adapter} · ${subLabel}`,
-        confirmLabel: 'Çıkar',
-        danger: true,
-      });
-      if (!confirmed) return;
+    const remove = confirmedButton('Çıkar', {
+      title: 'Havuzdan çıkar',
+      message: `"${model.id}" modelini "${groupLabel(selectedGroup)}" havuzundan çıkarmak istiyor musunuz?`,
+      detail: `${adapterLabels[route.adapter] || route.adapter} · ${subLabel}`,
+      confirmLabel: 'Çıkar',
+      danger: true,
+    }, async () => {
       model.memberships = memberships(model).filter(item => item.group !== selectedGroup);
       await saveModel(route.id, model.id);
     });
@@ -2687,9 +2762,9 @@ function modelCard(route, model, member, options = {}) {
     const groups = memberships(model);
     footer.append(element('small', groups.length ? groups.map(item => groupLabel(item.group)).join(' · ') : 'Henüz bir havuzda değil', 'model-memberships'));
     const actions = element('div', null, 'model-actions');
-    const hide = button('Gizle', async () => openFilters(route, model));
+    const hide = plainButton('Gizle', () => openFilters(route, model));
     hide.setAttribute('aria-label', `${model.id} için filtre ekle`);
-    const add = button('Ekle', async () => openPoolPicker(route, model));
+    const add = plainButton('Ekle', () => openPoolPicker(route, model));
     add.classList.add('add-model');
     add.dataset.modelId = model.id;
     add.dataset.routeId = route.id;
@@ -2967,10 +3042,11 @@ function openPoolPicker(route, model, batchTargets = null) {
     pendingPoolModel = null;
     $('add-pool-model').textContent = `${batchTargets.length} seçili model`;
     $('add-pool-effort').replaceChildren(new Option('Mevcut eforu koru', 'preserve'), new Option('CLI varsayılanı', ''), ...['low', 'medium', 'high'].map(effort => new Option(effortLabel(effort), effort)));
-    $('add-pool-targets').replaceChildren(...poolGroups().map(group => button(groupLabel(group), async () => {
+    $('add-pool-targets').replaceChildren(...poolGroups().map(group => plainButton(groupLabel(group), async () => {
       const effortVal = $('add-pool-effort').value;
       const targets = [...(pendingPoolBatch || [])];
       $('add-pool-dialog').close();
+      if (!targets.length) return;
       const confirmed = await askConfirm({
         title: 'Havuza ekle',
         message: `${targets.length} modeli "${groupLabel(group)}" havuzuna eklemek istiyor musunuz?`,
@@ -2978,19 +3054,21 @@ function openPoolPicker(route, model, batchTargets = null) {
         confirmLabel: 'Havuza ekle',
       });
       if (!confirmed) return;
-      for (const { routeId, modelId } of targets) {
-        const targetRoute = settings.config.routes.find(item => item.id === routeId);
-        const targetModel = targetRoute?.models.find(item => item.id === modelId);
-        if (!targetModel) continue;
-        if (!activeBillings.has(targetRoute.billing)) throw new Error(`${targetRoute.id}: Bağlantı ayarlarından bu aracın plan türünü doğrulayın.`);
-        const member = memberships(targetModel).find(item => item.group === group);
-        const eff = effortVal === 'preserve' ? (member?.effort || '') : (targetModel.efforts?.includes(effortVal) ? effortVal : '');
-        addMembership(targetModel, group, eff);
-        targetModel.enabled = true;
-        targetRoute.enabled = true;
-      }
-      selectedCatalogItems.clear();
-      await saveModelsBatch(targets, true, `${targets.length} model ${groupLabel(group)} havuzuna eklendi.`);
+      await action(async () => {
+        for (const { routeId, modelId } of targets) {
+          const targetRoute = settings.config.routes.find(item => item.id === routeId);
+          const targetModel = targetRoute?.models.find(item => item.id === modelId);
+          if (!targetModel) continue;
+          if (!activeBillings.has(targetRoute.billing)) throw new Error(`${targetRoute.id}: Bağlantı ayarlarından bu aracın plan türünü doğrulayın.`);
+          const member = memberships(targetModel).find(item => item.group === group);
+          const eff = effortVal === 'preserve' ? (member?.effort || '') : (targetModel.efforts?.includes(effortVal) ? effortVal : '');
+          addMembership(targetModel, group, eff);
+          targetModel.enabled = true;
+          targetRoute.enabled = true;
+        }
+        selectedCatalogItems.clear();
+        await saveModelsBatch(targets, true, `${targets.length} model ${groupLabel(group)} havuzuna eklendi.`);
+      });
     })));
     $('add-pool-dialog').showModal();
     return;
@@ -3001,7 +3079,7 @@ function openPoolPicker(route, model, batchTargets = null) {
   $('add-pool-effort').replaceChildren(...(memberships(model).length ? [new Option('Mevcut eforu koru', 'preserve')] : []), new Option('CLI varsayılanı', ''), ...model.efforts.map(effort => new Option(effortLabel(effort), effort)));
   $('add-pool-targets').replaceChildren(...poolGroups().map(group => {
     const existing = memberships(model).find(member => member.group === group);
-    return button(`${groupLabel(group)}${existing ? ' · ekli' : ''}`, async () => {
+    return plainButton(`${groupLabel(group)}${existing ? ' · ekli' : ''}`, async () => {
       const ref = pendingPoolModel ? { ...pendingPoolModel } : null;
       const effortVal = $('add-pool-effort').value;
       const targetRoute = settings.config.routes.find(item => item.id === ref?.routeId);
@@ -3016,15 +3094,20 @@ function openPoolPicker(route, model, batchTargets = null) {
         confirmLabel: 'Havuza ekle',
       });
       if (!confirmed) return;
-      const member = memberships(targetModel).find(item => item.group === group);
-      const changed = addMembership(targetModel, group, effortVal === 'preserve' ? member?.effort || '' : effortVal);
-      const enabled = targetModel.enabled && targetRoute.enabled;
-      targetModel.enabled = true;
-      targetRoute.enabled = true;
-      if (changed || !enabled || poolDirty) await saveModel(targetRoute.id, targetModel.id, true);
-      else renderPool();
-      [...$('pool-models').querySelectorAll('.add-model')].find(node => node.dataset.modelId === targetModel.id && node.dataset.routeId === targetRoute.id)?.focus();
-      notice(`${targetModel.id}, ${groupLabel(group)} havuzunda.${snapshot?.quotas?.[targetRoute.id]?.status === 'auth_required' ? ' Kullanmak için Giriş yap düğmesiyle oturum açın.' : ''}`);
+      await action(async () => {
+        const liveRoute = settings.config.routes.find(item => item.id === ref.routeId);
+        const liveModel = liveRoute?.models.find(item => item.id === ref.modelId);
+        if (!liveModel) throw new Error('Model kataloğu değişti. Modeli yeniden seçin.');
+        const member = memberships(liveModel).find(item => item.group === group);
+        const changed = addMembership(liveModel, group, effortVal === 'preserve' ? member?.effort || '' : effortVal);
+        const enabled = liveModel.enabled && liveRoute.enabled;
+        liveModel.enabled = true;
+        liveRoute.enabled = true;
+        if (changed || !enabled || poolDirty) await saveModel(liveRoute.id, liveModel.id, true);
+        else renderPool();
+        [...$('pool-models').querySelectorAll('.add-model')].find(node => node.dataset.modelId === liveModel.id && node.dataset.routeId === liveRoute.id)?.focus();
+        notice(`${liveModel.id}, ${groupLabel(group)} havuzunda.${snapshot?.quotas?.[liveRoute.id]?.status === 'auth_required' ? ' Kullanmak için Giriş yap düğmesiyle oturum açın.' : ''}`);
+      });
     });
   }));
   $('add-pool-dialog').showModal();
@@ -3250,6 +3333,7 @@ void refresh().then(() => {
   if (snapshot) {
     void refreshQuotas();
     void autoSyncCatalogs();
+    void checkForUpdates();
   }
 });
 document.addEventListener('visibilitychange', () => {

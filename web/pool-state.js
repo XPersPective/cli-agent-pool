@@ -248,7 +248,7 @@ export function modelIdentity(id) {
 }
 export function modelFamily(id) {
   const key = modelIdentity(id);
-  return key.match(/(?:^|-)(argon|hydrogen|astra|sol|terra|luna|opus|sonnet|haiku|fable)(?:-|$)/)?.[1] || key.match(/^(gemini|qwen|glm|kimi|mimo|deepseek|gpt-oss|gpt)(?:-|$)/)?.[1] || key.replace(/[-_.]?\d.*$/, '') || key;
+  return key.match(/(?:^|-)(argon|hydrogen|neon|astra|sol|terra|luna|opus|sonnet|haiku|fable)(?:-|$)/)?.[1] || key.match(/^(gemini|qwen|glm|kimi|mimo|deepseek|gpt-oss|gpt)(?:-|$)/)?.[1] || key.replace(/[-_.]?\d.*$/, '') || key;
 }
 export function modelFiltered(filters, routeId, modelId) {
   return (filters || []).some(rule => (!rule.routeId || rule.routeId === routeId) && (rule.match === 'family' ? modelFamily(modelId) === rule.value : rule.routeId ? modelId.toLowerCase() === rule.value.toLowerCase() : modelIdentity(modelId) === modelIdentity(rule.value)));

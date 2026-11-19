@@ -234,11 +234,11 @@ test('OpenCode JSON events, free model catalog and custom API routes work with w
     assert.deepEqual(models.map(model=>model.id),billing==='paid_api'?['openrouter/vendor/free:free','openrouter/vendor/paid']:['openrouter/vendor/free:free']);
   }
   const overflowScript=path.join(root,'router-overflow.cjs');
-  const manyModels=Array.from({length:105},(_,i)=>`openrouter/vendor/paid-${i}`).map(id=>`${id}\n${JSON.stringify({cost:{input:1,output:1}})}`);
+  const manyModels=Array.from({length:305},(_,i)=>`openrouter/vendor/paid-${i}`).map(id=>`${id}\n${JSON.stringify({cost:{input:1,output:1}})}`);
   manyModels.push(`openrouter/vendor/late-free:free\n${JSON.stringify({cost:{input:0,output:0}})}`);
   writeFileSync(overflowScript,`console.log(${JSON.stringify(manyModels.join('\n'))})`);
   const overflow=(await opencodeCatalog({...freeRoute,billing:'paid_api',executable:overflowScript},root,py)).models;
-  assert.equal(overflow.length,100);
+  assert.equal(overflow.length,300);
   assert.equal(overflow[0].id,'openrouter/vendor/late-free:free');
   assert.equal(overflow[0].free,true);
 

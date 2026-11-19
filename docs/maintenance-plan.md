@@ -101,7 +101,27 @@
 - [x] **Katalog üst özeti ve gereksiz alt satırın kaldırılması (`web/app.js`)**:
   - `Tüm abonelikler · N hesap · M model` özeti üst başlık yanındaki `#catalog-count` alanına taşındı; güven onayı gerekmediğinde `#catalog-status` gizli kalır.
 - [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.18.0`.
-- [x] **Doğrulama kanıtı (2.18.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate` ve `npm test` çalıştırılarak doğrulandı.
+- [x] **Doğrulama kanıtı (2.18.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate` ve `npm test` (206/206) çalıştırılarak doğrulandı.
+
+## 2.19.0 — Onay/Ekleme Kilidi Düzeltmesi, Windows Pythonw İzolasyonu, 300 Model Sınırı, Neon/Ağ Hata Düzeltmeleri ve Otomatik Güncelleme Bildirimi
+- [x] **Model ekleme/çıkarma ve toplu işlem kilidi giderildi (`web/app.js`)**:
+  - `button()` sarmalayıcısının `action()` üzerinden tüm sayfa düğmelerini (`#confirm-dialog` ve `#add-pool-targets` dahil) devre dışı bırakması nedeniyle onay penceresinde ekleme/çıkarma yapılamaması hatası giderildi.
+  - `plainButton` ve `confirmedButton` yardımcıları eklendi; `action()` artık `#confirm-dialog` içindeki düğmeleri kilitlemez, `askConfirm()` pencereyi açarken onay/vazgeç düğmelerini açıkça etkinleştirir ve `openPoolPicker` tekil/toplu eklemede onay sonrası canlı hedef üzerinden kaydeder.
+- [x] **Windows arka plan terminal pencerelerinin tamamen kesilmesi (`src/process.js`)**:
+  - `resolveWindowsPython`, `PATH` üzerindeki `venv`/`uv` yönlendirici (`venvlauncher.exe`) ve 0 baytlık `WindowsApps` kısayollarını `pyvenv.cfg` üzerinden gerçek kurulum dizinine çözerek konsolsuz `pythonw.exe` ile çalıştırır; böylece arka plan kota/katalog yoklamalarında ve görevlerde ekranda konsol penceresi açılmaz.
+  - `childEnvironment` içinde Windows kabuk başlatıcılarının (Codex elevated sandbox, PowerShell vb.) ihtiyaç duyduğu gizli olmayan standart işletim sistemi değişkenleri (`SYSTEMDRIVE`, `HOMEDRIVE`, `HOMEPATH`, `OS`, `PROCESSOR_ARCHITECTURE`, `NUMBER_OF_PROCESSORS`, `COMMONPROGRAMFILES`, `PSMODULEPATH` vb.) korundu; API anahtarları sızdırılmamaya devam eder.
+- [x] **Yeni çıkan modellerin otomatik keşfi ve 300 model sınırı (`src/config.js`, `src/adapters.js`, `src/web.js`, `src/quotas.js`, `web/pool-state.js`, `web/app.js`)**:
+  - Rota başına model sınırı `100` → `300` (`MAX_ROUTE_MODELS`) yükseltildi; `opencode`/`mimo` kataloglarında sınır dolarsa havuz üyeliği olmayan eski modeller temizlenerek yeni modellerin girmesi garanti edildi.
+  - `importDiscoveredRoutes`, izole profilli rotalar için kendi `profileHome` dizinini okur; `scan_import` her rotanın `mergeCatalogModels` çağrısını ayrı `try/catch` içinde çalıştırır (tek rota hatası diğer rotaların kaydını iptal etmez); yerel `agy models` zaman aşımı `35s` yapıldı.
+  - `gemini-4-neon` (`neon`) ailesi `AGY_GROUP_MODELS`, `antigravityGroupWindows`, `modelFamily` ve `familyLabel` eşlemelerine eklendi.
+- [x] **Antigravity/Claude çağrı hata sınıflandırması ve ön oturum doğrulaması (`src/adapters.js`, `src/quotas.js`)**:
+  - `classifyFailure`, Go/Windows ağ kopmalarını (`read tcp`, `write tcp`, `wsarecv`, `wsasend`, `network issue connecting to the server`, `connection reset`, `broken pipe`) `NETWORK_UNAVAILABLE`, Claude `"Failed to authenticate" / "OAuth session expired"` hatalarını `AUTH_REQUIRED` ve `unrecognized_model` hatalarını `MODEL_UNAVAILABLE` olarak sınıflandırır.
+  - `checkAuth` içine Antigravity (`agy`) için token ön kontrolü eklendi ve `antigravityQuota` HTTP 401 yanıtını `auth_required` olarak işaretler; süresi dolmuş hesaplar çağrı başlamadan elenir.
+- [x] **Otomatik güncelleme kontrolü ve canlı sürüm tespiti (`src/daemon.js`, `src/web.js`, `web/app.js`, `web/style.css`)**:
+  - `installDesktopAndSkills`, diskteki sürümü değil çalışan servisin `/api/health` sürümünü (`liveServiceVersion`) karşılaştırarak `restartRequired` bilgisini doğru üretir.
+  - `checkUpdateStatus` + `check_update` ucu + `applyUpdateStatus`, yeni sürüm veya yeniden başlatma gerektiğinde üst çubuktaki **Güncelle** düğmesini (`.has-update`, `Güncelle (vX.Y.Z)`) vurgular ve kullanıcıya bildirim gösterir.
+- [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.19.0`.
+- [x] **Doğrulama kanıtı (2.19.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate` ve `npm test` (yeni `test/reliability-and-dialogs.test.js` dahil) çalıştırılarak doğrulandı.
 
 ## 2.13.0 — Düz Hiyerarşi Satırları ve Net Aç/Kapalı Anahtarı
 - [x] **Hiyerarşi ağaç yerine düz ve eşit hizada (`web/app.js`, `web/style.css`)**: Araçlar / Abonelikler / Model aileleri satırları artık üçü de aynı sol hizada, aynı başlık ve aynı çip görünümüyle sıralanır; önceki ray/dirsek iç içe yapım ve yol (breadcrumb) satırı kaldırıldı. Her düğmenin yanında model sayısı korunur.
