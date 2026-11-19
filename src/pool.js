@@ -7,11 +7,9 @@ import { checkAuth, execute, quota, loginCommands, routeAccountEmail } from './a
 import { modelFiltered, quotaApplies } from '../web/pool-state.js';
 import { categoryPage } from './catalog.js';
 import { codexControl } from './codex-control.js';
-import { supportsExecution, validateMode, workspaceConflict, parseExecutionReport } from './task-protocol.js';
+import { supportsExecution, validateMode, parseExecutionReport } from './task-protocol.js';
 import { rejectionReason, noRouteMessage } from './routing.js';
 import { taskKinds, toolSupport } from '../web/capabilities.js';
-import { workspaceFingerprint, workspaceUnchanged } from './workspace-state.js';
-import { nativeSettingsFiles } from './native-settings.js';
 import { CAPABILITIES, assertDirectorRoute } from './preflight.js';
 import * as director from './director.js';
 import { lifecycleShape, hasLifecycle, validateHook, TaskWatchdog } from './lifecycle.js';
@@ -53,7 +51,6 @@ export class Pool {
     this.directory = dependencies.directory || dataDirectory();
     this.execute = dependencies.execute || execute;
     this.checkAuth = dependencies.checkAuth || checkAuth;
-    this.fingerprint = dependencies.fingerprint || workspaceFingerprint;
     this.active = new Map();
     this.quotaRequests = new Map();
     this.taskTokens = new Map(); // sha256(token) -> running director/preflight run
@@ -276,14 +273,9 @@ export class Pool {
     const request = JSON.parse(task.request);
     const events = this.store.events(id, after);
     const reportedModel = this.store.reportedModel(id);
-    const queued = task.state === 'queued' ? this.store.queued() : [];
-    const earlier = queued.slice(0, queued.findIndex(row => row.id === task.id));
-    const scope = { ...request, workspace: task.workspace };
-    const blocker = task.state === 'queued' ? this.store.held().find(held => workspaceConflict(held, scope)) || earlier.find(row => workspaceConflict({ ...JSON.parse(row.request), workspace: row.workspace, state: row.state }, scope)) : null;
-    const queueReason = blocker ? blocker.state === 'needs_review' ? 'WORKSPACE_REVIEW_REQUIRED' : 'WORKSPACE_BUSY' : null;
     const report = request.mode === 'execute' && task.result ? parseExecutionReport(task.result) : null;
     const originalError = this.store.originalError(id);
-    return { notifications: this.store.notifications(task.id), profile: request.profile || 'worker', parentTaskId: request.parentTaskId || null, preflight: request.preflight ? this.store.preflightForTask(task.id) : undefined, id: task.id, state: task.state, mode: request.mode || null, report, routeId: request.routeId, modelId: request.modelId, reportedModel, queueReason, blockedBy:blocker?.id || null, group: request.group, effort: request.effort || null, clientLabel:request.clientLabel || null, historyExpired:Boolean(request.historyExpired), kind: request.kind, workspace: request.workspace, prompt: request.prompt || null, created: task.created, updated: task.updated, result: task.result, error: task.error, ...(originalError ? { originalError } : {}), errorDetail: this.store.errorDetail(id), events };
+    return { notifications: this.store.notifications(task.id), profile: request.profile || 'worker', parentTaskId: request.parentTaskId || null, preflight: request.preflight ? this.store.preflightForTask(task.id) : undefined, id: task.id, state: task.state, mode: request.mode || null, report, routeId: request.routeId, modelId: request.modelId, reportedModel, queueReason: null, blockedBy: null, group: request.group, effort: request.effort || null, clientLabel:request.clientLabel || null, historyExpired:Boolean(request.historyExpired), kind: request.kind, workspace: request.workspace, prompt: request.prompt || null, created: task.created, updated: task.updated, result: task.result, error: task.error, ...(originalError ? { originalError } : {}), errorDetail: this.store.errorDetail(id), events };
   }
   list(limit = 50, offset = 0, activeFirst = false) {
     return this.store.list(limit, offset, activeFirst);
@@ -317,16 +309,12 @@ export class Pool {
       this.pumping = false;
       if (this.closed) return;
       try {
-        const waiting = [];
         for (const task of this.store.queued()) {
           const request = JSON.parse(task.request);
           const route = this.config.routes.find(r => r.id === request.routeId);
           if (!route || !route.enabled) { director.failQueuedPreflight(this, task.id, 'ROUTE_DISABLED'); this.store.update(task.id, 'failed', null, 'ROUTE_DISABLED'); void this.watchdog.tick().catch(() => {}); continue; }
           if (request.startDeadlineSeconds && this.watchdog.now() - Date.parse(task.created) >= request.startDeadlineSeconds * 1000) { this.cancel(task.id, 'START_TIMEOUT'); continue; }
           if (request.requiresSecrets && !this.secrets.has(task.id)) { this.store.update(task.id, 'failed', null, 'SECRET_LOST'); void this.watchdog.tick().catch(() => {}); continue; }
-          const blocked = this.store.held().some(held => workspaceConflict(held, request)) || waiting.some(held => workspaceConflict(held, request));
-          waiting.push({ ...request, state: 'queued' });
-          if (blocked) continue;
           this.store.update(task.id, 'starting');
           const handle = { routeId: route.id, cancelled: false, run: null };
           this.active.set(task.id, handle);
@@ -338,27 +326,12 @@ export class Pool {
       }
     });
   }
-  // A failed write keeps its review lock only when files actually changed.
-  // WSL routes always keep the lock: killing wsl.exe does not reliably end the Linux tree.
-  async writeChanged(taskId, request, before) {
-    if (request.kind !== 'write') return false;
-    if (this.routeFor(request)?.runtime === 'wsl') return true;
-    const after = await this.workspaceState(request);
-    if (!workspaceUnchanged(before, after)) return true;
-    this.store.event(taskId, 'no_workspace_changes', 'Workspace fingerprint unchanged; review lock released.');
-    return false;
-  }
   async run(task, request, route, handle) {
-    let before = null;
     try {
       request.workspace = allowedWorkspace(request.workspace, request.probe?[path.join(this.directory,'probes')]:undefined);
       const model = this.select(request).selected;
       await this.checkAuth(route, request.workspace, this.config.python, this.directory, model);
       if (handle.cancelled || this.closed) { director.failQueuedPreflight(this, task.id, handle.cancelReason || 'CANCELLED'); this.store.update(task.id, 'cancelled', null, handle.cancelReason || 'CANCELLED'); return; }
-      if (request.kind === 'write') {
-        before = await this.workspaceState(request);
-        this.store.event(task.id, 'workspace_snapshot', before);
-      }
       const context = this.taskContext(request) || { directory: this.directory };
       context.secretEnv = this.secrets.get(task.id) || {};
       if (request.requiresSecrets && !this.secrets.has(task.id)) throw new PoolError('SECRET_LOST', 'Task secrets were lost on service restart.');
@@ -427,12 +400,12 @@ export class Pool {
         });
       }
       await handle.beforeSettle?.(outcome);
-      if (handle.cancelled) this.store.update(task.id, await this.writeChanged(task.id, request, before) ? 'needs_review' : 'cancelled', null, handle.cancelReason || 'CANCELLED');
-      else if (outcome.error) this.store.update(task.id, await this.writeChanged(task.id, request, before) ? 'needs_review' : outcome.error === 'TIMEOUT' ? 'timed_out' : 'failed', outcome.result || null, outcome.error);
+      if (handle.cancelled) this.store.update(task.id, 'cancelled', null, handle.cancelReason || 'CANCELLED');
+      else if (outcome.error) this.store.update(task.id, outcome.error === 'TIMEOUT' ? 'timed_out' : 'failed', outcome.result || null, outcome.error);
       else if (request.mode === 'execute') {
         const report = parseExecutionReport(outcome.result);
         const error = !report ? 'INVALID_REPORT' : report.status !== 'completed' ? 'WORK_INCOMPLETE' : null;
-        this.store.update(task.id, !error ? 'succeeded' : await this.writeChanged(task.id, request, before) ? 'needs_review' : 'failed', outcome.result, error);
+        this.store.update(task.id, !error ? 'succeeded' : 'failed', outcome.result, error);
       } else this.store.update(task.id, 'succeeded', outcome.result);
     } catch (error) {
       try {
@@ -447,8 +420,7 @@ export class Pool {
           });
         }
         await director.settlePreflight(this, task.id, { error: error instanceof PoolError ? error.code : 'INTERNAL_ERROR', message: error instanceof PoolError ? error.message : null }).catch(() => {});
-        const changed = handle.run && request.kind === 'write' ? await this.writeChanged(task.id, request, before).catch(() => true) : false;
-        this.store.update(task.id, changed ? 'needs_review' : handle.cancelled ? 'cancelled' : 'failed', null, error instanceof PoolError ? error.code : 'INTERNAL_ERROR');
+        this.store.update(task.id, handle.cancelled ? 'cancelled' : 'failed', null, error instanceof PoolError ? error.code : 'INTERNAL_ERROR');
         if (error instanceof PoolError && error.message) this.store.event(task.id, 'error_detail', (handle.redact ? handle.redact(error.message) : error.message).slice(0, 600));
       }
       catch { this.closed = true; handle.run?.cancel('STORAGE_FAILED'); }
@@ -461,28 +433,13 @@ export class Pool {
     }
   }
   routeFor(request) { return this.config.routes.find(route => route.id === request.routeId); }
-  workspaceState(request) {
-    return this.fingerprint(request.workspace, this.config.python, nativeSettingsFiles(this.routeFor(request), request.workspace, this.directory));
-  }
-  // Tasks stopped by a service restart: release the lock only when two
-  // fingerprints taken a minute apart both equal the pre-run snapshot.
-  async reconcileInterrupted(settleMs = 60_000) {
-    const candidates = [];
+  async reconcileInterrupted() {
     for (const task of this.store.interrupted()) {
-      const before = this.store.snapshot(task.id);
-      if (!before) continue;
       try {
         const request = JSON.parse(task.request);
         director.cleanupInterrupted(request, task.id);
-        if (!await this.writeChanged(task.id, request, before)) candidates.push({ task, request, before });
-      } catch { /* Keep the review lock when the workspace cannot be checked. */ }
-    }
-    if (candidates.length && settleMs) await new Promise(resolve => { const timer = setTimeout(resolve, settleMs); timer.unref?.(); });
-    for (const { task, request, before } of candidates) {
-      try {
-        if (this.closed || await this.writeChanged(task.id, request, before)) continue;
-        if (this.store.get(task.id)?.state === 'needs_review') this.store.update(task.id, 'failed', task.result, 'INTERRUPTED');
-      } catch { /* Keep the review lock. */ }
+        this.store.update(task.id, 'failed', task.result, 'INTERRUPTED');
+      } catch { /* ignore cleanup error */ }
     }
     this.schedule();
     this.onReconciled?.();

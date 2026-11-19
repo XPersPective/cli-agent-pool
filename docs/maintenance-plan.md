@@ -152,6 +152,19 @@
 - [x] **Doğrulama kanıtı (2.20.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate`, `npm test` (`218/218`, yeni `test/remote.test.js` dahil) ve canlı `cli-agent-pool` servisi üzerinden `/r/state` uçtan uca entegrasyon testi doğrulandı.
 
 ## 2.19.0 — Onay/Ekleme Kilidi Düzeltmesi, Windows Pythonw İzolasyonu, 300 Model Sınırı, Neon/Ağ Hata Düzeltmeleri ve Otomatik Güncelleme Bildirimi
+## 2.25.0 — Sıfır Proje Kilidi / Tam Paralel Çalışma, Remote Doğrudan Proje Modu, Klasör Seçici & Oturum Düzeltmeleri
+- [x] **Çekirdekte proje kilidi, karantina (`needs_review`) ve yönetici çakışma engeli tamamen kaldırıldı (`src/pool.js`, `src/store.js`, `src/task-protocol.js`, `src/director.js`, `src/web.js`)**:
+  - `Pool.schedule()` artık aynı proje klasöründeki tüm `write`/`read`/`text`/yönetici görevlerini birbirini sıraya almadan **tamamen paralel** başlatır (`workspaceConflict()` her zaman `false`).
+  - Başarısız, iptal edilen, zaman aşımına uğrayan veya yeniden başlatmayla kesilen yazma görevleri klasörü kilitlemeden doğrudan `failed`/`cancelled`/`timed_out` durumuna geçer; açılışta kalan eski `needs_review` kayıtları otomatik temizlenir.
+  - `director.checkLinkedWorker` içindeki `WORKSPACE_HELD_BY_PARENT` engeli kaldırıldı; yönetici aynı proje klasöründe paralel alt ajanlar çalıştırabilir.
+- [x] **Remote: `Düzenle` anahtarı kaldırıldı, dönen gönder oku kaldırıldı, paylaşılan klasör açma & 1 yıllık oturum (`remote/server.js`, `remote/public/index.html`, `remote/public/app.js`, `remote/public/style.css`, `src/folder-picker.cs`)**:
+  - Proje seçili sohbetlerde `#edit-mode-toggle-btn` kaldırıldı; istekler `kind: 'write'` olarak ancak zorunlu `mode: 'execute'` JSON sözleşmesi olmadan gönderilir (doğal sohbet + tam araç yeteneği, `WORK_INCOMPLETE` yok).
+  - `.send-btn.sending svg` dönme animasyonu kaldırıldı.
+  - Ayarlar'daki `📁 Klasör Seç` artık anında yerleşik sürücü/klasör gezginini (`#folder-dialog`, `browseAll=true`) açar; `src/folder-picker.cs` ekran dışı `-32000` konumundan `CenterScreen` + `Opacity = 0` + `ShowInTaskbar = true` düzenine düzeltildi; Ayarlar'daki paylaşılan klasör satırları tıklanabilir (`Aç` / sohbete seç) yapıldı.
+  - Eşleşen cihaz oturum çerezi 1 yıl (`Max-Age=31536000`) yapıldı ve QR kodunun yalnızca ilk okutma için 5 dakika geçerli olduğu, eşleşen cihazın ağdan düşmeyeceği arayüzde açıkça belirtildi.
+- [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.25.0`.
+- [x] **Doğrulama kanıtı (2.25.0)**: `npm run check`, `npm run secrets` (107 dosya temiz), `npm audit --audit-level=moderate` (0 açık), `npm test` (`223/223` geçti).
+
 ## 2.24.0 — Remote Proje Sohbet Modu, İzole Projesiz Sandbox, Kuyruk Nedeni & Tek Tık Kilit Açma
 - [x] **Proje sohbetinde varsayılan salt-okuma/doğal yanıt (`remote/server.js`, `remote/public/index.html`, `remote/public/app.js`)**:
   - Proje klasörü seçili sohbetlerde varsayılan istek `kind: 'read', mode: 'response'` oldu; artık proje içinde normal soru/selamlama (`"slm"` vb.) yazıldığında `execute` JSON rapor sözleşmesi, sahte `WORK_INCOMPLETE` hatası veya `needs_review` klasör karantinası tetiklenmiyor ve aynı projedeki okuma çağrıları paralel çalışıyor.

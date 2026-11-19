@@ -129,8 +129,6 @@ export function linkedDirector(pool, token) {
 
 export function checkLinkedWorker(pool, parent, request, model) {
   if (model.billing === 'paid_api') throw new PoolError('PAID_ROUTE_DENIED', 'Workers started by a director use non-metered routes only.');
-  if (parent.workspace && overlaps(parent.workspace, request.workspace))
-    throw new PoolError('WORKSPACE_HELD_BY_PARENT', 'The director holds this workspace. Start workers in a worktree outside it (for example a sibling folder created with git worktree add).');
   const route = pool.config.routes.find(item => item.id === model.routeId);
   if (route?.adapter === 'agy' && route.runtime !== 'wsl') {
     const agyHome = pool.directory ? profileHome(route, pool.directory) : undefined;

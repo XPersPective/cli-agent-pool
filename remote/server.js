@@ -499,7 +499,8 @@ export function createRemoteServer({
       const deviceHint = /android/i.test(ua) ? 'Android Telefon' : /iphone|ipad/i.test(ua) ? 'iPhone / iPad' : pending.label || 'Tarayıcı';
       const paired = remoteStore.pairDevice(deviceHint);
       const isHttps = req.headers['x-forwarded-proto'] === 'https' || Boolean(req.socket?.encrypted);
-      const cookie = `pool_remote=${paired.cookieValue}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000${isHttps ? '; Secure' : ''}`;
+      // 1 yıl kalıcı oturum çerezi; QR kodu yalnız ilk eşleştirme için 5 dk geçerlidir, eşleşen cihaz ağdan düşmez.
+      const cookie = `pool_remote=${paired.cookieValue}; HttpOnly; SameSite=Lax; Path=/; Max-Age=31536000${isHttps ? '; Secure' : ''}`;
       if (ct.includes('application/json')) {
         res.writeHead(200, {
           'Content-Type': 'application/json; charset=utf-8',
@@ -922,11 +923,17 @@ export function createRemoteServer({
           }
 
           const kind = hasProject
-            ? (['text', 'read', 'write'].includes(body.kind) ? body.kind : 'read')
+            ? (['text', 'read', 'write'].includes(body.kind) ? body.kind : 'write')
             : 'text';
-          const mode = hasProject && kind === 'write'
-            ? 'execute'
-            : 'response';
+          // Proje sohbetlerinde execute JSON rapor sözleşmesini zorunlu kılma;
+          // model normal CLI gibi sohbet edebilir veya dosya düzenleyebilir.
+          const mode = !hasProject
+            ? 'response'
+            : (body.mode === 'execute' && kind === 'write')
+              ? 'execute'
+              : (body.mode === 'response' && kind !== 'write')
+                ? 'response'
+                : undefined;
           const cleanEffort = body.effort && body.effort !== 'default' ? String(body.effort) : '';
           const includeContext = body.includeContext !== false;
           const docBlocks = cleanAttachments.map(a => `[Eklenen Doküman: ${a.name}]\n${a.content}\n[/Eklenen Doküman]`).join('\n\n');
@@ -937,7 +944,7 @@ export function createRemoteServer({
             prompt: finalPrompt,
             workspace: canonicalWorkspace,
             kind,
-            mode,
+            ...(mode ? { mode } : {}),
             ...(body.group ? { group: String(body.group) } : {}),
             ...(body.routeId ? { routeId: String(body.routeId) } : {}),
             ...(body.modelId ? { modelId: String(body.modelId) } : {}),

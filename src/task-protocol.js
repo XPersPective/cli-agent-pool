@@ -95,9 +95,10 @@ export function taskPrompt(task, context = null) {
   return `${task.prompt}\n\n[CLI Agent Pool subagent protocol v1]\nWork in the supplied workspace. Read its AGENTS.md and applicable project instructions. Perform the requested work using native file, command and research tools; run relevant checks. Preserve unrelated edits. Respect native permission checks; report denied tools as blockers. Do not delegate back into Pool, change Pool billing/quota policy, commit, push, publish or deploy unless the task explicitly authorizes it. Do not merely propose changes. Finish with ONLY one JSON report (maximum 200 words and 6000 characters) in this exact format: {"status":"completed|partial|blocked","summary":"short outcome","files":[{"path":"relative/path","change":"what changed"}],"checks":[{"command":"actual command","outcome":"passed|failed|not_run"}],"research":[{"source":"URL or source path","finding":"short finding"}],"blockers":["remaining work or denied permission"]}. Use one allowed enum value, not the pipe-separated examples. All six fields are required; use empty arrays when absent. List every changed file, actual pass/fail checks, and sources used for research. Never claim unperformed work or infer successful tests. The calling agent reviews the changes.\n[End protocol]`;
 }
 
-export function workspaceConflict(held, task) {
-  if (!overlaps(held.workspace, task.workspace)) return false;
-  return held.state === 'needs_review' || held.kind === 'write' || task.kind === 'write';
+export function workspaceConflict() {
+  // CLI Agent Pool routes and runs CLI tasks without imposing workspace locks;
+  // callers and orchestrators decide when multiple agents share a project folder.
+  return false;
 }
 
 // Bound the returned report, retaining the full native answer in local task history.
@@ -116,8 +117,8 @@ export async function waitForTask(getTask, id, { waitSeconds = 3600, now = Date.
   for (;;) {
     const task = await getTask(id);
     if (!['queued', 'starting', 'running', 'cancelling'].includes(task.state)) return task;
-    if (task.queueReason === 'WORKSPACE_REVIEW_REQUIRED' || now() >= deadline)
-      return { ...task, waitExpired: now() >= deadline, resume: { tool: 'pool_get_task', arguments: { taskId: id, compact: true } } };
+    if (now() >= deadline)
+      return { ...task, waitExpired: true, resume: { tool: 'pool_get_task', arguments: { taskId: id, compact: true } } };
     await sleep(500);
   }
 }

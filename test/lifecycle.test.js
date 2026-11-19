@@ -53,20 +53,21 @@ test('secrets are memory-only, idempotent, injected and redacted; lost secrets f
  assert.equal(f.runs.length,1);
 });
 
-test('queued/start, running/ack and idle deadlines cancel before final lock decision; linked workers are liveness',async t=>{
+test('queued/start, running/ack and idle deadlines cancel cleanly; linked workers run in same workspace and count as liveness',async t=>{
  const f=setup(t);
  const first=f.submit('timer-parent-1',{ackDeadlineSeconds:60}); await until(()=>f.runs.length===1);
+ await f.pool.reconciled;
+ f.pool.pumping=true;
  const queued=f.submit('timer-queued-1',{startDeadlineSeconds:60});
- f.advance(61000);await f.pool.watchdog.tick();
+ f.advance(61000);f.pool.pumping=false;await f.pool.watchdog.tick();
  await until(()=>f.pool.get(first.id).state==='cancelled');
  assert.equal(f.pool.get(first.id).error,'ACK_TIMEOUT'); assert.equal(f.pool.get(queued.id).error,'START_TIMEOUT');
  const live=f.submit('timer-live-1',{ackDeadlineSeconds:60,idleTimeoutSeconds:300}); await until(()=>f.runs.length===2);
  f.pool.watchdog.ack(live.id);f.pool.watchdog.ack(live.id);
  f.advance(61000);await f.pool.watchdog.tick();assert.equal(f.pool.get(live.id).state,'running');
- const outside=path.join(f.root,'worker');mkdirSync(outside);
- const child=f.pool.submit({prompt:'read',kind:'read',workspace:outside,routeId:'native',idempotencyKey:'linked-worker-1'},false,{taskToken:f.runs[1].context.token});
+ // Linked workers can run in the SAME workspace in parallel with their director.
+ const child=f.pool.submit({prompt:'read',kind:'read',workspace:f.workspace,routeId:'native',idempotencyKey:'linked-worker-1'},false,{taskToken:f.runs[1].context.token});
  await until(()=>f.runs.length===3);assert.equal(f.pool.get(child.id).parentTaskId,live.id);
- assert.throws(()=>f.pool.submit({prompt:'x',workspace:f.workspace,kind:'read',idempotencyKey:'overlapping-child'},false,{taskToken:f.runs[1].context.token}),{code:'WORKSPACE_HELD_BY_PARENT'});
  f.advance(400000);await f.pool.watchdog.tick();assert.equal(f.pool.get(live.id).state,'running');
  f.runs[2].finish({result:'read'});await until(()=>f.pool.get(child.id).state==='succeeded');
  f.advance(301000);await f.pool.watchdog.tick();await until(()=>f.pool.get(live.id).state==='cancelled');
@@ -113,11 +114,12 @@ test('MCP capability discovery and owner/worker/director authority, self ack and
  const successorResult=await director.callTool({name:'pool_submit',arguments:{prompt:'continue',workspace:f.workspace,kind:'write',mode:'execute',profile:'director',routeId:'native',idempotencyKey:'director-successor-auth'}});
  assert.equal(successorResult.isError,undefined,JSON.stringify(successorResult));
  const successor=successorResult.structuredContent.data;
- assert.equal(successor.state,'queued');assert.equal(successor.parentTaskId,null);
+ assert.ok(['queued','starting','running'].includes(successor.state));assert.equal(successor.parentTaskId,null);
+ await until(()=>f.runs.length===2);
  const outside=path.join(f.root,'ordinary');mkdirSync(outside);
  const child=f.pool.submit({prompt:'read',workspace:outside,kind:'read',routeId:'native',idempotencyKey:'ordinary-worker-auth'},false,{taskToken:f.runs[0].context.token});
- await until(()=>f.runs.length===2);
- const worker=await client(taskHeader({CLI_AGENT_POOL_TASK_TOKEN:f.runs[1].context.token,CLI_AGENT_POOL_WORKER:'1'}));
+ await until(()=>f.runs.length===3);
+ const worker=await client(taskHeader({CLI_AGENT_POOL_TASK_TOKEN:f.runs[2].context.token,CLI_AGENT_POOL_WORKER:'1'}));
  const forbidden=await worker.callTool({name:'pool_submit',arguments:{prompt:'continue',workspace:f.workspace,kind:'write',mode:'execute',profile:'director',routeId:'native',idempotencyKey:'worker-successor-denied'}});
  assert.equal(forbidden.isError,true);assert.match(forbidden.content[0].text,/OWNER_ONLY/);
  assert.equal((await worker.callTool({name:'pool_ack_task',arguments:{taskId:task.id}})).isError,true);
@@ -171,7 +173,8 @@ test('task and exit hook insert atomically; hook failure never leaves a runnable
 
 test('cancelled/disabled queued preflight cleans nonces and permits a new forced probe',async t=>{
  const f=setup(t);
- const parent=f.submit('preflight-blocking-task');await until(()=>f.runs.length===1);
+ await f.pool.reconciled;
+ f.pool.pumping=true;
  const request={routeId:'native',workspace:f.workspace,capabilities:['poolMcp']};
  const [first,duplicate]=await Promise.all([f.pool.preflight(request),f.pool.preflight(request)]);
  assert.equal(first.id,duplicate.id,'concurrent discovery creates one probe');
@@ -180,9 +183,8 @@ test('cancelled/disabled queued preflight cleans nonces and permits a new forced
  assert.equal(f.pool.probes.size,0);assert.equal(f.pool.nonces.size,0);
  assert.equal(f.pool.get(first.id).preflight.ready,false);
  const second=await f.pool.preflight({...request,force:true});assert.notEqual(first.id,second.id);
- f.config.routes[0].enabled=false;f.pool.schedule();await until(()=>f.pool.get(second.id).error==='ROUTE_DISABLED');
+ f.config.routes[0].enabled=false;f.pool.pumping=false;f.pool.schedule();await until(()=>f.pool.get(second.id).error==='ROUTE_DISABLED');
  assert.equal(f.pool.probes.size,0);assert.equal(f.pool.nonces.size,0);
- f.pool.cancel(parent.id);
 });
 
 test('stopOnQuotaBarrierPercent triggers QUOTA_BARRIER cancellation when route quota reaches barrier', async t => {

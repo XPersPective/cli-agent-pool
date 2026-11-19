@@ -52,10 +52,11 @@ internal static class FolderPicker
         try
         {
             var dialog = (IFileDialog)new NativeFolderDialog();
-            using (var owner = new Form { TopMost = true, ShowInTaskbar = false, StartPosition = FormStartPosition.Manual, Left = -32000, Top = -32000, Width = 1, Height = 1, FormBorderStyle = FormBorderStyle.None })
+            using (var owner = new Form { TopMost = true, Opacity = 0, ShowInTaskbar = true, StartPosition = FormStartPosition.CenterScreen, Width = 1, Height = 1, FormBorderStyle = FormBorderStyle.None, Text = "Klasör Seç" })
             try
             {
                 owner.Show();
+                owner.Activate();
                 SetForegroundWindow(owner.Handle);
                 uint options;
                 dialog.GetOptions(out options);

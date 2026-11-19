@@ -27,8 +27,8 @@ export class Store {
     );
     PRAGMA user_version=2;`);
     const interruptedAt = new Date().toISOString();
-    this.db.prepare("UPDATE tasks SET state='failed', error='INTERRUPTED', updated=? WHERE state IN ('starting','running','cancelling') AND (json_extract(request,'$.kind') IN ('read','text') OR (state='starting' AND json_extract(request,'$.kind')='write' AND id NOT IN (SELECT task_id FROM events WHERE kind='workspace_snapshot')))").run(interruptedAt);
-    this.db.prepare("UPDATE tasks SET state='needs_review', error='INTERRUPTED', updated=? WHERE state IN ('starting','running','cancelling')").run(interruptedAt);
+    this.db.prepare("UPDATE tasks SET state='failed', error='INTERRUPTED', updated=? WHERE state IN ('starting','running','cancelling')").run(interruptedAt);
+    this.db.prepare("UPDATE tasks SET state='failed', error=COALESCE(NULLIF(error,''), 'MANUALLY_RESOLVED'), updated=? WHERE state='needs_review'").run(interruptedAt);
     this.recoverHooks();
     this.pruneHistory();
   }
@@ -36,7 +36,7 @@ export class Store {
   get(id) { return this.db.prepare('SELECT * FROM tasks WHERE id=?').get(id); }
   list(limit = 50, offset = 0, activeFirst = false) { return this.db.prepare("SELECT id,state,created,updated,error,(SELECT detail FROM events e WHERE e.task_id=tasks.id AND e.kind='original_error' ORDER BY e.seq DESC LIMIT 1) AS originalError,workspace,json_extract(request,'$.routeId') AS routeId,json_extract(request,'$.modelId') AS modelId,json_extract(request,'$.kind') AS kind,json_extract(request,'$.mode') AS mode,json_extract(request,'$.group') AS 'group',json_extract(request,'$.effort') AS effort,json_extract(request,'$.clientLabel') AS clientLabel FROM tasks ORDER BY "+(activeFirst?"state IN ('queued','starting','running','cancelling') DESC, ":'')+"created DESC, rowid DESC LIMIT ? OFFSET ?").all(limit, offset); }
   queued() { return this.db.prepare("SELECT * FROM tasks WHERE state='queued' ORDER BY created, rowid").all(); }
-  held() { return this.db.prepare("SELECT id,state,workspace,json_extract(request,'$.kind') AS kind FROM tasks WHERE state IN ('starting','running','cancelling','needs_review')").all(); }
+  held() { return this.db.prepare("SELECT id,state,workspace,json_extract(request,'$.kind') AS kind FROM tasks WHERE state IN ('starting','running','cancelling')").all(); }
   insert(task) {
     const now = new Date().toISOString();
     this.db.exec('SAVEPOINT insert_task');

@@ -73,24 +73,24 @@ test('manual group, explicit route and effort are hard filters', t => {
   assert.throws(() => pool.submit(request), { code: 'NO_ROUTE' });
 });
 
-test('overlapping workspace stays reserved until cancellation cleanup finishes', async t => {
-  let release;
-  let cancelled = false;
+test('same workspace runs multiple write tasks in parallel and cancellation only cancels the targeted task', async t => {
+  const releases = [];
+  const cancelled = [];
   let starts = 0;
-  const { pool, request } = fixture(t, { execute: () => { starts++; return { cancel: () => { cancelled = true; }, done: new Promise(resolve => { const timer = setTimeout(() => resolve({ error: 'TEST_TIMEOUT' }), 5000); release = value => { clearTimeout(timer); resolve(value); }; }) }; } });
+  const { pool, request } = fixture(t, { execute: () => { const idx = starts++; return { cancel: () => { cancelled.push(idx); }, done: new Promise(resolve => { const timer = setTimeout(() => resolve({ error: 'TEST_TIMEOUT' }), 5000); releases.push(value => { clearTimeout(timer); resolve(value); }); }) }; } });
   request.kind = 'write';
-  pool.config.concurrency = 2; pool.config.routes[0].maxConcurrent = 2;
   const first = pool.submit(request);
   const second = pool.submit({ ...request, idempotencyKey: 'second-key-123' });
   await delay(30);
-  assert.equal(starts, 1);
+  assert.equal(starts, 2);
+  assert.equal(pool.get(first.id).state, 'running');
+  assert.equal(pool.get(second.id).state, 'running');
   pool.cancel(first.id);
-  assert.ok(cancelled); assert.equal(pool.get(second.id).state, 'queued');
-  release({ error: 'CANCELLED' });
-  assert.equal((await terminal(pool, first.id)).state, 'needs_review');
-  await delay(30); assert.equal(starts, 1);
-  assert.equal(pool.get(second.id).queueReason, 'WORKSPACE_REVIEW_REQUIRED');
-  pool.cancel(second.id);
+  assert.deepEqual(cancelled, [0]);
+  releases[0]({ error: 'CANCELLED' });
+  releases[1]({ result: 'ok' });
+  assert.equal((await terminal(pool, first.id)).state, 'cancelled');
+  assert.equal((await terminal(pool, second.id)).state, 'succeeded');
 });
 
 test('caller can submit 128 independent tasks without global, route or queued-job caps', async t => {
@@ -111,17 +111,18 @@ test('legacy worker limits migrate away and caller timeouts are not capped at an
  assert.throws(()=>taskSchema.parse({...task,timeoutSeconds:2147484}));
 });
 
-test('write failure quarantines the workspace and never retries', async t => {
+test('write failure ends in failed without retrying or locking the workspace', async t => {
   let starts = 0;
   const { pool, request } = fixture(t, { execute: () => { starts++; return { cancel() {}, done: Promise.resolve({ error: 'CLI_FAILED' }) }; } });
   const first = pool.submit({ ...request, kind: 'write' });
-  assert.equal((await terminal(pool, first.id)).state, 'needs_review');
+  assert.equal((await terminal(pool, first.id)).state, 'failed');
+  assert.equal(starts, 1);
   const second = pool.submit({ ...request, idempotencyKey: 'second-key-123' });
-  await delay(30);
-  assert.equal(pool.get(second.id).state, 'queued'); assert.equal(starts, 1);
+  assert.equal((await terminal(pool, second.id)).state, 'failed');
+  assert.equal(starts, 2);
 });
 
-test('restart preserves completed results and quarantines interrupted tasks', t => {
+test('restart preserves completed results and marks interrupted tasks failed without workspace lock', t => {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-restart-'));
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const filename = path.join(root, 'pool.sqlite');
@@ -130,7 +131,7 @@ test('restart preserves completed results and quarantines interrupted tasks', t 
   store.insert({ id: '2', key: 'key2', fingerprint: 'fp', workspace: root, request: {} });
   store.update('1', 'succeeded', 'saved'); store.update('2', 'running'); store.close();
   store = new Store(filename);
-  try { assert.equal(store.get('1').result, 'saved'); assert.equal(store.get('2').state, 'needs_review'); }
+  try { assert.equal(store.get('1').result, 'saved'); assert.equal(store.get('2').state, 'failed'); assert.equal(store.get('2').error, 'INTERRUPTED'); }
   finally { store.close(); }
 });
 

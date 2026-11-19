@@ -29,16 +29,16 @@ CLI Agent Pool strictly manages the local model and CLI pool on `127.0.0.1`.
    - **OpenAI-compatible (`api.protocol = 'openai'`)**: executed via OpenCode (`opencode`) with per-process `OPENCODE_CONFIG_CONTENT` configuring `@ai-sdk/openai-compatible` and enforcing read/write tool permissions.
 5. Keep provider credentials out of `config.json`, MCP responses and browser responses. Custom API keys are write-only via `/api/secrets`.
 6. Use one Streamable HTTP MCP owner and a lightweight `stdio` proxy so every coding tool shares one SQLite task owner.
-7. Prefer missed work requiring review (`needs_review`) over automatic repeated file changes.
+7. CLI Agent Pool routes and runs CLI tasks without imposing workspace locks or review quarantines; callers and orchestrators decide when multiple agents share a project folder.
 
 ## State and recovery
 
 `queued -> starting -> running -> succeeded | failed | timed_out`
 Cancellation passes through `cancelling`; a confirmed process-tree teardown ends
-the read/text task in `cancelled`. Failed, cancelled or timed-out write tasks are
-quarantined as `needs_review`, retaining the workspace reservation.
-On restart, previously `starting/running/cancelling` tasks become `needs_review`.
-Queued tasks are revalidated against the current route and canonical workspace in strict FIFO (`rowid`) order.
+the task in `cancelled`. Failed, cancelled, timed-out or interrupted tasks end directly
+in `failed`, `cancelled` or `timed_out` without locking or quarantining the workspace.
+Multiple agents (read, text, write, director and linked workers) may execute concurrently
+in the same project workspace.
 
 ## Trust and persistence
 

@@ -23,30 +23,32 @@ async function fixture(t, executeTask) {
  return {root,pool,store,submit};
 }
 
-test('64 readers share a project; a queued writer prevents reader starvation and excludes other writes',async t=>{
+test('readers and writers share a project concurrently with zero workspace queueing',async t=>{
  const pending=[];
  const {pool,submit}=await fixture(t,()=>({cancel(){},done:new Promise(resolve=>pending.push(resolve))}));
  const readers=Array.from({length:64},(_,i)=>submit(`reader-${i}`));
- await delay(30);assert.equal(pending.length,64);
  const writer=submit('writer','write');
- const late=submit('late-reader');
- assert.equal(pool.get(late.id).blockedBy,writer.id);
- for(const resolve of pending.splice(0))resolve({result:'read'});
- await delay(40);assert.equal(pending.length,1);assert.equal(pool.get(writer.id).state,'running');assert.equal(pool.get(late.id).state,'queued');
  const writer2=submit('writer2','write');
- pending.shift()({result:'edited'});
- await delay(40);assert.equal(pool.get(late.id).state,'running');assert.equal(pool.get(writer2.id).state,'queued');
- pending.shift()({result:'read'});
- await delay(40);assert.equal(pool.get(writer2.id).state,'running');pending.shift()({result:'edited'});
+ const late=submit('late-reader');
+ await delay(40);
+ assert.equal(pending.length,67);
+ assert.equal(pool.get(writer.id).state,'running');
+ assert.equal(pool.get(writer2.id).state,'running');
+ assert.equal(pool.get(late.id).state,'running');
+ assert.equal(pool.get(late.id).blockedBy,null);
+ for(const resolve of pending.splice(0))resolve({result:'done'});
+ await Promise.all([...readers,writer,writer2,late].map(async item=>{for(let i=0;i<100&&pool.get(item.id).state!=='succeeded';i++)await delay(10);assert.equal(pool.get(item.id).state,'succeeded');}));
 });
 
-test('execute requires write and a tool capable adapter; write errors after starting retain quarantine',async t=>{
+test('execute requires write and a tool capable adapter; write errors end in failed without quarantine',async t=>{
  const {pool,submit}=await fixture(t,()=>({cancel(){},done:Promise.reject(new Error('worker lost'))}));
  assert.throws(()=>submit('bad-mode','read',{mode:'execute'}),{code:'INVALID_REQUEST'});
  assert.deepEqual(pool.models()[0].executionModes,['execute']);
  const task=submit('write','write',{mode:'execute'});await delay(40);
- assert.equal(pool.get(task.id).state,'needs_review');
- const later=submit('blocked');assert.equal(pool.get(later.id).queueReason,'WORKSPACE_REVIEW_REQUIRED');
+ assert.equal(pool.get(task.id).state,'failed');
+ const later=submit('not-blocked');await delay(40);
+ assert.equal(pool.get(later.id).queueReason,null);
+ assert.equal(pool.get(later.id).state,'failed');
  pool.config.routes[0].adapter='ollama';
  assert.throws(()=>submit('no-tools','write',{mode:'execute'}),{code:'NO_ROUTE'});
 });
@@ -57,8 +59,6 @@ test('queue wait is independent of worker timeout and returns resumable state in
  assert.equal(result.state,'succeeded');
  const waiting=await waitForTask(async()=>({id:'two',state:'queued'}),'two',{waitSeconds:1,now:()=>clock,sleep:async()=>{clock+=1000;}});
  assert.equal(waiting.state,'queued');assert.equal(waiting.waitExpired,true);assert.equal(waiting.resume.arguments.taskId,'two');
- const review=await waitForTask(async()=>({id:'three',state:'queued',queueReason:'WORKSPACE_REVIEW_REQUIRED'}),'three',{sleep:async()=>assert.fail('must return blocker')});
- assert.equal(review.waitExpired,false);
 });
 
 test('execution exposes commands without bypass flags and compact response omits duplicated prompt/events',()=>{
@@ -93,38 +93,38 @@ test('structured execution report distinguishes completed, blocked and missing r
  assert.throws(()=>submit('response-write','write',{mode:'response'}),{code:'INVALID_REQUEST'});
  answer=JSON.stringify({...report,status:'blocked',blockers:['Permission required']});
  const blocked=submit('report-blocked','write',{mode:'execute'});await delay(40);
- assert.equal(pool.get(blocked.id).error,'WORK_INCOMPLETE');assert.equal(pool.get(blocked.id).report.blockers[0],'Permission required');
- // Resolve only the synthetic fixture so that the malformed-report case can start.
- pool.store.update(blocked.id,'failed',answer,'MANUALLY_RESOLVED');
+ assert.equal(pool.get(blocked.id).error,'WORK_INCOMPLETE');assert.equal(pool.get(blocked.id).state,'failed');assert.equal(pool.get(blocked.id).report.blockers[0],'Permission required');
  answer='I did it';const invalid=submit('report-invalid','write',{mode:'execute'});await delay(40);
- assert.equal(pool.get(invalid.id).error,'INVALID_REPORT');assert.equal(pool.get(invalid.id).result,'I did it');assert.equal(pool.get(invalid.id).state,'needs_review');
+ assert.equal(pool.get(invalid.id).error,'INVALID_REPORT');assert.equal(pool.get(invalid.id).result,'I did it');assert.equal(pool.get(invalid.id).state,'failed');
 });
 
-test('cancelling a waiting writer releases its fairness barrier immediately',async t=>{
+test('cancelling one concurrent task does not disrupt other tasks in the same workspace',async t=>{
  const pending=[];
  const {pool,submit}=await fixture(t,()=>({cancel(){},done:new Promise(resolve=>pending.push(resolve))}));
- submit('first-reader');await delay(20);
- const writer=submit('cancelled-writer','write');const later=submit('later-reader');await delay(20);
- assert.equal(pool.get(later.id).state,'queued');pool.cancel(writer.id);await delay(30);
- assert.equal(pool.get(later.id).state,'running');for(const resolve of pending)resolve({result:'read'});
+ const first=submit('first-reader');
+ const writer=submit('cancelled-writer','write');
+ const later=submit('later-reader');
+ await delay(30);
+ assert.equal(pool.get(first.id).state,'running');
+ assert.equal(pool.get(writer.id).state,'running');
+ assert.equal(pool.get(later.id).state,'running');
+ pool.cancel(writer.id);
+ pending[1]({error:'CANCELLED'});
+ pending[0]({result:'read'});
+ pending[2]({result:'read'});
+ await delay(30);
+ assert.equal(pool.get(writer.id).state,'cancelled');
+ assert.equal(pool.get(later.id).state,'succeeded');
 });
 
-test('permission diagnostics survive compact polling; inspected resolution preserves report and releases queued writer', async t => {
+test('permission diagnostics survive compact polling without blocking subsequent writers', async t => {
  const report=JSON.stringify({status:'blocked',summary:'Denied',files:[],checks:[],research:[],blockers:['run_command git status denied']});
  const {pool,submit}=await fixture(t,()=>({cancel(){},done:Promise.resolve({error:'PERMISSION_REQUIRED',detail:'run_command: git status denied by owner rule',result:report})}));
  const first=submit('denied','write',{mode:'execute'});await delay(40);
  const blocked=compactTask(pool.get(first.id,999999));
  assert.equal(blocked.errorDetail,'run_command: git status denied by owner rule');
- assert.equal(blocked.report.status,'blocked');assert.equal(blocked.state,'needs_review');
- const later=submit('later','write',{mode:'execute'});assert.equal(pool.get(later.id).blockedBy,first.id);
- assert.throws(()=>pool.resolveInspected({taskId:first.id,reviewed:false,note:'not reviewed'}));
- assert.throws(()=>pool.resolveInspected({taskId:later.id,reviewed:true,note:'queued'}),{code:'INVALID_STATE'});
- pool.active.set(first.id,{});
- assert.throws(()=>pool.resolveInspected({taskId:first.id,reviewed:true,note:'still active'}),{code:'INVALID_STATE'});
- pool.active.delete(first.id);
- const resolved=pool.resolveInspected({taskId:first.id,reviewed:true,note:'Inspected files and native denial; no replay.'});
- assert.equal(resolved.result,report);assert.equal(resolved.error,'MANUALLY_RESOLVED');
- assert(resolved.events.some(e=>e.kind==='review_resolution'));
- assert.throws(()=>pool.resolveInspected({taskId:first.id,reviewed:true,note:'again'}),{code:'INVALID_STATE'});
- await delay(40);assert.equal(pool.get(later.id).state,'needs_review');
+ assert.equal(blocked.report.status,'blocked');assert.equal(blocked.state,'failed');
+ const later=submit('later','write',{mode:'execute'});await delay(40);
+ assert.equal(pool.get(later.id).blockedBy,null);
+ assert.equal(pool.get(later.id).state,'failed');
 });

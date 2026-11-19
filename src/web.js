@@ -280,8 +280,8 @@ export function browserUI(pool, management, { openLogin = openCliLogin } = {}) {
         };
       }
       if (operation === 'clear_history') {
-        if (payload.includeReview === true && pool.store.held) {
-          for (const held of pool.store.held().filter(t => t.state === 'needs_review' && !pool.active?.has(t.id))) {
+        if (payload.includeReview === true && pool.store.list) {
+          for (const held of pool.store.list(500).filter(t => t.state === 'needs_review' && !pool.active?.has(t.id))) {
             try {
               if (pool.resolveInspected) pool.resolveInspected({ taskId: held.id, reviewed: true, note: 'Yönetim panelinden toplu temizleme ile kapatıldı.' });
               else pool.store.update(held.id, 'cancelled', held.result || 'İnceleme yönetim panelinden kapatıldı.', held.error ?? null);

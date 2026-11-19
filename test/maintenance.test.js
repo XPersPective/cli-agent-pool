@@ -51,13 +51,13 @@ test('card probes preserve owner policy and use an isolated runtime workspace',a
  config.routes[0].enabled=false;await assert.rejects(pool.probeModel({routeId:'test',modelId:'tiny',group:'low'}),{code:'NO_ROUTE'});
 });
 
-test('history expiration removes completed records and preserves active writes and review quarantine',()=>{
+test('history expiration removes completed records and preserves active writes',()=>{
  const store=new Store(':memory:');
  try{
   for(const [id,state]of [['done','succeeded'],['held','needs_review'],['active','running']]){store.insert({id,key:`key-${id}`,fingerprint:'same',workspace:'project',request:{prompt:'private request',routeId:'route'}});store.update(id,state,'private result');}
   store.pruneHistory('9999-01-01');
   assert.equal(store.byKey('key-done'),undefined);assert.equal(store.get('done'),undefined);assert.equal(store.events('done').length,0);
-  assert.equal(JSON.parse(store.get('held').request).prompt,'private request');assert.equal(store.get('active').result,'private result');assert.equal(store.held().length,2);
+  assert.equal(store.get('active').result,'private result');assert.equal(store.held().length,1);
  }finally{store.close();}
 });
 
@@ -77,7 +77,7 @@ test('Antigravity native stream parses the terminal response and retains permiss
  assert.equal((await run([{event:'result',result:{status:'ERROR',response:'Failed'}}])).error,'CLI_FAILED');
 });
 
-test('legacy non-paid selection switches do not gate callers and queue exposes review locks',async t=>{
+test('legacy non-paid selection switches do not gate callers and workspaces are never review-blocked',async t=>{
  const route=(id,autoSelect)=>({id,adapter:'custom',executable:process.execPath,argsTemplate:['--version'],enabled:true,billing:'free',autoSelect,models:[{id:'model',alias:id,group:'medium',kinds:['read']}]});
  const config=configSchema.parse({routes:[route('first',false),route('second',true)]}),store=new Store(':memory:'),pool=new Pool(config,store);
  t.after(async()=>{await pool.close();store.close();});
@@ -87,7 +87,7 @@ test('legacy non-paid selection switches do not gate callers and queue exposes r
  assert.equal((await pool.selectLive({kind:'read',group:'medium'})).selected.routeId,'first');assert.deepEqual(queried,['first','second']);
  for(const id of ['held','waiting'])store.insert({id,key:id,fingerprint:id,workspace:process.cwd(),request:{routeId:'first',kind:'write'}});
  store.update('held','needs_review',null,'CLI_FAILED');
- assert.equal(pool.get('waiting').queueReason,'WORKSPACE_REVIEW_REQUIRED');assert.equal(pool.get('waiting').blockedBy,'held');
+ assert.equal(pool.get('waiting').queueReason,null);assert.equal(pool.get('waiting').blockedBy,null);
 });
 
 test('Kimi provider subscription refusal is not reported as a generic CLI failure',async t=>{

@@ -746,13 +746,10 @@ test('v2.23.0: pool membership add/remove, call delete/clear, document attachmen
   }
 });
 
-test('v2.24.0: project chat defaults to read/response, explicit write uses execute, projectless uses isolated sandbox, queueReason & resolve lock work', async () => {
-  const dir = makeTempDir('pool-remote-v224-');
+test('v2.25.0: project chat runs write without forced execute JSON protocol, no edit-mode toggle, isolated projectless sandbox', async () => {
+  const dir = makeTempDir('pool-remote-v225-');
   const ws = makeTempDir('pool-remote-proj-');
   const submitted = [];
-  const resolved = [];
-  const blockerId = '55555555-5555-4555-8555-555555555555';
-  const queuedId = '66666666-6666-4666-8666-666666666666';
 
   const remote = createRemoteServer({
     directory: dir,
@@ -760,39 +757,23 @@ test('v2.24.0: project chat defaults to read/response, explicit write uses execu
     host: '127.0.0.1',
     poolBridge: {
       getConfig: () => ({ port: 43127, workspaceRoots: [ws] }),
-      health: async () => ({ status: 'ok', version: '2.24.0', connections: 1, models: 1, active: 1 }),
+      health: async () => ({ status: 'ok', version: '2.25.0', connections: 1, models: 1, active: 0 }),
       pools: async () => ({ categories: [{ id: 'low', label: 'Hafif' }] }),
       poolModels: async () => ({ models: [{ routeId: 'opencode-local', modelId: 'mimo-free', name: 'MiMo Free', efforts: [], kinds: ['text', 'read', 'write'], billing: 'free' }] }),
       catalogModels: async () => [{ routeId: 'opencode-local', modelId: 'mimo-free', name: 'MiMo Free', categories: ['low'], efforts: [], kinds: ['text', 'read', 'write'], billing: 'free' }],
       quotas: async () => ({ connections: [] }),
       routeQuota: async () => ({ connections: [] }),
       connections: async () => [{ id: 'opencode-local', adapter: 'opencode', billing: 'free' }],
-      tasks: async () => ({
-        tasks: [
-          { id: queuedId, routeId: 'opencode-local', modelId: 'mimo-free', state: 'queued', workspace: ws },
-          { id: blockerId, routeId: 'opencode-local', modelId: 'mimo-free', state: 'needs_review', workspace: ws, error: 'WORK_INCOMPLETE' },
-        ],
-      }),
-      task: async id => {
-        if (id === queuedId) {
-          return { id: queuedId, state: 'queued', workspace: ws, queueReason: 'WORKSPACE_REVIEW_REQUIRED', blockedBy: blockerId, events: [] };
-        }
-        return { id, state: 'needs_review', workspace: ws, error: 'WORK_INCOMPLETE', events: [] };
-      },
+      tasks: async () => ({ tasks: [] }),
+      task: async id => ({ id, state: 'succeeded', workspace: ws, events: [] }),
       submit: async payload => {
         submitted.push(payload);
         return {
-          id: queuedId,
-          state: 'queued',
-          queueReason: 'WORKSPACE_REVIEW_REQUIRED',
-          blockedBy: blockerId,
+          id: '66666666-6666-4666-8666-666666666666',
+          state: 'starting',
           routeId: 'opencode-local',
           modelId: 'mimo-free',
         };
-      },
-      resolveTask: async (id, note) => {
-        resolved.push({ id, note });
-        return { id, state: 'failed', error: 'MANUALLY_RESOLVED' };
       },
     },
   });
@@ -808,38 +789,22 @@ test('v2.24.0: project chat defaults to read/response, explicit write uses execu
     });
     const cookie = (redeem.headers.get('set-cookie') || '').split(';')[0];
 
-    // 1. GET /r/state enriches queued tasks with queueReason and blockedBy
-    const st = await (await fetch(`${base}/r/state`, { headers: { Cookie: cookie } })).json();
-    const queuedTask = st.tasks.find(t => t.id === queuedId);
-    assert.equal(queuedTask.queueReason, 'WORKSPACE_REVIEW_REQUIRED');
-    assert.equal(queuedTask.blockedBy, blockerId);
-
-    // 2. Project chat defaults to kind=read, mode=response (no execute JSON contract or write lock)
+    // 1. Project chat uses kind=write WITHOUT forced mode=execute (natural chat + full tools, no WORK_INCOMPLETE)
     const { chat } = await (await fetch(`${base}/r/chats`, {
       method: 'POST',
       headers: { Cookie: cookie, 'Content-Type': 'application/json' },
       body: JSON.stringify({ workspace: ws }),
     })).json();
-    const readSend = await (await fetch(`${base}/r/chats/${chat.id}/send`, {
+    const projSend = await fetch(`${base}/r/chats/${chat.id}/send`, {
       method: 'POST',
       headers: { Cookie: cookie, 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt: 'slm', workspace: ws }),
-    })).json();
-    assert.equal(submitted[0].kind, 'read');
-    assert.equal(submitted[0].mode, 'response');
-    assert.equal(readSend.assistantMessage.queueReason, 'WORKSPACE_REVIEW_REQUIRED');
-    assert.equal(readSend.assistantMessage.blockedBy, blockerId);
-
-    // 3. Explicit kind=write switches to mode=execute
-    await fetch(`${base}/r/chats/${chat.id}/send`, {
-      method: 'POST',
-      headers: { Cookie: cookie, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: 'README dosyasını güncelle', workspace: ws, kind: 'write' }),
     });
-    assert.equal(submitted[1].kind, 'write');
-    assert.equal(submitted[1].mode, 'execute');
+    assert.equal(projSend.status, 200);
+    assert.equal(submitted[0].kind, 'write');
+    assert.equal('mode' in submitted[0], false);
 
-    // 4. Projectless chat ALWAYS uses isolated remote-chat-sandbox even when workspaceRoots is non-empty
+    // 2. Projectless chat ALWAYS uses isolated remote-chat-sandbox even when workspaceRoots is non-empty
     const { chat: freeChat } = await (await fetch(`${base}/r/chats`, {
       method: 'POST',
       headers: { Cookie: cookie, 'Content-Type': 'application/json' },
@@ -850,31 +815,20 @@ test('v2.24.0: project chat defaults to read/response, explicit write uses execu
       headers: { Cookie: cookie, 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt: 'Merhaba', workspace: '' }),
     });
-    assert.equal(submitted[2].kind, 'text');
-    assert.equal(submitted[2].mode, 'response');
-    assert.ok(submitted[2].workspace.endsWith('remote-chat-sandbox'));
-    assert.notEqual(submitted[2].workspace, ws);
+    assert.equal(submitted[1].kind, 'text');
+    assert.equal(submitted[1].mode, 'response');
+    assert.ok(submitted[1].workspace.endsWith('remote-chat-sandbox'));
+    assert.notEqual(submitted[1].workspace, ws);
 
-    // 5. POST /r/tasks/:id/resolve unblocks needs_review lock
-    const resResolve = await fetch(`${base}/r/tasks/${blockerId}/resolve`, {
-      method: 'POST',
-      headers: { Cookie: cookie, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ note: 'İnceleme kapatıldı' }),
-    });
-    assert.equal(resResolve.status, 200);
-    const resolveData = await resResolve.json();
-    assert.equal(resolveData.resolved, true);
-    assert.equal(resolved[0].id, blockerId);
-
-    // 6. UI contract checks for v2.24.0
+    // 3. UI & cookie contract checks: no edit-mode toggle, no spinning send arrow, 1-year session cookie
+    assert.match(redeem.headers.get('set-cookie') || '', /Max-Age=31536000/);
     const html = readFileSync(path.resolve('remote/public/index.html'), 'utf8');
     const js = readFileSync(path.resolve('remote/public/app.js'), 'utf8');
     const css = readFileSync(path.resolve('remote/public/style.css'), 'utf8');
-    assert.match(html, /id="edit-mode-toggle-btn"/);
-    assert.match(js, /describeQueueReason/);
-    assert.match(js, /resolveReviewLock/);
+    assert.doesNotMatch(html, /id="edit-mode-toggle-btn"/);
+    assert.doesNotMatch(css, /\.send-btn\.sending\s+svg/);
     assert.match(js, /isRawReportJson/);
-    assert.match(css, /\.queue-box/);
+    assert.match(readFileSync(path.resolve('src/folder-picker.cs'), 'utf8'), /CenterScreen/);
   } finally {
     await remote.close();
     rmSync(dir, { recursive: true, force: true });

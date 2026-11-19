@@ -55,7 +55,6 @@
       modelName: '',
       effort: '',
       efforts: [],
-      allowEdit: false,
       includeContext: true,
     },
     collapsedPools: new Set(),
@@ -247,7 +246,6 @@
           modelId: typeof saved.modelId === 'string' ? saved.modelId : '',
           modelName: typeof saved.modelName === 'string' ? saved.modelName : '',
           effort: eff,
-          allowEdit: saved.allowEdit === true,
           includeContext: saved.includeContext !== false,
         });
       }
@@ -571,14 +569,6 @@
     ctxBtn.classList.toggle('active', sel.includeContext);
     ctxBtn.setAttribute('aria-pressed', String(sel.includeContext));
     $('context-toggle-label').textContent = sel.includeContext ? 'Bağlam: Özet' : 'Bağlam: Kapalı';
-
-    const editBtn = $('edit-mode-toggle-btn');
-    if (editBtn) {
-      editBtn.hidden = !ws;
-      editBtn.classList.toggle('active', Boolean(ws && sel.allowEdit));
-      editBtn.setAttribute('aria-pressed', String(Boolean(ws && sel.allowEdit)));
-      $('edit-mode-label').textContent = sel.allowEdit ? '✏️ Düzenle: Açık' : '✏️ Düzenle: Kapalı';
-    }
     updateSendButton();
   }
 
@@ -1222,25 +1212,46 @@
     } else {
       for (const dir of state.sharedFolders) {
         sharedList.appendChild(el('div', { className: 'device-row' }, [
-          el('div', { style: 'min-width:0' }, [
+          el('button', {
+            type: 'button',
+            className: 'chat-item-main',
+            style: 'min-width:0;text-align:left',
+            title: 'Bu projeyi sohbette aç',
+            onClick: () => {
+              void selectWorkspace(dir, false).then(() => switchView('chat'));
+            },
+          }, [
             el('strong', { text: `📁 ${folderName(dir)}` }),
             el('div', { className: 'muted mono', text: dir }),
           ]),
-          el('button', {
-            type: 'button',
-            className: 'btn btn-danger btn-sm',
-            text: 'Kaldır',
-            onClick: async () => {
-              try {
-                const res = await api('/r/folders/shared', { method: 'POST', body: { action: 'remove', path: dir } });
-                state.sharedFolders = res.sharedFolders || [];
-                renderSettingsView();
-                renderWorkspaceStrip();
-                renderChatList();
-                toast('Klasör paylaşımdan kaldırıldı.');
-              } catch (err) { toast(err.message, true); }
-            },
-          }),
+          el('div', { className: 'inline-btn-group' }, [
+            el('button', {
+              type: 'button',
+              className: 'btn btn-secondary btn-sm',
+              text: 'Aç',
+              title: 'Alt klasörleri gez',
+              onClick: () => {
+                state.folderDialogPurpose = 'workspace';
+                $('folder-dialog').showModal();
+                void loadFolderBrowser(dir, true);
+              },
+            }),
+            el('button', {
+              type: 'button',
+              className: 'btn btn-danger btn-sm',
+              text: 'Kaldır',
+              onClick: async () => {
+                try {
+                  const res = await api('/r/folders/shared', { method: 'POST', body: { action: 'remove', path: dir } });
+                  state.sharedFolders = res.sharedFolders || [];
+                  renderSettingsView();
+                  renderWorkspaceStrip();
+                  renderChatList();
+                  toast('Klasör paylaşımdan kaldırıldı.');
+                } catch (err) { toast(err.message, true); }
+              },
+            }),
+          ]),
         ]));
       }
     }
@@ -1501,7 +1512,7 @@
           type: 'button',
           className: 'chat-item-main',
           title: 'Alt klasörlere girmek için tıklayın',
-          onClick: () => void loadFolderBrowser(dir),
+          onClick: () => void loadFolderBrowser(dir, true),
         }, [
           el('div', { className: 'picker-item-title', text: `📁 ${folderName(dir)}` }),
           el('div', { className: 'picker-item-sub mono', text: dir }),
@@ -1610,7 +1621,7 @@
       if (res.tailscaleIp) {
         netBadge.className = 'badge badge-ok';
         netBadge.textContent = `Tailscale aktif: ${res.tailscaleIp}`;
-        guide.textContent = '1. Telefonda Tailscale açık olsun. 2. Telefonunuzun normal Kamera uygulamasıyla bu QR kodu okutun ve linke dokunun (otomatik giriş yapılır). 3. Tarayıcıdan "Ana ekrana ekle" diyerek uygulama gibi kullanın.';
+        guide.textContent = '1. Telefonda Tailscale açık olsun. 2. Kamerayla QR kodu okutup bağlantıya dokunun (QR kodu yalnız okutma için 5 dk geçerlidir; eşleştikten sonra oturumunuz 1 yıl kalıcıdır, ağdan düşmezsiniz). 3. "Ana ekrana ekle" ile uygulama gibi kullanın.';
       } else {
         netBadge.className = 'badge badge-warn';
         netBadge.textContent = 'Yalnız bu bilgisayar (127.0.0.1) — Tailscale algılanmadı';
@@ -1752,13 +1763,9 @@
     const workspace = state.activeChat?.workspace || '';
     const modelObj = findModelObj(state.selection.routeId, state.selection.modelId);
     const modelKinds = Array.isArray(modelObj?.kinds) ? modelObj.kinds : ['text', 'read', 'write'];
-    const wantEdit = Boolean(workspace && state.selection.allowEdit);
     const kind = !workspace
       ? 'text'
-      : wantEdit
-        ? (modelKinds.includes('write') ? 'write' : modelKinds.includes('read') ? 'read' : 'text')
-        : (modelKinds.includes('read') ? 'read' : 'text');
-    const mode = workspace && kind === 'write' ? 'execute' : 'response';
+      : (modelKinds.includes('write') ? 'write' : modelKinds.includes('read') ? 'read' : 'text');
     const cleanEffort = state.selection.effort && state.selection.effort !== 'default' ? state.selection.effort : '';
 
     state.sending = true;
@@ -1771,7 +1778,7 @@
           attachments,
           workspace,
           kind,
-          mode,
+          ...(!workspace ? { mode: 'response' } : {}),
           includeContext: state.selection.includeContext,
           ...(state.selection.group ? { group: state.selection.group } : {}),
           ...(state.selection.routeId ? { routeId: state.selection.routeId } : {}),
@@ -1984,21 +1991,12 @@
     });
 
     // Single unified "📁 Klasör Seç" button in Settings:
-    // Opens native Windows folder dialog on desktop, or web folder browser on phone.
+    // Opens the interactive folder & drive browser immediately (works on desktop and phone,
+    // and includes the native Windows dialog button inside the sheet).
     $('add-shared-folder-btn').addEventListener('click', () => {
-      if (state.canPickNativeFolder) {
-        void pickNativeFolder(true);
-      } else {
-        state.folderDialogPurpose = 'shared';
-        $('folder-dialog').showModal();
-        void loadFolderBrowser('', true);
-      }
-    });
-
-    $('edit-mode-toggle-btn')?.addEventListener('click', () => {
-      state.selection.allowEdit = !state.selection.allowEdit;
-      saveSelection();
-      renderTopbarAndStatus();
+      state.folderDialogPurpose = 'shared';
+      $('folder-dialog').showModal();
+      void loadFolderBrowser('', true);
     });
 
     $('context-toggle-btn').addEventListener('click', () => {

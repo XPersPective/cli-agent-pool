@@ -46,8 +46,10 @@ test('CLI resolve talks to the running authenticated owner without opening a sec
  pool.config.routes[0].models[0].kinds=['write'];pool.checkAuth=async()=>{};
  pool.execute=()=>({cancel(){},done:Promise.resolve({error:'PERMISSION_REQUIRED',detail:'run_command denied',result:'preserved native report'})});
  const task=pool.submit({prompt:'synthetic denial',workspace:root,kind:'write',idempotencyKey:'cli-resolve-live-owner'});
- for(let i=0;i<200 && pool.get(task.id).state!=='needs_review';i++)await delay(10);
- assert.equal(pool.get(task.id).state,'needs_review');
+ for(let i=0;i<200 && pool.get(task.id).state!=='failed';i++)await delay(10);
+ assert.equal(pool.get(task.id).state,'failed');
+ // Backwards-compatible CLI resolve still works on any legacy needs_review record.
+ pool.store.update(task.id,'needs_review','preserved native report','PERMISSION_REQUIRED');
  const {stdout}=await promisify(execFile)(process.execPath,[fileURLToPath(new URL('../bin/pool.js',import.meta.url)),'resolve',task.id,'--note','Inspected synthetic workspace.'],{env:{...process.env,CLI_AGENT_POOL_HOME:root},timeout:10000});
  assert.equal(JSON.parse(stdout).resolved,task.id);
  assert.equal(pool.get(task.id).state,'failed');assert.equal(pool.get(task.id).result,'preserved native report');

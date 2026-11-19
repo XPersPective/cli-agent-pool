@@ -834,8 +834,6 @@
   .send-btn:hover:not(:disabled) { opacity: 0.9; }
   .send-btn:active:not(:disabled) { transform: scale(0.95); }
   .send-btn:disabled { opacity: 0.28; cursor: not-allowed; }
-  .send-btn.sending svg { animation: spin 0.9s linear infinite; }
-  @keyframes spin { to { transform: rotate(360deg); } }
 
   .mic-status {
     max-width: 800px;

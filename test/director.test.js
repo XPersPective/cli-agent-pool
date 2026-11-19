@@ -104,7 +104,7 @@ test('workspace fingerprint sees same-size edits, ignored settings, hidden index
   assert.notEqual(await workspaceFingerprint(plain), walked, 'non-git walk skips nothing');
 });
 
-test('a write that fails without changes is released; one that changed files keeps its review lock; restart reconciles', { timeout: 90000 }, async t => {
+test('failed writes end in failed without workspace quarantine even when files changed', { timeout: 90000 }, async t => {
   let mode = 'none';
   const { root, pool, store } = setup(t, { execute: (route, model, task) => {
     if (mode === 'change') writeFileSync(path.join(task.workspace, 'new.txt'), 'x');
@@ -113,29 +113,28 @@ test('a write that fails without changes is released; one that changed files kee
   const repo = repository(root);
   const submit = key => pool.submit({ prompt: 'p', workspace: repo, kind: 'write', mode: 'execute', routeId: 'codex-b', idempotencyKey: key });
   const clean = submit('clean-failure-1');
-  const done = await until(() => ['failed', 'needs_review'].includes(pool.get(clean.id).state) && pool.get(clean.id), 'clean failure');
+  const done = await until(() => pool.get(clean.id).state === 'failed' && pool.get(clean.id), 'clean failure');
   assert.equal(done.state, 'failed');
   assert.equal(done.error, 'PERMISSION_REQUIRED');
-  assert.ok(done.events.some(event => event.kind === 'no_workspace_changes'));
   mode = 'change';
   const dirty = submit('dirty-failure-1');
-  assert.equal((await until(() => ['failed', 'needs_review'].includes(pool.get(dirty.id).state) && pool.get(dirty.id), 'dirty failure')).state, 'needs_review');
-  // Restart: an interrupted task whose snapshot still matches is released; a changed one is kept.
-  const snapshot = await pool.workspaceState({ workspace: repo, routeId: 'codex-b' });
-  const insert = (id, workspace) => { store.insert({ id, key: `k-${id}`, fingerprint: 'f', workspace, request: { prompt: 'p', workspace, kind: 'write', routeId: 'codex-b' } }); store.update(id, 'needs_review', null, 'INTERRUPTED'); store.event(id, 'workspace_snapshot', snapshot); };
+  const dirtyDone = await until(() => pool.get(dirty.id).state === 'failed' && pool.get(dirty.id), 'dirty failure');
+  assert.equal(dirtyDone.state, 'failed');
+  // Legacy interrupted review rows are cleanly reconciled to failed.
+  const insert = (id, workspace) => { store.insert({ id, key: `k-${id}`, fingerprint: 'f', workspace, request: { prompt: 'p', workspace, kind: 'write', routeId: 'codex-b' } }); store.update(id, 'needs_review', null, 'INTERRUPTED'); };
   const other = mkdtempSync(path.join(root, 'other-'));
   insert('00000000-0000-4000-8000-000000000001', repo);
   insert('00000000-0000-4000-8000-000000000002', other);
-  await pool.reconcileInterrupted(0);
+  await pool.reconcileInterrupted();
   assert.equal(store.get('00000000-0000-4000-8000-000000000001').state, 'failed');
-  assert.equal(store.get('00000000-0000-4000-8000-000000000002').state, 'needs_review');
+  assert.equal(store.get('00000000-0000-4000-8000-000000000002').state, 'failed');
 });
 
-test('WSL routes always keep the review lock after a failed write', { timeout: 90000 }, async t => {
+test('WSL routes end failed writes in failed state without locking workspace', { timeout: 90000 }, async t => {
   const { root, pool } = setup(t, { routes: [{ id: 'agy-wsl', adapter: 'agy', runtime: 'wsl', wsl: { distro: 'Ubuntu', home: '/home/u' }, executable: '/home/u/.local/bin/agy', profile: 'acc2', enabled: true, billing: 'subscription', trustedSettings: true, models: [{ id: 'm', alias: 'M', group: 'high', kinds: ['write'] }] }],
     execute: () => ({ cancel() {}, done: Promise.resolve({ error: 'CLI_FAILED' }) }) });
   const task = pool.submit({ prompt: 'p', workspace: root, kind: 'write', routeId: 'agy-wsl', idempotencyKey: 'wsl-failure-1' });
-  assert.equal((await until(() => ['failed', 'needs_review'].includes(pool.get(task.id).state) && pool.get(task.id), 'wsl failure')).state, 'needs_review');
+  assert.equal((await until(() => pool.get(task.id).state === 'failed' && pool.get(task.id), 'wsl failure')).state, 'failed');
 });
 
 test('director wiring: pool MCP and read rule for claude, MCP and opt-in network for codex; workers unchanged; lease stays out of stored records', () => {
