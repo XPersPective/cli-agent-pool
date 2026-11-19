@@ -152,6 +152,20 @@
 - [x] **Doğrulama kanıtı (2.20.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate`, `npm test` (`218/218`, yeni `test/remote.test.js` dahil) ve canlı `cli-agent-pool` servisi üzerinden `/r/state` uçtan uca entegrasyon testi doğrulandı.
 
 ## 2.19.0 — Onay/Ekleme Kilidi Düzeltmesi, Windows Pythonw İzolasyonu, 300 Model Sınırı, Neon/Ağ Hata Düzeltmeleri ve Otomatik Güncelleme Bildirimi
+## 2.24.0 — Remote Proje Sohbet Modu, İzole Projesiz Sandbox, Kuyruk Nedeni & Tek Tık Kilit Açma
+- [x] **Proje sohbetinde varsayılan salt-okuma/doğal yanıt (`remote/server.js`, `remote/public/index.html`, `remote/public/app.js`)**:
+  - Proje klasörü seçili sohbetlerde varsayılan istek `kind: 'read', mode: 'response'` oldu; artık proje içinde normal soru/selamlama (`"slm"` vb.) yazıldığında `execute` JSON rapor sözleşmesi, sahte `WORK_INCOMPLETE` hatası veya `needs_review` klasör karantinası tetiklenmiyor ve aynı projedeki okuma çağrıları paralel çalışıyor.
+  - Dosya düzenlemek isteyen kullanıcı için composer çubuğuna kalıcı **✏️ Düzenle: Kapalı / Açık** (`#edit-mode-toggle-btn`) düğmesi eklendi; yalnızca açıkken `kind: 'write', mode: 'execute'` gönderilir.
+- [x] **İzole projesiz sohbet sandbox'ı (`remote/server.js`)**: Projesiz (Sohbet) modu artık `workspaceRoots[0]` klasörüne düşmez, her zaman veri dizini altındaki boş `remote-chat-sandbox` klasörünü kullanır; böylece proje kilitlerinden veya proje `AGENTS.md` dosyalarından etkilenmez.
+- [x] **Temiz rapor gösterimi, kuyruk nedeni ve tek tık kilit açma (`remote/server.js`, `remote/public/app.js`, `remote/public/style.css`)**:
+  - `POST /r/tasks/:id/resolve` ucu eklendi; `needs_review` mesaj balonlarında ve `Çağrılar` kartlarında tek tık **✓ İncelemeyi Kapat** düğmesi sunulur.
+  - `GET /r/state`, `/r/stream` ve `/r/chats/:id` artık `queueReason` ve `blockedBy` alanlarını taşır; sırada bekleyen çağrılar `.queue-box` içinde bekleme nedenini Türkçe açıklar (`WORKSPACE_REVIEW_REQUIRED` / `WORKSPACE_BUSY`) ve inceleme kilidinden bekleyen çağrılarda doğrudan **🔓 Proje Kilidini Aç / Engelleyen Kilidi Aç** düğmesi verir.
+  - `renderAssistantBubble` içinde ham JSON rapor gövdesi (`isRawReportJson`) gizlenerek özet, `✓/✕/○` kontrol rozetleri ve tıklanabilir dosya önizleme düğmeleri gösterilir.
+- [x] **2.20.0–2.23.4 özeti**: `remote/` mobil + masaüstü PWA, Tailscale QR eşleştirme (`POST /r/redeem`), ayrı `remote-browser` penceresi, Windows Console Host düzeltmesi, Antigravity-stili satır içi model seçici (`5s`/`7g` kotalar, açılır-kapanır havuz kategorileri), Havuzlarım/Katalog/Kotalar yönetimi, doküman ekleme/önizleme (`/r/file`), TopMost klasör seçici ve koyu tema kontrast iyileştirmeleri tamamlandı.
+- [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.24.0`.
+- [x] **Doğrulama kanıtı (2.24.0)**: `npm run check` (`JavaScript syntax checks passed`), `npm run secrets` (`107 dosya temiz`), `npm audit --audit-level=moderate` (`0 vulnerabilities`), `npm test` (`223/223` geçti, `0` başarısız / atlanan; yeni `v2.24.0` Remote testi dahil).
+
+## 2.19.0 — Güvenilirlik ve Diyaloglar
 - [x] **Model ekleme/çıkarma ve toplu işlem kilidi giderildi (`web/app.js`)**:
   - `button()` sarmalayıcısının `action()` üzerinden tüm sayfa düğmelerini (`#confirm-dialog` ve `#add-pool-targets` dahil) devre dışı bırakması nedeniyle onay penceresinde ekleme/çıkarma yapılamaması hatası giderildi.
   - `plainButton` ve `confirmedButton` yardımcıları eklendi; `action()` artık `#confirm-dialog` içindeki düğmeleri kilitlemez, `askConfirm()` pencereyi açarken onay/vazgeç düğmelerini açıkça etkinleştirir ve `openPoolPicker` tekil/toplu eklemede onay sonrası canlı hedef üzerinden kaydeder.

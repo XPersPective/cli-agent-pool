@@ -55,6 +55,7 @@
       modelName: '',
       effort: '',
       efforts: [],
+      allowEdit: false,
       includeContext: true,
     },
     collapsedPools: new Set(),
@@ -246,6 +247,7 @@
           modelId: typeof saved.modelId === 'string' ? saved.modelId : '',
           modelName: typeof saved.modelName === 'string' ? saved.modelName : '',
           effort: eff,
+          allowEdit: saved.allowEdit === true,
           includeContext: saved.includeContext !== false,
         });
       }
@@ -569,6 +571,14 @@
     ctxBtn.classList.toggle('active', sel.includeContext);
     ctxBtn.setAttribute('aria-pressed', String(sel.includeContext));
     $('context-toggle-label').textContent = sel.includeContext ? 'Bağlam: Özet' : 'Bağlam: Kapalı';
+
+    const editBtn = $('edit-mode-toggle-btn');
+    if (editBtn) {
+      editBtn.hidden = !ws;
+      editBtn.classList.toggle('active', Boolean(ws && sel.allowEdit));
+      editBtn.setAttribute('aria-pressed', String(Boolean(ws && sel.allowEdit)));
+      $('edit-mode-label').textContent = sel.allowEdit ? '✏️ Düzenle: Açık' : '✏️ Düzenle: Kapalı';
+    }
     updateSendButton();
   }
 
@@ -667,6 +677,26 @@
   }
 
   // --- Messages Rendering (with Tool + Subscription + Document Preview/Download) ---
+  function describeQueueReason(queueReason, workspace) {
+    const folder = workspace ? folderName(workspace) : 'bu klasör';
+    if (queueReason === 'WORKSPACE_REVIEW_REQUIRED') {
+      return `⏳ "${folder}" önceki bir dosya düzenleme çağrısı nedeniyle inceleme kilidinde. Kilidi kaldırdığınızda bekleyen çağrılar başlar.`;
+    }
+    if (queueReason === 'WORKSPACE_BUSY') {
+      return `⏳ "${folder}" içinde şu anda başka bir dosya düzenleme çağrısı çalışıyor; dosya çakışmasını önlemek için sıraya alındı. Farklı klasörler veya salt okuma/sohbet çağrıları paralel çalışır.`;
+    }
+    return '⏳ Çağrı başlatılmak üzere sırada bekliyor…';
+  }
+
+  async function resolveReviewLock(taskId, reloadChat = false) {
+    try {
+      await api(`/r/tasks/${encodeURIComponent(taskId)}/resolve`, { method: 'POST', body: {} });
+      toast('İnceleme kilidi kaldırıldı, bekleyen çağrılar başlatılıyor.');
+      if (reloadChat && state.activeChatId) await openChat(state.activeChatId);
+      await refreshState(false);
+    } catch (err) { toast(err.message, true); }
+  }
+
   function renderAssistantBubble(msg) {
     const [stateLabel, stateCls] = STATE_LABELS[msg.state] || [msg.state || 'Bekliyor', 'badge'];
     const isActive = msg.taskId && !TERMINAL_STATES.has(msg.state);
@@ -679,8 +709,24 @@
       stateLabel,
     ]);
 
+    const isRawReportJson = (text, report) => {
+      if (!report || !text) return false;
+      const trimmed = String(text).trim();
+      if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return false;
+      try {
+        const parsed = JSON.parse(trimmed);
+        return Boolean(parsed && typeof parsed === 'object' && 'status' in parsed && 'summary' in parsed);
+      } catch { return false; }
+    };
+
     const headRight = el('div', { className: 'topbar-right' }, [
       statusBadge,
+      msg.state === 'needs_review' && msg.taskId ? el('button', {
+        type: 'button',
+        className: 'btn btn-primary btn-sm',
+        text: '✓ İncelemeyi Kapat',
+        onClick: () => void resolveReviewLock(msg.taskId, true),
+      }) : null,
       isActive ? el('button', {
         type: 'button',
         className: 'btn btn-danger btn-sm',
@@ -717,21 +763,51 @@
     ];
 
     if (msg.error) {
-      bodyNodes.push(el('div', { className: 'error-box', text: cleanErrorMessage(msg.errorDetail || msg.error) }));
+      const friendlyErr = msg.error === 'WORK_INCOMPLETE' && msg.report?.blockers?.length
+        ? `Görev tamamlanmadı: ${msg.report.blockers.join(' · ')}`
+        : cleanErrorMessage(msg.errorDetail || msg.error);
+      bodyNodes.push(el('div', { className: 'error-box', text: friendlyErr }));
     }
 
-    const outputText = msg.result || msg.text || '';
-    if (outputText) {
-      bodyNodes.push(renderMarkdown(outputText));
+    const rawOutput = msg.result || msg.text || '';
+    const hideRawJson = isRawReportJson(rawOutput, msg.report);
+    const displayText = hideRawJson ? (msg.report?.summary || '') : rawOutput;
+    const msgWorkspace = msg.workspace || state.activeChat?.workspace || '';
+
+    if (msg.state === 'queued') {
+      const qChildren = [el('div', { text: describeQueueReason(msg.queueReason, msgWorkspace) })];
+      if (msg.queueReason === 'WORKSPACE_REVIEW_REQUIRED' && msg.blockedBy) {
+        qChildren.push(el('div', { className: 'btn-row', style: 'margin-top:0' }, [
+          el('button', {
+            type: 'button',
+            className: 'btn btn-primary btn-sm',
+            text: '🔓 Proje Kilidini Aç',
+            onClick: () => void resolveReviewLock(msg.blockedBy, true),
+          }),
+          el('button', {
+            type: 'button',
+            className: 'btn btn-secondary btn-sm',
+            text: 'Engelleyen Çağrıyı Gör',
+            onClick: () => void openTaskInspector(msg.blockedBy),
+          }),
+        ]));
+      }
+      bodyNodes.push(el('div', { className: 'queue-box' }, qChildren));
+    } else if (displayText) {
+      bodyNodes.push(renderMarkdown(displayText));
     } else if (isActive) {
       bodyNodes.push(el('p', { className: 'muted', text: 'Ajan çalışıyor, adımlar canlı olarak izleniyor…' }));
     }
 
-    const msgWorkspace = msg.workspace || state.activeChat?.workspace || '';
-    if (msg.report && (msg.report.summary || msg.report.files?.length)) {
+    if (msg.report && (msg.report.files?.length || msg.report.checks?.length || (!hideRawJson && msg.report.summary && msg.report.summary !== displayText))) {
       const reportChildren = [];
-      if (msg.report.summary && msg.report.summary !== outputText) {
+      if (!hideRawJson && msg.report.summary && msg.report.summary !== displayText) {
         reportChildren.push(el('div', { text: msg.report.summary }));
+      }
+      if (Array.isArray(msg.report.checks) && msg.report.checks.length) {
+        reportChildren.push(el('div', { className: 'report-files' }, msg.report.checks.slice(0, 12).map(ch =>
+          el('span', { className: 'file-pill', text: `${ch.outcome === 'passed' ? '✓' : ch.outcome === 'failed' ? '✕' : '○'} ${ch.command}` }),
+        )));
       }
       if (Array.isArray(msg.report.files) && msg.report.files.length) {
         reportChildren.push(el('div', { className: 'report-files' }, msg.report.files.slice(0, 20).map(f => {
@@ -761,14 +837,14 @@
       }
     }
 
-    if (outputText) {
+    if (displayText) {
       bodyNodes.push(el('div', { className: 'msg-doc-actions' }, [
         el('button', {
           type: 'button',
           className: 'mini-action-btn',
           text: '📋 Kopyala',
           onClick: async () => {
-            try { await navigator.clipboard.writeText(outputText); toast('Yanıt kopyalandı.'); }
+            try { await navigator.clipboard.writeText(displayText); toast('Yanıt kopyalandı.'); }
             catch { toast('Kopyalanamadı.', true); }
           },
         }),
@@ -776,13 +852,13 @@
           type: 'button',
           className: 'mini-action-btn',
           text: '👁️ Doküman Gör',
-          onClick: () => openDocumentViewer(`${(msg.reportedModel || msg.modelId || 'yanit').replace(/[^a-z0-9._-]/gi, '_')}.md`, outputText),
+          onClick: () => openDocumentViewer(`${(msg.reportedModel || msg.modelId || 'yanit').replace(/[^a-z0-9._-]/gi, '_')}.md`, displayText),
         }),
         el('button', {
           type: 'button',
           className: 'mini-action-btn',
           text: '⬇ .md İndir',
-          onClick: () => downloadTextFile(`${(msg.reportedModel || msg.modelId || 'yanit').replace(/[^a-z0-9._-]/gi, '_')}.md`, outputText),
+          onClick: () => downloadTextFile(`${(msg.reportedModel || msg.modelId || 'yanit').replace(/[^a-z0-9._-]/gi, '_')}.md`, displayText),
         }),
       ]));
     }
@@ -858,10 +934,25 @@
           ]),
           el('span', { className: `badge ${cls}` }, [active ? el('span', { className: 'pulse-dot' }) : null, label]),
         ]),
+        task.state === 'queued' ? el('div', { className: 'queue-box' }, [
+          el('div', { text: describeQueueReason(task.queueReason, task.workspace) }),
+        ]) : null,
         task.result ? el('p', { className: 'muted', style: 'margin-top:6px', text: String(task.result).slice(0, 180) }) : null,
         task.error ? el('div', { className: 'error-box', style: 'margin-top:6px', text: cleanErrorMessage(task.errorDetail || task.error) }) : null,
         el('div', { className: 'btn-row' }, [
           el('button', { type: 'button', className: 'btn btn-secondary btn-sm', text: 'İncele', onClick: () => void openTaskInspector(task.id) }),
+          task.state === 'needs_review' ? el('button', {
+            type: 'button',
+            className: 'btn btn-primary btn-sm',
+            text: '✓ İncelemeyi Kapat',
+            onClick: () => void resolveReviewLock(task.id, false),
+          }) : null,
+          task.state === 'queued' && task.queueReason === 'WORKSPACE_REVIEW_REQUIRED' && task.blockedBy ? el('button', {
+            type: 'button',
+            className: 'btn btn-primary btn-sm',
+            text: '🔓 Engelleyen Kilidi Aç',
+            onClick: () => void resolveReviewLock(task.blockedBy, false),
+          }) : null,
           active ? el('button', {
             type: 'button',
             className: 'btn btn-danger btn-sm',
@@ -1581,6 +1672,8 @@
       const msg = state.activeChat.messages.find(m => m.role === 'assistant' && m.taskId === taskId);
       if (msg) {
         msg.state = task.state;
+        msg.queueReason = task.queueReason || null;
+        msg.blockedBy = task.blockedBy || null;
         msg.result = task.result || '';
         msg.error = task.error || null;
         msg.errorDetail = task.errorDetail || '';
@@ -1659,9 +1752,12 @@
     const workspace = state.activeChat?.workspace || '';
     const modelObj = findModelObj(state.selection.routeId, state.selection.modelId);
     const modelKinds = Array.isArray(modelObj?.kinds) ? modelObj.kinds : ['text', 'read', 'write'];
-    const kind = workspace
-      ? (modelKinds.includes('write') ? 'write' : modelKinds.includes('read') ? 'read' : 'text')
-      : 'text';
+    const wantEdit = Boolean(workspace && state.selection.allowEdit);
+    const kind = !workspace
+      ? 'text'
+      : wantEdit
+        ? (modelKinds.includes('write') ? 'write' : modelKinds.includes('read') ? 'read' : 'text')
+        : (modelKinds.includes('read') ? 'read' : 'text');
     const mode = workspace && kind === 'write' ? 'execute' : 'response';
     const cleanEffort = state.selection.effort && state.selection.effort !== 'default' ? state.selection.effort : '';
 
@@ -1897,6 +1993,12 @@
         $('folder-dialog').showModal();
         void loadFolderBrowser('', true);
       }
+    });
+
+    $('edit-mode-toggle-btn')?.addEventListener('click', () => {
+      state.selection.allowEdit = !state.selection.allowEdit;
+      saveSelection();
+      renderTopbarAndStatus();
     });
 
     $('context-toggle-btn').addEventListener('click', () => {

@@ -278,6 +278,7 @@ function createPoolBridge(directory, customFetch = fetch) {
     manageSave: (config, revision) => managementRequest(directory, getConfig(), { operation: 'save', config, revision }),
     clearHistory: () => managementRequest(directory, getConfig(), { operation: 'clear_history' }),
     deleteTask: taskId => managementRequest(directory, getConfig(), { operation: 'delete_task', taskId }),
+    resolveTask: (taskId, note = 'Remote arayüzünden incelenerek kapatıldı.') => managementRequest(directory, getConfig(), { operation: 'resolve', taskId, reviewed: true, note }),
     startPool: async () => {
       const cfg = ensureInitialized(directory, true);
       const info = await ensureDaemon(directory, cfg);
@@ -557,12 +558,14 @@ export function createRemoteServer({
         for (let tick = 0; tick < 3600 && !closed; tick++) {
           try {
             const task = await pool.task(taskId, false);
-            const stamp = `${task.state}:${task.updated}:${(task.events || []).length}:${(task.result || '').length}:${task.error || ''}`;
+            const stamp = `${task.state}:${task.updated}:${task.queueReason || ''}:${task.blockedBy || ''}:${(task.events || []).length}:${(task.result || '').length}:${task.error || ''}`;
             if (stamp !== lastStamp) {
               lastStamp = stamp;
               if (chatId) {
                 remoteStore.updateTaskMessage(chatId, taskId, {
                   state: task.state,
+                  queueReason: task.queueReason || null,
+                  blockedBy: task.blockedBy || null,
                   result: task.result || '',
                   error: task.error || null,
                   errorDetail: task.errorDetail || '',
@@ -649,9 +652,28 @@ export function createRemoteServer({
               ),
             }));
           }
+          // Enrich queued tasks with live queueReason & blockedBy so UI explains exactly why they are queued
+          const queuedIds = tasks.filter(t => t.state === 'queued' && !t.queueReason).slice(0, 10);
+          const queuedDetails = new Map();
+          if (queuedIds.length && typeof pool.task === 'function') {
+            const qDetailRes = await Promise.allSettled(queuedIds.map(t => pool.task(t.id, false)));
+            queuedIds.forEach((t, idx) => {
+              if (qDetailRes[idx]?.status === 'fulfilled' && qDetailRes[idx].value) {
+                queuedDetails.set(t.id, qDetailRes[idx].value);
+              }
+            });
+          }
           tasks = tasks.map(t => {
             const meta = routeMetaByRoute.get(t.routeId) || {};
-            return { ...t, toolLabel: toolLabelFor(meta.adapter), email: meta.email || '', account: meta.account || '' };
+            const extra = queuedDetails.get(t.id);
+            return {
+              ...t,
+              queueReason: extra?.queueReason ?? t.queueReason ?? null,
+              blockedBy: extra?.blockedBy ?? t.blockedBy ?? null,
+              toolLabel: toolLabelFor(meta.adapter),
+              email: meta.email || '',
+              account: meta.account || '',
+            };
           });
         }
         const cfg = pool.getConfig();
@@ -837,6 +859,8 @@ export function createRemoteServer({
                 const live = await pool.task(msg.taskId, false);
                 remoteStore.updateTaskMessage(chatId, msg.taskId, {
                   state: live.state,
+                  queueReason: live.queueReason || null,
+                  blockedBy: live.blockedBy || null,
                   result: live.result || '',
                   error: live.error || null,
                   errorDetail: live.errorDetail || '',
@@ -890,18 +914,18 @@ export function createRemoteServer({
             hasProject = true;
             remoteStore.updateChat(chatId, { workspace: canonicalWorkspace });
           } else {
-            // Projesiz (Sohbet) modu: nötr, boş bir sohbet sandbox klasörü kullan; hiçbir proje klasörüne dokunma.
+            // Projesiz (Sohbet) modu: izole boş sohbet sandbox klasörü kullan; hiçbir proje klasörüne veya kilidine temas etme.
             const sandbox = path.join(directory, 'remote-chat-sandbox');
             mkdirSync(sandbox, { recursive: true, mode: 0o700 });
-            canonicalWorkspace = cfg.workspaceRoots?.length ? canonicalRoots(cfg.workspaceRoots)[0] || sandbox : realpathSync(sandbox);
+            canonicalWorkspace = realpathSync(sandbox);
             if (chat.workspace) remoteStore.updateChat(chatId, { workspace: '' });
           }
 
           const kind = hasProject
-            ? (['text', 'read', 'write'].includes(body.kind) ? body.kind : 'write')
+            ? (['text', 'read', 'write'].includes(body.kind) ? body.kind : 'read')
             : 'text';
           const mode = hasProject && kind === 'write'
-            ? (body.mode === 'response' ? 'response' : 'execute')
+            ? 'execute'
             : 'response';
           const cleanEffort = body.effort && body.effort !== 'default' ? String(body.effort) : '';
           const includeContext = body.includeContext !== false;
@@ -966,6 +990,8 @@ export function createRemoteServer({
             kind,
             mode,
             state: submitted.state || 'queued',
+            queueReason: submitted.queueReason || null,
+            blockedBy: submitted.blockedBy || null,
             result: submitted.result || '',
             error: submitted.error || null,
             errorDetail: submitted.errorDetail || '',
@@ -986,8 +1012,8 @@ export function createRemoteServer({
         return sendJson(res, 200, await pool.clearHistory());
       }
 
-      // Tasks direct inspect, delete & cancel
-      const taskMatch = /^\/r\/tasks\/([a-zA-Z0-9-]+)(?:\/(cancel))?$/.exec(pathname);
+      // Tasks direct inspect, delete, resolve & cancel
+      const taskMatch = /^\/r\/tasks\/([a-zA-Z0-9-]+)(?:\/(cancel|resolve))?$/.exec(pathname);
       if (taskMatch) {
         const [, taskId, sub] = taskMatch;
         if (req.method === 'GET' && !sub) {
@@ -998,6 +1024,10 @@ export function createRemoteServer({
         }
         if (req.method === 'POST' && sub === 'cancel') {
           return sendJson(res, 200, { task: await pool.cancel(taskId) });
+        }
+        if (req.method === 'POST' && sub === 'resolve') {
+          const body = await readJsonBody(req);
+          return sendJson(res, 200, { resolved: true, task: await pool.resolveTask(taskId, body.note) });
         }
       }
 

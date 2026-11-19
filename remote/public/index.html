@@ -140,9 +140,14 @@
                 <span id="current-folder-label" class="project-pill-label">Projesiz (Sohbet)</span>
                 <span class="chevron" aria-hidden="true">▾</span>
               </button>
-              <button id="context-toggle-btn" type="button" class="ctx-chip active" aria-pressed="true" title="Son 3 turun kısa özetini yeni modele aktarır">
-                <span id="context-toggle-label">Bağlam: Özet</span>
-              </button>
+              <div class="inline-btn-group">
+                <button id="edit-mode-toggle-btn" type="button" class="ctx-chip" aria-pressed="false" title="Kapalıyken proje içinde sohbet ve inceleme yapılır; açıkken ajan dosyaları düzenleyip komut çalıştırır" hidden>
+                  <span id="edit-mode-label">✏️ Düzenle: Kapalı</span>
+                </button>
+                <button id="context-toggle-btn" type="button" class="ctx-chip active" aria-pressed="true" title="Son 3 turun kısa özetini yeni modele aktarır">
+                  <span id="context-toggle-label">Bağlam: Özet</span>
+                </button>
+              </div>
             </div>
 
             <!-- Attached Documents Strip -->
