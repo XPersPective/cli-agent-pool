@@ -363,12 +363,54 @@ export function createRemoteServer({
       return res.end(read());
     }
 
-    // One-time pairing redemption: GET /?pair=<code>
-    if (req.method === 'GET' && pathname === '/' && url.searchParams.has('pair')) {
+    const cookies = parseCookies(req.headers.cookie);
+    const existingDevice = remoteStore.verifyCookie(cookies.pool_remote);
+
+    // One-time pairing handoff: GET /?pair=<code> (safe against camera/browser prefetchers & SameSite redirects)
+    if ((req.method === 'GET' || req.method === 'HEAD') && pathname === '/' && url.searchParams.has('pair')) {
+      if (existingDevice) {
+        res.writeHead(303, { Location: '/', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
+        return res.end();
+      }
+      const purpose = String(req.headers['sec-purpose'] || req.headers.purpose || req.headers['x-purpose'] || '').toLowerCase();
+      if (req.method === 'HEAD' || /prefetch|preview|prerender/.test(purpose)) {
+        res.writeHead(204, { 'Cache-Control': 'no-store' });
+        return res.end();
+      }
       prunePairings();
       const code = url.searchParams.get('pair') || '';
+      if (!/^[a-f0-9]{16,128}$/.test(code) || !pendingPairings.has(code)) {
+        res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+        return res.end(unauthHtml);
+      }
+      const redeemHtml = `<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CLI Agent Remote — Bağlanıyor</title><style>body{margin:0;min-height:100dvh;display:grid;place-items:center;padding:24px;background:#0b0d12;color:#edf1f7;font:15px/1.6 system-ui,sans-serif}.box{max-width:400px;width:100%;padding:24px;border:1px solid #262d3d;border-radius:16px;background:#141821;text-align:center}h1{margin:0 0 8px;font-size:19px}p{margin:0 0 16px;color:#9aa6bd;font-size:14px}button{min-height:44px;padding:0 18px;border:0;border-radius:10px;background:#0ea5e9;color:#fff;font:600 15px system-ui,sans-serif;cursor:pointer}</style></head><body><div class="box"><h1>Cihaz Eşleştiriliyor…</h1><p id="msg">Güvenli oturum hazırlanıyor, birkaç saniye içinde açılacak.</p><form method="post" action="/r/redeem"><input type="hidden" name="code" value="${code}"><button type="submit">Manuel Devam Et</button></form></div><script>(function(){fetch('/r/redeem',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({code:'${code}'})}).then(function(r){if(r.ok){location.replace('/');}else{document.getElementById('msg').textContent='Eşleştirme kodu geçersiz veya süresi dolmuş. Bilgisayardan yeni QR oluşturun.';}}).catch(function(){document.getElementById('msg').textContent='Sunucuya ulaşılamadı. Aşağıdaki düğmeye dokunarak tekrar deneyin.';});})();</script></body></html>`;
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'Referrer-Policy': 'no-referrer',
+        'Content-Security-Policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'",
+      });
+      return res.end(redeemHtml);
+    }
+
+    // One-time pairing redemption: POST /r/redeem (same-origin POST commits SameSite=Lax cookie reliably on iOS/Android)
+    if (req.method === 'POST' && pathname === '/r/redeem') {
+      prunePairings();
+      let code = '';
+      const ct = String(req.headers['content-type'] || '').toLowerCase();
+      let raw = '';
+      for await (const chunk of req) {
+        raw += chunk.toString('utf8');
+        if (raw.length > 4096) return sendJson(res, 413, { error: { code: 'REQUEST_TOO_LARGE', message: 'İstek çok büyük.' } });
+      }
+      if (ct.includes('application/json')) {
+        try { code = String(JSON.parse(raw).code || ''); } catch { code = ''; }
+      } else {
+        code = new URLSearchParams(raw).get('code') || '';
+      }
       const pending = pendingPairings.get(code);
       if (!pending) {
+        if (ct.includes('application/json')) return sendJson(res, 401, { error: { code: 'INVALID_PAIR_CODE', message: 'Eşleştirme kodu geçersiz veya daha önce kullanılmış.' } });
         res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
         return res.end(unauthHtml);
       }
@@ -377,13 +419,21 @@ export function createRemoteServer({
       const deviceHint = /android/i.test(ua) ? 'Android Telefon' : /iphone|ipad/i.test(ua) ? 'iPhone / iPad' : pending.label || 'Tarayıcı';
       const paired = remoteStore.pairDevice(deviceHint);
       const isHttps = req.headers['x-forwarded-proto'] === 'https' || Boolean(req.socket?.encrypted);
-      const cookie = `pool_remote=${paired.cookieValue}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000${isHttps ? '; Secure' : ''}`;
+      const cookie = `pool_remote=${paired.cookieValue}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000${isHttps ? '; Secure' : ''}`;
+      if (ct.includes('application/json')) {
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Set-Cookie': cookie,
+          'Cache-Control': 'no-store',
+          'Referrer-Policy': 'no-referrer',
+        });
+        return res.end(JSON.stringify({ ok: true, device: { id: paired.id, label: paired.label } }));
+      }
       res.writeHead(303, { Location: '/', 'Set-Cookie': cookie, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
       return res.end();
     }
 
-    const cookies = parseCookies(req.headers.cookie);
-    const device = remoteStore.verifyCookie(cookies.pool_remote);
+    const device = existingDevice;
 
     if (!device) {
       if (pathname.startsWith('/r/')) {

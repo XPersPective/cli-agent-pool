@@ -113,7 +113,8 @@
   - `spawnDetachedHidden`, Windows'ta arka plan `serve`/`restart`/`remote` süreçlerini libuv'un `CREATE_NO_WINDOW`'u düşüren `detached: true` yerine `pythonw.exe` + `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP` üzerinden sessizce başlatır.
   - `src/quotas.js` içindeki `windowsCredential` doğrudan `execFile('powershell.exe')` yerine `runProcess` (`pythonw.exe` + `CREATE_NO_WINDOW`) kullanır.
   - Windows 11'de arka plan CLI kontrollerinin boş Windows Terminal hatası (`0x800700e8`) açmasını önlemek için `windowsConsoleHostStatus`, `applyWindowsConsoleHostFix`, `cli-agent-pool fix-console`, `cli-agent-pool install --fix-console` ve panelde izin isteyen tek tık **İzin Ver ve Düzelt** çubuğu (`#console-fix-banner`) eklendi.
-- [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.21.0`.
+- [x] **2.21.1 düzeltme — Android/iOS QR eşleştirme çerez ve önizleme koruması (`remote/server.js`, `test/remote.test.js`)**: Kamera/QR tarayıcı önizlemelerinin tek kullanımlık kodu tüketmesini ve dış uygulama `303` yönlendirmesinde `SameSite=Strict` çerezinin düşmesini önlemek için `GET /?pair=<code>` artık `HEAD`/`prefetch` isteklerini kodu harcamadan `204` ile geçer, normal tarayıcıya aynı-köken `POST /r/redeem` yürüten güvenli handoff sayfası döner ve `HttpOnly; SameSite=Lax` çerezini `200 OK` yanıtında tarayıcıya kalıcı olarak yazar. Halihazırda eşleşmiş cihaz QR bağlantısını yenilerse `401` yerine `/` adresine yönlendirilir.
+- [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.21.1`.
 - [x] **Doğrulama kanıtı (2.21.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate`, `npm test` (`220/220`, yeni `/r/manage` ve Windows konsol düzeltme testleri dahil) ve canlı `install --fix-console` + `remote-open` doğrulaması.
 
 ## 2.20.0 — Mobil ve Masaüstü Uzaktan Ajan Sohbet ve Kontrol Arayüzü (`remote/`)

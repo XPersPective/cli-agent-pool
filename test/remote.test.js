@@ -218,18 +218,41 @@ test('Remote server enforces one-time pairing, cookie auth, chat send, SSE strea
     assert.equal((await fetch(`${base}/r/state`)).status, 401);
     assert.equal((await fetch(`${base}/`)).status, 401);
 
-    // One-time pairing sets HttpOnly SameSite=Strict cookie
-    const pairRes = await fetch(info.localUrl, { redirect: 'manual' });
-    assert.equal(pairRes.status, 303);
+    // Prefetch / HEAD preview must NOT consume the single-use pairing code
+    assert.equal((await fetch(info.localUrl, { method: 'HEAD' })).status, 204);
+    assert.equal((await fetch(info.localUrl, { headers: { 'Sec-Purpose': 'prefetch' } })).status, 204);
+
+    // GET /?pair=<code> serves handoff page without burning the code yet
+    const handoffRes = await fetch(info.localUrl);
+    assert.equal(handoffRes.status, 200);
+    assert.match(await handoffRes.text(), /\/r\/redeem/);
+
+    // Same-origin POST /r/redeem commits HttpOnly SameSite=Lax cookie and burns the code
+    const initialCode = new URL(info.localUrl).searchParams.get('pair');
+    const pairRes = await fetch(`${base}/r/redeem`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: initialCode }),
+    });
+    assert.equal(pairRes.status, 200);
     const setCookie = pairRes.headers.get('set-cookie') || '';
     assert.match(setCookie, /pool_remote=/);
     assert.match(setCookie, /HttpOnly/i);
-    assert.match(setCookie, /SameSite=Strict/i);
+    assert.match(setCookie, /SameSite=Lax/i);
     const cookieHeader = setCookie.split(';')[0];
 
-    // Replaying the same one-time pairing link fails with 401
-    const replayRes = await fetch(info.localUrl, { redirect: 'manual' });
-    assert.equal(replayRes.status, 401);
+    // Replaying the same one-time pairing link/code without cookie fails with 401
+    assert.equal((await fetch(info.localUrl)).status, 401);
+    assert.equal((await fetch(`${base}/r/redeem`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: initialCode }),
+    })).status, 401);
+
+    // Reloading the QR URL with an already-paired cookie redirects cleanly to /
+    const authedQrReload = await fetch(info.localUrl, { headers: { Cookie: cookieHeader }, redirect: 'manual' });
+    assert.equal(authedQrReload.status, 303);
+    assert.equal(authedQrReload.headers.get('location'), '/');
 
     // Authenticated GET / and /r/state succeed
     const htmlRes = await fetch(`${base}/`, { headers: { Cookie: cookieHeader } });
@@ -312,8 +335,13 @@ test('Remote server enforces one-time pairing, cookie auth, chat send, SSE strea
     assert.match(qrData.qrSvg, /^<svg /);
     assert.match(qrData.url, /\?pair=/);
 
-    const secondPair = await fetch(qrData.url, { redirect: 'manual' });
-    assert.equal(secondPair.status, 303);
+    const secondCode = new URL(qrData.url).searchParams.get('pair');
+    const secondPair = await fetch(`${base}/r/redeem`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: secondCode }),
+    });
+    assert.equal(secondPair.status, 200);
     const secondCookie = (secondPair.headers.get('set-cookie') || '').split(';')[0];
 
     const devicesData = await (await fetch(`${base}/r/devices`, { headers: { Cookie: cookieHeader } })).json();
@@ -398,8 +426,14 @@ test('Remote /r/manage issues fresh local pairing URLs, rejects bad auth/origin,
     assert.equal(pairRes.status, 200);
     const pairData = await pairRes.json();
     assert.match(pairData.dashboard, /^http:\/\/127\.0\.0\.1:\d+\/\?pair=[a-f0-9]+$/);
-    const redeem = await fetch(pairData.dashboard, { redirect: 'manual' });
-    assert.equal(redeem.status, 303);
+    assert.equal((await fetch(pairData.dashboard)).status, 200);
+    const mgmtCode = new URL(pairData.dashboard).searchParams.get('pair');
+    const redeem = await fetch(`${base}/r/redeem`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: mgmtCode }),
+    });
+    assert.equal(redeem.status, 200);
     assert.match(redeem.headers.get('set-cookie') || '', /pool_remote=/);
 
     // Shutdown operation succeeds
