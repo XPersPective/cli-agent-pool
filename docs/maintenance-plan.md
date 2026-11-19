@@ -152,6 +152,13 @@
 - [x] **Doğrulama kanıtı (2.20.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate`, `npm test` (`218/218`, yeni `test/remote.test.js` dahil) ve canlı `cli-agent-pool` servisi üzerinden `/r/state` uçtan uca entegrasyon testi doğrulandı.
 
 ## 2.19.0 — Onay/Ekleme Kilidi Düzeltmesi, Windows Pythonw İzolasyonu, 300 Model Sınırı, Neon/Ağ Hata Düzeltmeleri ve Otomatik Güncelleme Bildirimi
+## 2.25.2 — Dinamik Tailscale Algılama ve Canlı Dinleyici Bağlama
+- [x] **Tailscale sonradan açıldığında yeniden başlatma gerekmeden otomatik algılama ve dinleme (`remote/server.js`)**:
+  - `createRemoteServer` içinde `tailscaleIp` artık açılışta donup kalmıyor; `syncTailscaleListener()` ile `/r/state`, `/r/pair`, `/r/manage` (`pair_local`) çağrılarında ve 15 saniyelik arka plan kontrolünde Tailscale IP'si canlı algılanıp `43128` portunda otomatik bağlanıyor (IP değiştiğinde veya koptuğunda eski dinleyici temizlenir).
+  - Telefona eşleştirme için `QR Oluştur` / `Yeni QR Üret` tıklandığında anında güncel Tailscale IP (`http://100.x.y.z:43128/?pair=...`) ile QR üretilir.
+- [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.25.2`.
+- [x] **Doğrulama kanıtı (2.25.2)**: `npm run check`, `npm run secrets` (107 dosya temiz), `npm audit --audit-level=moderate` (0 açık), `npm test` (`223/223` geçti; dinamik Tailscale bağlama testi [remote.test.js](file:///d:/repositories/cli-agent-pool/test/remote.test.js) içinde doğrulandı).
+
 ## 2.25.1 — Windows 11 Pencere / Klasör Seçici Ön Plana Getirme ve Hayalet Pencere Filtresi
 - [x] **Windows 11 ön plana getirme ve hayalet `Chrome_WidgetWin_1` filtresi (`src/dashboard.cs`, `src/folder-picker.cs`, `src/web.js`, `web/app.js`)**:
   - `src/dashboard.cs`: `Windows(profile)` artık başlıksız veya `0x0` boyutlu hayalet Edge yardımcı pencerelerini yok sayar (`GetWindowTextLength > 0`, en az `120x120` veya simge durumunda); `Activate()` `AttachThreadInput` + `IsIconic` + `SetWindowPos(HWND_TOPMOST/NOTOPMOST)` + `BringWindowToTop` + `SetForegroundWindow` ile mevcut pencereyi Windows 11'de gerçek ön plana getirir.

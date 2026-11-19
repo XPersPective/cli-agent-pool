@@ -833,6 +833,57 @@ test('v2.25.0: project chat runs write without forced execute JSON protocol, no 
     const dashCs = readFileSync(path.resolve('src/dashboard.cs'), 'utf8');
     assert.match(dashCs, /AttachThreadInput/);
     assert.match(dashCs, /GetWindowTextLength/);
+
+    // 4. Dynamic Tailscale detection: starts with Tailscale OFF, then connects later -> POST /r/pair auto-detects & binds it
+    let simulatedTs = null;
+    const dynDir = makeTempDir('pool-remote-dynts-');
+    const dynRemote = createRemoteServer({
+      directory: dynDir,
+      port: 0,
+      host: 'tailscale',
+      detectTailscale: () => simulatedTs,
+      poolBridge: {
+        getConfig: () => ({ port: 43127, workspaceRoots: [] }),
+        health: async () => ({ status: 'ok', version: '2.25.2', connections: 0, models: 0, active: 0 }),
+        pools: async () => ({ categories: [] }),
+        poolModels: async () => ({ models: [] }),
+        catalogModels: async () => [],
+        quotas: async () => ({ connections: [] }),
+        connections: async () => [],
+        tasks: async () => ({ tasks: [] }),
+      },
+    });
+    try {
+      const dynInfo = await dynRemote.listen();
+      assert.equal(dynInfo.tailscaleIp, null);
+      const dynCode = new URL(dynInfo.localUrl).searchParams.get('pair');
+      const dynRedeem = await fetch(`http://127.0.0.1:${dynInfo.port}/r/redeem`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: dynCode }),
+      });
+      const dynCookie = (dynRedeem.headers.get('set-cookie') || '').split(';')[0];
+      const beforePair = await (await fetch(`http://127.0.0.1:${dynInfo.port}/r/pair`, {
+        method: 'POST',
+        headers: { Cookie: dynCookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: 'Telefon', useTailscale: true }),
+      })).json();
+      assert.equal(beforePair.tailscaleIp, null);
+      assert.match(beforePair.url, /^http:\/\/127\.0\.0\.1:/);
+
+      // Now simulate Tailscale connecting (use 127.0.0.2 loopback alias so listen succeeds deterministically on any machine)
+      simulatedTs = '127.0.0.2';
+      const afterPair = await (await fetch(`http://127.0.0.1:${dynInfo.port}/r/pair`, {
+        method: 'POST',
+        headers: { Cookie: dynCookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: 'Telefon', useTailscale: true }),
+      })).json();
+      assert.equal(afterPair.tailscaleIp, '127.0.0.2');
+      assert.match(afterPair.url, /^http:\/\/127\.0\.0\.2:/);
+    } finally {
+      await dynRemote.close();
+      rmSync(dynDir, { recursive: true, force: true });
+    }
   } finally {
     await remote.close();
     rmSync(dir, { recursive: true, force: true });

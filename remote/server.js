@@ -309,10 +309,11 @@ export function createRemoteServer({
   store = null,
   managementToken = null,
   onShutdown = null,
+  detectTailscale = detectTailscaleIp,
 } = {}) {
   const remoteStore = store || new RemoteStore(directory);
   const pool = poolBridge || createPoolBridge(directory);
-  const tailscaleIp = detectTailscaleIp();
+  let tailscaleIp = detectTailscale();
   const pendingPairings = new Map(); // code -> { expiresAt, label }
   const readManagementToken = () => {
     if (managementToken) return managementToken;
@@ -410,9 +411,10 @@ export function createRemoteServer({
         return sendJson(res, 400, { error: { code: err.code || 'INVALID_JSON', message: err.message } });
       }
       if (body.operation === 'pair_local') {
+        await syncTailscaleListener();
         const created = createPairingCode(body.label || 'Bilgisayar');
         const localUrl = `http://127.0.0.1:${actualPort}/?pair=${created.code}`;
-        const tailscaleUrl = tailscaleIp && bindTargets.includes(tailscaleIp)
+        const tailscaleUrl = tailscaleIp && servers.has(tailscaleIp)
           ? `http://${tailscaleIp}:${actualPort}/?pair=${created.code}`
           : null;
         return sendJson(res, 200, {
@@ -421,7 +423,7 @@ export function createRemoteServer({
           tailscaleUrl,
           port: actualPort,
           tailscaleIp,
-          bindTargets,
+          bindTargets: [...servers.keys()],
           version,
         });
       }
@@ -596,6 +598,7 @@ export function createRemoteServer({
     try {
       // GET /r/state — Full live dashboard snapshot
       if (req.method === 'GET' && pathname === '/r/state') {
+        await syncTailscaleListener();
         const health = await pool.health();
         const running = health?.status === 'ok';
         let pools = [], models = [], quotas = [], connections = [], tasks = [];
@@ -1057,6 +1060,7 @@ export function createRemoteServer({
 
       // Pairing & device management
       if (req.method === 'POST' && pathname === '/r/pair') {
+        await syncTailscaleListener();
         const body = await readJsonBody(req);
         const created = createPairingCode(body.label || 'Telefon');
         const preferredHost = body.useTailscale !== false && tailscaleIp ? `${tailscaleIp}:${actualPort}` : req.headers.host;
@@ -1091,43 +1095,93 @@ export function createRemoteServer({
     }
   };
 
-  const servers = [];
+  const servers = new Map(); // bindHost -> http.Server
+  let activePort = port;
+  let syncInFlight = null;
+  let closed = false;
   const bindTargets = host === 'tailscale'
     ? (tailscaleIp ? ['127.0.0.1', tailscaleIp] : ['127.0.0.1'])
     : [host];
+
+  const bindHostServer = async bindHost => {
+    if (servers.has(bindHost) || closed) return;
+    const srv = http.createServer((req, res) => { void handler(req, res); });
+    await new Promise((resolve, reject) => {
+      srv.once('error', reject);
+      srv.listen(activePort, bindHost, () => {
+        srv.off('error', reject);
+        activePort = srv.address().port;
+        resolve();
+      });
+    });
+    servers.set(bindHost, srv);
+    if (!bindTargets.includes(bindHost)) bindTargets.push(bindHost);
+  };
+
+  // Dynamically detect Tailscale connect/reconnect without restarting Remote.
+  const syncTailscaleListener = async () => {
+    if (closed) return tailscaleIp;
+    if (syncInFlight) return syncInFlight;
+    const job = (async () => {
+      const latest = detectTailscale();
+      tailscaleIp = latest || null;
+      if (host !== 'tailscale' || !servers.size) return tailscaleIp;
+      // Close stale non-loopback Tailscale listeners if IP changed or disconnected
+      for (const [boundHost, srv] of [...servers.entries()]) {
+        if (boundHost !== '127.0.0.1' && boundHost !== tailscaleIp) {
+          servers.delete(boundHost);
+          try { srv.closeAllConnections?.(); } catch { /* ignore */ }
+          await new Promise(resolve => srv.close(() => resolve()));
+        }
+      }
+      if (tailscaleIp && !servers.has(tailscaleIp)) {
+        try { await bindHostServer(tailscaleIp); } catch { /* interface may still be settling */ }
+      }
+      return tailscaleIp;
+    })();
+    syncInFlight = job;
+    try { return await job; } finally { if (syncInFlight === job) syncInFlight = null; }
+  };
+
+  let tsPollTimer = null;
   const closeAll = async () => {
-    await Promise.all(servers.map(s => new Promise(resolve => {
+    closed = true;
+    if (tsPollTimer) { clearInterval(tsPollTimer); tsPollTimer = null; }
+    await Promise.all([...servers.values()].map(s => new Promise(resolve => {
       try { s.closeAllConnections?.(); } catch { /* ignore */ }
       s.close(() => resolve());
     })));
-    servers.length = 0;
+    servers.clear();
   };
 
   return {
     store: remoteStore,
-    tailscaleIp,
+    get tailscaleIp() { return tailscaleIp; },
     bindTargets,
     initialPairingCode: initialPairing.code,
     createPairingCode,
+    syncTailscaleListener,
     async listen() {
-      let boundPort = port;
-      for (const bindHost of bindTargets) {
-        const srv = http.createServer((req, res) => { void handler(req, res); });
-        await new Promise((resolve, reject) => {
-          srv.once('error', reject);
-          srv.listen(boundPort, bindHost, () => {
-            srv.off('error', reject);
-            boundPort = srv.address().port;
-            resolve();
-          });
-        });
-        servers.push(srv);
+      tailscaleIp = detectTailscale();
+      const initialTargets = host === 'tailscale'
+        ? (tailscaleIp ? ['127.0.0.1', tailscaleIp] : ['127.0.0.1'])
+        : [host];
+      for (const bindHost of initialTargets) {
+        try {
+          await bindHostServer(bindHost);
+        } catch (err) {
+          if (bindHost === '127.0.0.1' || host !== 'tailscale') throw err;
+        }
       }
-      const localUrl = `http://127.0.0.1:${boundPort}/?pair=${initialPairing.code}`;
-      const tailscaleUrl = tailscaleIp && bindTargets.includes(tailscaleIp)
-        ? `http://${tailscaleIp}:${boundPort}/?pair=${initialPairing.code}`
+      if (host === 'tailscale' && !tsPollTimer) {
+        tsPollTimer = setInterval(() => { void syncTailscaleListener(); }, 15_000);
+        tsPollTimer.unref();
+      }
+      const localUrl = `http://127.0.0.1:${activePort}/?pair=${initialPairing.code}`;
+      const tailscaleUrl = tailscaleIp && servers.has(tailscaleIp)
+        ? `http://${tailscaleIp}:${activePort}/?pair=${initialPairing.code}`
         : null;
-      return { port: boundPort, bindTargets, tailscaleIp, localUrl, tailscaleUrl };
+      return { port: activePort, bindTargets: [...servers.keys()], tailscaleIp, localUrl, tailscaleUrl };
     },
     close: closeAll,
   };

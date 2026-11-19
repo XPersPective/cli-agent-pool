@@ -1,6 +1,6 @@
 {
   "name": "cli-agent-pool",
-  "version": "2.25.1",
+  "version": "2.25.2",
   "private": false,
   "type": "module",
   "files": [
