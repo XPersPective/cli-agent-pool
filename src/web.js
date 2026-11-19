@@ -14,6 +14,17 @@ import { childEnvironment, runProcess } from './process.js';
 import { installDesktopAndSkills, scheduleServiceRestart, checkUpdateStatus, readInstalledVersion, updateNeedsRestart, ensureRemoteDaemon, openRemoteWindow, windowsConsoleHostStatus, applyWindowsConsoleHostFix } from './daemon.js';
 
 const execPicker = async (file, args, options) => {
+  if (options.windowsHide === false && /\.exe$/i.test(file)) {
+    const { stdout } = await promisify(execFile)(file, args, {
+      cwd: process.cwd(),
+      env: options.env,
+      encoding: 'utf8',
+      timeout: options.timeout,
+      maxBuffer: options.maxBuffer,
+      windowsHide: false,
+    });
+    return { stdout };
+  }
   const result = await runProcess({ argv: [file, ...args], cwd: process.cwd(), extraEnv: options.env, timeoutMs: options.timeout, maxBytes: options.maxBuffer, windowsHide: options.windowsHide }).done;
   if (result.code !== 0 || result.stopReason) throw new Error('Picker process failed');
   return { stdout: result.output };
@@ -31,7 +42,7 @@ export async function pickWindowsFolder(initialPath = '', { run = execPicker, pl
     const filename = path.join(cache, `folder-picker-${digest}.cs`);
     writeFileSync(filename, source, { mode: 0o600 });
     const compiler = path.join(process.env.SystemRoot || 'C:\\Windows', 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe');
-    try { await run(compiler, ['/nologo', '/target:winexe', `/out:${executable}`, '/reference:System.Web.Extensions.dll', filename], { env, windowsHide: true, timeout: 30000, maxBuffer: 16384 }); }
+    try { await run(compiler, ['/nologo', '/target:winexe', `/out:${executable}`, '/reference:System.Web.Extensions.dll', '/reference:System.Windows.Forms.dll', filename], { env, windowsHide: true, timeout: 30000, maxBuffer: 16384 }); }
     catch { throw new PoolError('PICKER_FAILED', 'Windows klasör seçicisi hazırlanamadı.'); }
   }
   let result;

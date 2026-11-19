@@ -1142,7 +1142,6 @@
   function renderSettingsView() {
     const sharedList = $('shared-folders-list');
     sharedList.replaceChildren();
-    $('pick-native-folder-btn').hidden = !state.canPickNativeFolder;
     if (!state.sharedFolders.length) {
       sharedList.appendChild(el('p', { className: 'muted', text: 'Henüz paylaşılan kök eklenmemiş (tüm sürücüler ve klasörler gezilebilir).' }));
     } else {
@@ -1288,7 +1287,9 @@
       ]));
 
       if (isSelected && efforts.length) {
-        const effRow = el('div', { className: 'effort-inline-row' });
+        const effRow = el('div', { className: 'effort-inline-row' }, [
+          el('span', { className: 'effort-inline-label', text: 'Efor:' }),
+        ]);
         effRow.appendChild(el('button', {
           type: 'button',
           className: `effort-pill${!state.selection.effort ? ' active' : ''}`,
@@ -1403,7 +1404,6 @@
     $('folder-dialog-title').textContent = isSharedMode ? 'Paylaşılan Disk / Klasör Ekle' : 'Proje Klasörü Seç';
     $('folder-no-project-btn').hidden = isSharedMode;
     $('folder-dialog-native-pick-btn').hidden = !state.canPickNativeFolder;
-    $('folder-browse-all-btn').hidden = !fb.canBrowseAll;
     $('folder-browser-path').textContent = fb.current || 'Sürücüler & Kök klasörler';
     $('folder-up-btn').disabled = !fb.parent && !fb.current;
     $('folder-select-current-btn').disabled = !fb.current;
@@ -1889,7 +1889,6 @@
     $('clear-folder-btn').addEventListener('click', () => void selectWorkspace(''));
     $('folder-no-project-btn').addEventListener('click', () => void selectWorkspace('', true));
     $('folder-dialog-native-pick-btn').addEventListener('click', () => void pickNativeFolder(state.folderDialogPurpose === 'shared'));
-    $('folder-browse-all-btn').addEventListener('click', () => void loadFolderBrowser('', true));
     $('folder-up-btn').addEventListener('click', () => void loadFolderBrowser(state.folderBrowser.parent || '', state.folderDialogPurpose === 'shared' || !state.folderBrowser.restricted));
     $('folder-select-current-btn').addEventListener('click', () => {
       if (state.folderDialogPurpose === 'shared') void addSharedFolder(state.folderBrowser.current, true);
@@ -1905,18 +1904,16 @@
       } catch (err) { toast(err.message, true); }
     });
 
-    $('pick-native-folder-btn').addEventListener('click', () => void pickNativeFolder(true));
-    $('browse-add-shared-btn').addEventListener('click', () => {
-      state.folderDialogPurpose = 'shared';
-      $('folder-dialog').showModal();
-      void loadFolderBrowser('', true);
-    });
-    $('add-manual-shared-btn').addEventListener('click', async () => {
-      const inp = $('manual-shared-input');
-      const val = inp.value.trim();
-      if (!val) return;
-      await addSharedFolder(val, false);
-      inp.value = '';
+    // Single unified "📁 Klasör Seç" button in Settings:
+    // Opens native Windows folder dialog on desktop, or web folder browser on phone.
+    $('add-shared-folder-btn').addEventListener('click', () => {
+      if (state.canPickNativeFolder) {
+        void pickNativeFolder(true);
+      } else {
+        state.folderDialogPurpose = 'shared';
+        $('folder-dialog').showModal();
+        void loadFolderBrowser('', true);
+      }
     });
 
     $('context-toggle-btn').addEventListener('click', () => {

@@ -42,13 +42,13 @@
     --border: light-dark(#dce2ec, #232a3a);
     --border-strong: light-dark(#c5cfde, #323c52);
 
-    --text: light-dark(#111827, #e8ecf4);
-    --text-muted: light-dark(#4b5563, #8f9bb0);
-    --text-subtle: light-dark(#6b7280, #647088);
+    --text: light-dark(#111827, #f1f5f9);
+    --text-muted: light-dark(#475569, #cbd5e1);
+    --text-subtle: light-dark(#526075, #a8b5c8);
 
-    /* Calm, eye-friendly slate-indigo accent (replaces harsh bright cyan) */
-    --accent: light-dark(#4f46e5, #818cf8);
-    --accent-bg: light-dark(rgba(79, 70, 229, 0.10), rgba(129, 140, 248, 0.14));
+    /* Crisp, eye-friendly high-contrast lavender-indigo accent in dark mode */
+    --accent: light-dark(#4338ca, #a5b4fc);
+    --accent-bg: light-dark(rgba(67, 56, 202, 0.11), rgba(165, 180, 252, 0.16));
     --accent-solid: light-dark(#3b4252, #e5e9f0);
     --accent-solid-ink: light-dark(#ffffff, #0b0d12);
 
@@ -1006,17 +1006,18 @@
   .model-check { width: 14px; font-size: 12px; color: var(--accent); flex: 0 0 auto; text-align: center; }
   .model-row-text { min-width: 0; display: flex; flex-direction: column; }
   .model-row-name {
-    font-size: 12.5px;
+    font-size: 13px;
     font-weight: 600;
-    line-height: 1.25;
+    color: var(--text);
+    line-height: 1.3;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .model-row-sub {
-    font-size: 10.5px;
-    color: var(--text-subtle);
-    line-height: 1.2;
+    font-size: 11.5px;
+    color: var(--text-muted);
+    line-height: 1.25;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1030,12 +1031,13 @@
   .q-tag {
     display: inline-flex;
     align-items: center;
-    gap: 2px;
-    padding: 1px 6px;
+    gap: 3px;
+    padding: 2px 7px;
     border-radius: 6px;
-    font-size: 10.5px;
+    font-size: 11px;
     background: var(--bg-surface);
     color: var(--text-muted);
+    border: 1px solid var(--border);
     white-space: nowrap;
   }
   .q-tag strong { font-weight: 700; color: var(--ok); }
@@ -1046,21 +1048,31 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 5px;
-    padding: 4px 8px 6px 28px;
+    gap: 6px;
+    padding: 5px 8px 8px 26px;
+  }
+  .effort-inline-label {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin-right: 2px;
   }
   .effort-pill {
-    min-height: 24px;
-    padding: 0 9px;
+    min-height: 28px;
+    padding: 0 11px;
     border-radius: 999px;
-    border: 1px solid var(--border);
+    border: 1px solid var(--border-strong);
     background: var(--bg-surface);
-    color: var(--text-muted);
-    font-size: 11px;
+    color: var(--text);
+    font-size: 12px;
     font-weight: 600;
   }
-  .effort-pill:hover { color: var(--text); border-color: var(--border-strong); }
-  .effort-pill.active { background: var(--accent-bg); border-color: var(--accent); color: var(--accent); }
+  .effort-pill:hover { background: var(--bg-hover); border-color: var(--accent); }
+  .effort-pill.active {
+    background: var(--accent-bg);
+    border-color: var(--accent);
+    color: light-dark(#312e81, #e0e7ff);
+  }
 
   .view-quotas-btn {
     display: flex;
@@ -1201,23 +1213,23 @@
   .tool-pill {
     display: inline-flex;
     align-items: center;
-    padding: 1px 7px;
+    padding: 2px 8px;
     border-radius: 6px;
-    font-size: 10.5px;
+    font-size: 11px;
     font-weight: 600;
     background: var(--accent-bg);
-    color: var(--accent);
+    color: light-dark(#3730a3, #c7d2fe);
   }
   .sub-pill {
     display: inline-flex;
     align-items: center;
-    padding: 1px 7px;
+    padding: 2px 8px;
     border-radius: 6px;
-    font-size: 10.5px;
-    color: var(--text-muted);
+    font-size: 11.5px;
+    color: var(--text);
     background: var(--bg-surface);
-    border: 1px solid var(--border);
-    max-width: 190px;
+    border: 1px solid var(--border-strong);
+    max-width: 220px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1272,10 +1284,10 @@
     gap: 6px;
     border: 0;
     background: transparent;
-    padding: 3px 4px;
+    padding: 4px 5px;
     border-radius: 6px;
-    color: var(--text-muted);
-    font-size: 11px;
+    color: var(--text);
+    font-size: 11.5px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.05em;

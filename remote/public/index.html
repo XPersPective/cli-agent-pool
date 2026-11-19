@@ -269,18 +269,14 @@
         <div class="card-stack">
           <!-- Shared Project Folders / Drives Card -->
           <div class="panel-card">
-            <h3>Paylaşılan Disk ve Proje Klasörleri</h3>
-            <p class="muted">Örneğin tüm <strong>D:\</strong> diskini veya <strong>D:\repositories</strong> gibi birden fazla klasörü ekleyebilirsiniz. Eklediğiniz köklerin altındaki tüm projelere sohbette doğrudan girebilirsiniz.</p>
+            <div class="card-row">
+              <div>
+                <h3>Paylaşılan Klasörler</h3>
+                <p class="muted">Tüm diski (ör. D:\) veya proje klasörlerinizi seçin; altındaki tüm projeler sohbette açılır.</p>
+              </div>
+              <button id="add-shared-folder-btn" type="button" class="btn btn-primary btn-sm">📁 Klasör Seç</button>
+            </div>
             <div id="shared-folders-list" class="device-list"></div>
-            <div class="manual-path-row">
-              <label for="manual-shared-input" class="sr-only">Klasör veya disk yolu</label>
-              <input id="manual-shared-input" type="text" class="text-input mono" placeholder="Örn: D:\ veya D:\repositories" autocomplete="off">
-              <button id="add-manual-shared-btn" type="button" class="btn btn-primary btn-sm">Ekle</button>
-            </div>
-            <div class="btn-row">
-              <button id="pick-native-folder-btn" type="button" class="btn btn-secondary btn-sm" hidden>📁 Bilgisayardan Klasör Seç</button>
-              <button id="browse-add-shared-btn" type="button" class="btn btn-secondary btn-sm">Disk / Klasör Gezgini</button>
-            </div>
           </div>
 
           <!-- Theme Card -->
@@ -404,7 +400,6 @@
       <div class="folder-quick-actions">
         <button id="folder-no-project-btn" type="button" class="btn btn-secondary btn-sm">💬 Projesiz (Sohbet)</button>
         <button id="folder-dialog-native-pick-btn" type="button" class="btn btn-primary btn-sm" hidden>📁 Bilgisayardan Seç</button>
-        <button id="folder-browse-all-btn" type="button" class="btn btn-ghost btn-sm" hidden>Tüm Sürücüler</button>
       </div>
       <div class="folder-nav-bar">
         <button id="folder-up-btn" type="button" class="btn btn-secondary btn-sm">↑ Üst</button>

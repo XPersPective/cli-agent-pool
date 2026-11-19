@@ -3,6 +3,7 @@ using System.IO;
 using System.Text;
 using System.Runtime.InteropServices;
 using System.Web.Script.Serialization;
+using System.Windows.Forms;
 
 [ComImport, Guid("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7")]
 internal class NativeFolderDialog { }
@@ -42,6 +43,8 @@ internal static class FolderPicker
 {
     [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
     private static extern void SHCreateItemFromParsingName(string path, IntPtr bind, ref Guid iid, out IShellItem item);
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
 
     [STAThread]
     private static void Main()
@@ -49,12 +52,15 @@ internal static class FolderPicker
         try
         {
             var dialog = (IFileDialog)new NativeFolderDialog();
+            using (var owner = new Form { TopMost = true, ShowInTaskbar = false, StartPosition = FormStartPosition.Manual, Left = -32000, Top = -32000, Width = 1, Height = 1, FormBorderStyle = FormBorderStyle.None })
             try
             {
+                owner.Show();
+                SetForegroundWindow(owner.Handle);
                 uint options;
                 dialog.GetOptions(out options);
                 dialog.SetOptions(options | 0x20 | 0x40 | 0x800 | 0x02000000); // Pick folders, filesystem, existing path, no recent-history write.
-                dialog.SetTitle("Proje klasörünü seçin");
+                dialog.SetTitle("Proje veya disk klasörünü seçin");
                 dialog.SetOkButtonLabel("Klasörü seç");
                 var initial = Environment.GetEnvironmentVariable("CLI_AGENT_POOL_PICKER_START");
                 if (!String.IsNullOrEmpty(initial) && Directory.Exists(initial))
@@ -65,7 +71,7 @@ internal static class FolderPicker
                     try { dialog.SetFolder(start); } finally { Marshal.ReleaseComObject(start); }
                 }
                 string selected = null;
-                int result = dialog.Show(IntPtr.Zero);
+                int result = dialog.Show(owner.Handle);
                 if (result == 0)
                 {
                     IShellItem item;
