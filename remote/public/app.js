@@ -579,22 +579,6 @@
     $('current-folder-icon').textContent = ws ? '📁' : '💬';
     $('current-folder-label').textContent = ws ? folderName(ws) : 'Projesiz (Sohbet)';
     pill.title = ws || 'Proje klasörü seçin (seçilmezse sohbet modunda çalışır)';
-    $('clear-folder-btn').hidden = !ws;
-
-    const chips = $('folder-chips');
-    chips.replaceChildren();
-    const combined = [...new Set([...state.sharedFolders, ...state.favoriteFolders, ...state.recentFolders])]
-      .filter(dir => typeof dir === 'string' && dir && dir !== '[object Object]' && dir !== ws)
-      .slice(0, 5);
-    for (const dir of combined) {
-      chips.appendChild(el('button', {
-        type: 'button',
-        className: 'folder-chip',
-        title: dir,
-        text: `📁 ${folderName(dir)}`,
-        onClick: () => void selectWorkspace(dir),
-      }));
-    }
   }
 
   // --- Grouped Chats by Project Folder ---
@@ -1886,7 +1870,6 @@
       $('folder-dialog').showModal();
       void loadFolderBrowser(state.activeChat?.workspace || '');
     });
-    $('clear-folder-btn').addEventListener('click', () => void selectWorkspace(''));
     $('folder-no-project-btn').addEventListener('click', () => void selectWorkspace('', true));
     $('folder-dialog-native-pick-btn').addEventListener('click', () => void pickNativeFolder(state.folderDialogPurpose === 'shared'));
     $('folder-up-btn').addEventListener('click', () => void loadFolderBrowser(state.folderBrowser.parent || '', state.folderDialogPurpose === 'shared' || !state.folderBrowser.restricted));

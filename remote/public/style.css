@@ -655,27 +655,23 @@
   .composer-top-strip {
     display: flex;
     align-items: center;
-    gap: 6px;
+    justify-content: space-between;
+    gap: 8px;
     padding: 7px 10px 5px;
     border-bottom: 1px solid var(--border);
-    overflow-x: auto;
-    scrollbar-width: none;
   }
-  .composer-top-strip::-webkit-scrollbar { display: none; }
-
-  .project-pill-group { display: inline-flex; align-items: center; gap: 2px; flex: 0 0 auto; }
   .project-pill {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    min-height: 26px;
-    max-width: 200px;
-    padding: 0 9px;
+    gap: 6px;
+    min-height: 28px;
+    max-width: calc(100% - 115px);
+    padding: 0 10px;
     border-radius: 999px;
     border: 1px solid var(--border);
     background: var(--bg-surface);
     color: var(--text);
-    font-size: 11.5px;
+    font-size: 12px;
     font-weight: 600;
   }
   .project-pill:hover { border-color: var(--border-strong); background: var(--bg-hover); }

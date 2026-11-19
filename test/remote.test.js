@@ -732,6 +732,9 @@ test('v2.23.0: pool membership add/remove, call delete/clear, document attachmen
     assert.match(html, /id="topbar-back-btn"/);
     assert.match(html, /id="attach-doc-btn"/);
     assert.match(html, /id="clear-calls-btn"/);
+    assert.match(html, /id="add-shared-folder-btn"/);
+    assert.doesNotMatch(html, /id="clear-folder-btn"/);
+    assert.doesNotMatch(html, /id="folder-chips"/);
     assert.match(html, /data-pool-subtab="catalog"/);
     assert.match(js, /remote-collapsed-pools/);
     assert.doesNotMatch(js, /\.innerHTML\s*=/);

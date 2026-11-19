@@ -133,17 +133,13 @@
         <!-- Antigravity-Style Unified Composer -->
         <form id="composer-form" class="composer-wrap">
           <div id="composer-card" class="composer-card">
-            <!-- Project / Folder Strip RIGHT ABOVE Input -->
+            <!-- Project / Folder Strip RIGHT ABOVE Input (Active Project ONLY, no clutter or accidental clear X) -->
             <div class="composer-top-strip">
-              <div class="project-pill-group">
-                <button id="folder-picker-btn" type="button" class="project-pill" aria-haspopup="dialog" aria-controls="folder-dialog">
-                  <span id="current-folder-icon" aria-hidden="true">💬</span>
-                  <span id="current-folder-label" class="project-pill-label">Projesiz (Sohbet)</span>
-                  <span class="chevron" aria-hidden="true">▾</span>
-                </button>
-                <button id="clear-folder-btn" type="button" class="project-clear-btn" title="Projeyi kaldır ve sohbet moduna dön" aria-label="Projeyi kaldır" hidden>✕</button>
-              </div>
-              <div id="folder-chips" class="folder-chips" aria-label="Hızlı projeler"></div>
+              <button id="folder-picker-btn" type="button" class="project-pill" aria-haspopup="dialog" aria-controls="folder-dialog">
+                <span id="current-folder-icon" aria-hidden="true">💬</span>
+                <span id="current-folder-label" class="project-pill-label">Projesiz (Sohbet)</span>
+                <span class="chevron" aria-hidden="true">▾</span>
+              </button>
               <button id="context-toggle-btn" type="button" class="ctx-chip active" aria-pressed="true" title="Son 3 turun kısa özetini yeni modele aktarır">
                 <span id="context-toggle-label">Bağlam: Özet</span>
               </button>
