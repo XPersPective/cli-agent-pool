@@ -152,6 +152,16 @@
 - [x] **Doğrulama kanıtı (2.20.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate`, `npm test` (`218/218`, yeni `test/remote.test.js` dahil) ve canlı `cli-agent-pool` servisi üzerinden `/r/state` uçtan uca entegrasyon testi doğrulandı.
 
 ## 2.19.0 — Onay/Ekleme Kilidi Düzeltmesi, Windows Pythonw İzolasyonu, 300 Model Sınırı, Neon/Ağ Hata Düzeltmeleri ve Otomatik Güncelleme Bildirimi
+## 2.26.1 — Klasör Gezgini İçine Girerek Seçim (Tamam Onayı), Klasör Simgesi ve Dış API `/api/select` Hızlandırması
+- [x] **Klasör gezgini erken kapanma ve simge düzeltmesi (`remote/public/app.js`)**:
+  - Tüm dizin ve git depoları artık kutu (`📦`) yerine standart klasör simgesiyle (`📁`) gösterilir.
+  - Klasör satırlarındaki erken seçim yapıp pencereyi kapatan `Seç` / `Ekle` düğmeleri kaldırıldı; herhangi bir diske veya klasöre (ör. `D:\` → `repositories` → `proje`) tıklamak yalnızca o klasörün içine girer ve gezgini açık tutar. Seçim yalnızca kullanıcı üstteki **`✓ Tamam — Bu Klasörü Seç`** (veya Ayarlar'da **`✓ Tamam — Paylaşılanlara Ekle`**) düğmesine bastığında onaylanıp kapanır.
+  - Ayarlar'daki paylaşılan klasöre tıklamak da doğrudan o klasörün alt klasörlerini gezmek üzere gezgini açar.
+- [x] **Dış API (`GET /api/select`) ve MCP (`pool_select`) için de sıfır-beklemeli kota önbelleği (`src/server.js`)**:
+  - `pool_select` artık `pool.selectLive(input, { allowStaleRefresh: true, maxWaitMs: 2500 })` kullanır; dış HTTP API ve MCP istemcileri de önbellekteki geçerli kotayla anında yanıt alır (~5 sn bekleme giderildi).
+- [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.26.1`.
+- [x] **Doğrulama kanıtı (2.26.1)**: `npm run check`, `npm run secrets` (107 dosya temiz), `npm audit --audit-level=moderate` (0 açık), `npm test` (`224/224` geçti).
+
 ## 2.26.0 — Sıfır Beklemeli Kota Önbelleği (`submitLive`), Sabit `C:\repositories` Kaldırılması ve Tam Klasör Kaldırma Kontrolü
 - [x] **`submitLive` ~5 saniyelik canlı kota beklemesi giderildi (`src/pool.js`)**:
   - `selectLive(request, { allowStaleRefresh: true, maxWaitMs: 2500 })`: Önbellekte geçerli (`< 60s`) veya sabitlenmiş `routeId + modelId` kotası varsa görev **anında (0 ms)** başlar; 15 saniyeden eski kotalar arka planda sessizce tazelenir. Soğuk kota yoklaması en fazla 2.5 sn ile sınırlandı.

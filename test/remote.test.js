@@ -828,6 +828,8 @@ test('v2.25.0: project chat runs write without forced execute JSON protocol, no 
     assert.doesNotMatch(html, /id="edit-mode-toggle-btn"/);
     assert.doesNotMatch(css, /\.send-btn\.sending\s+svg/);
     assert.match(js, /isRawReportJson/);
+    assert.doesNotMatch(js, /entry\.isGit\s*\?\s*'📦/);
+    assert.match(js, /Tamam — Bu Klasörü Seç/);
     assert.match(readFileSync(path.resolve('src/folder-picker.cs'), 'utf8'), /CenterScreen/);
     assert.match(readFileSync(path.resolve('src/folder-picker.cs'), 'utf8'), /AttachThreadInput/);
     const dashCs = readFileSync(path.resolve('src/dashboard.cs'), 'utf8');

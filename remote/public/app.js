@@ -1216,9 +1216,11 @@
             type: 'button',
             className: 'chat-item-main',
             style: 'min-width:0;text-align:left',
-            title: 'Bu projeyi sohbette aç',
+            title: 'İçindeki klasörleri gez ve proje seç',
             onClick: () => {
-              void selectWorkspace(dir, false).then(() => switchView('chat'));
+              state.folderDialogPurpose = 'workspace';
+              $('folder-dialog').showModal();
+              void loadFolderBrowser(dir, true);
             },
           }, [
             el('strong', { text: `📁 ${folderName(dir)}` }),
@@ -1244,6 +1246,7 @@
                 try {
                   const res = await api('/r/folders/shared', { method: 'POST', body: { action: 'remove', path: dir } });
                   state.sharedFolders = res.sharedFolders || [];
+                  if (Array.isArray(res.favoriteFolders)) state.favoriteFolders = res.favoriteFolders;
                   renderSettingsView();
                   renderWorkspaceStrip();
                   renderChatList();
@@ -1493,9 +1496,9 @@
     $('folder-browser-path').textContent = fb.current || 'Sürücüler & Kök klasörler';
     $('folder-up-btn').disabled = !fb.parent && !fb.current;
     $('folder-select-current-btn').disabled = !fb.current;
-    $('folder-select-current-btn').textContent = isSharedMode
-      ? `Paylaşılanlara Ekle: ${folderName(fb.current)}`
-      : `Bu Projeyi Kullan: ${folderName(fb.current)}`;
+    $('folder-select-current-btn').textContent = fb.current
+      ? (isSharedMode ? `✓ Tamam — Paylaşılanlara Ekle: ${folderName(fb.current)}` : `✓ Tamam — Bu Klasörü Seç: ${folderName(fb.current)}`)
+      : (isSharedMode ? 'Önce bir disk veya klasörün içine girin' : 'Önce bir klasörün içine girin');
     const isFav = fb.current && state.favoriteFolders.includes(fb.current);
     $('folder-star-btn').textContent = isFav ? '★' : '☆';
     $('folder-star-btn').disabled = !fb.current;
@@ -1511,19 +1514,14 @@
         el('button', {
           type: 'button',
           className: 'chat-item-main',
-          title: 'Alt klasörlere girmek için tıklayın',
+          title: 'İçine girmek için tıklayın',
           onClick: () => void loadFolderBrowser(dir, true),
         }, [
           el('div', { className: 'picker-item-title', text: `📁 ${folderName(dir)}` }),
           el('div', { className: 'picker-item-sub mono', text: dir }),
         ]),
         el('div', { className: 'inline-btn-group' }, [
-          el('button', {
-            type: 'button',
-            className: 'btn btn-secondary btn-sm',
-            text: 'Seç',
-            onClick: () => void selectWorkspace(dir, true),
-          }),
+          el('span', { className: 'chevron', 'aria-hidden': 'true', text: '›' }),
           el('button', {
             type: 'button',
             className: 'btn btn-ghost btn-sm',
@@ -1549,7 +1547,7 @@
     const list = $('folder-entries-list');
     list.replaceChildren();
     if (!fb.entries.length) {
-      list.appendChild(el('p', { className: 'muted', text: 'Alt klasör yok.' }));
+      list.appendChild(el('p', { className: 'muted', text: 'Alt klasör yok — yukarıdaki Tamam düğmesiyle bu klasörü seçebilirsiniz.' }));
       return;
     }
     for (const entry of fb.entries) {
@@ -1557,17 +1555,13 @@
         el('button', {
           type: 'button',
           className: 'chat-item-main',
-          onClick: () => void loadFolderBrowser(entry.path, isSharedMode || !fb.restricted),
+          title: 'İçine girmek için tıklayın',
+          onClick: () => void loadFolderBrowser(entry.path, true),
         }, [
-          el('div', { className: 'picker-item-title', text: `${entry.isGit ? '📦 ' : '📁 '}${entry.name}` }),
+          el('div', { className: 'picker-item-title', text: `📁 ${entry.name}` }),
           el('div', { className: 'picker-item-sub mono', text: entry.path }),
         ]),
-        el('button', {
-          type: 'button',
-          className: 'btn btn-secondary btn-sm',
-          text: isSharedMode ? 'Ekle' : 'Seç',
-          onClick: () => isSharedMode ? void addSharedFolder(entry.path, true) : void selectWorkspace(entry.path, true),
-        }),
+        el('span', { className: 'chevron', 'aria-hidden': 'true', text: '›' }),
       ]));
     }
   }
