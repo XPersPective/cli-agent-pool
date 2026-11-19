@@ -152,6 +152,22 @@
 - [x] **Doğrulama kanıtı (2.20.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate`, `npm test` (`218/218`, yeni `test/remote.test.js` dahil) ve canlı `cli-agent-pool` servisi üzerinden `/r/state` uçtan uca entegrasyon testi doğrulandı.
 
 ## 2.19.0 — Onay/Ekleme Kilidi Düzeltmesi, Windows Pythonw İzolasyonu, 300 Model Sınırı, Neon/Ağ Hata Düzeltmeleri ve Otomatik Güncelleme Bildirimi
+## 2.27.0 — Claude/Oturum Senkronizasyonu, OpenCode Üyelik Koruması, Projesiz Sohbet Bağlamı, HTTP Pano Kopyalama ve `checkAuth` Önbelleği
+- [x] **Oturum / giriş durumu her yerde anında güncellenir (`src/quotas.js`, `src/pool.js`, `src/web.js`, `remote/server.js`, `remote/public/app.js`)**:
+  - `claudeQuota`: `refreshToken` mevcutken Anthropic usage uç noktasından gelen geçici `401/403` yanıtı artık bağlantıyı sahte `auth_required` kilidine sokmaz.
+  - `Pool.selectLive`: Önbellekte `auth_required` veya `rate_limited` varsa asla bayat önbellekle reddetmez, anında `getQuota(id, true)` çalıştırır; `verifyRouteAuth` başarılı olunca bayat `auth_required` kaydını anında temizler.
+  - `login`, `scan_import` ve `refresh_catalog` işlemleri artık ilgili bağlantının bayat `auth_required` kaydını temizleyip canlı kota/oturum kontrolü yapar; Remote'a `/r/routes/:id/refresh-auth` ve `/r/routes/:id/login` uçları, model listelerine **`🔒 Giriş gerekli`** rozeti ve kota kartlarına **`🔑 Giriş Yap` / `🔄 Kontrol Et`** düğmeleri eklendi.
+- [x] **OpenCode modellerinin tarama/güncellemede kaybolması giderildi (`src/web.js`, `src/adapters.js`, `remote/server.js`)**:
+  - `scan_import` artık uzun süren katalog taramasından **sonra** en güncel `configView`'ı okuyup birleştirir (kullanıcı üyelik düzenlemelerini asla ezmez).
+  - `mergeCatalogModelsInto` açık `memberships` üyeliği olan modelleri asla devre dışı bırakmaz ve `free` dahil kategori üyelerini `MAX_ROUTE_MODELS` kırpmasından korur.
+  - `POST /r/pool/membership` (`add`) eklenen modeli etkinleştirir ve üzerindeki tekil gizleme filtresini kaldırır.
+- [x] **Projesiz sohbet bağlamı + HTTP Kopyala düzeltmesi + güvenli `checkAuth` hızlandırması (`remote/server.js`, `remote/public/app.js`, `src/pool.js`)**:
+  - Projesiz (Sohbet) mesajlarına `[Genel sohbet modu: ...]` bilgisi eklenerek CLI'ların "bir repoda değilsin" uyarısı vermesi engellendi.
+  - Tüm kopyala düğmeleri HTTP Tailscale bağlantılarında da çalışan `copyText()` (`navigator.clipboard` + `<textarea>` / `execCommand('copy')`) yardımcısına bağlandı; **`📋 Kopyala`** artık kesinlikle cevabı kopyalar.
+  - `Pool` doğrulanan `checkAuth` sonuçlarını 60 sn önbelleğe alır (`AUTH_REQUIRED`/giriş/çıkışta temizlenir) ve Remote gönderim yolunda `routeMetaCache` kullanarak her çağrıda ~200–1500 ms hızlanma sağlar.
+- [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.27.0`.
+- [x] **Doğrulama kanıtı (2.27.0)**: `npm run check`, `npm run secrets` (107 dosya temiz), `npm audit --audit-level=moderate` (0 açık), `npm test` (`225/225` geçti).
+
 ## 2.26.1 — Klasör Gezgini İçine Girerek Seçim (Tamam Onayı), Klasör Simgesi ve Dış API `/api/select` Hızlandırması
 - [x] **Klasör gezgini erken kapanma ve simge düzeltmesi (`remote/public/app.js`)**:
   - Tüm dizin ve git depoları artık kutu (`📦`) yerine standart klasör simgesiyle (`📁`) gösterilir.

@@ -196,6 +196,7 @@ function enrichModel(model, routeWindowsByRoute, routeMetaByRoute = new Map()) {
     email: model.email || meta.email || '',
     account: model.account || meta.account || '',
     billing: model.billing || meta.billing || '',
+    quotaStatus: meta.quotaStatus || model.quota?.status || '',
     effort: cleanEffort,
     efforts: cleanEfforts,
     quotaWindows,
@@ -279,6 +280,8 @@ function createPoolBridge(directory, customFetch = fetch) {
     clearHistory: () => managementRequest(directory, getConfig(), { operation: 'clear_history' }),
     deleteTask: taskId => managementRequest(directory, getConfig(), { operation: 'delete_task', taskId }),
     resolveTask: (taskId, note = 'Remote arayüzünden incelenerek kapatıldı.') => managementRequest(directory, getConfig(), { operation: 'resolve', taskId, reviewed: true, note }),
+    refreshRouteAuth: routeId => managementRequest(directory, getConfig(), { operation: 'refresh_route_auth', routeId }),
+    loginRoute: routeId => managementRequest(directory, getConfig(), { operation: 'login_route', routeId }),
     startPool: async () => {
       const cfg = ensureInitialized(directory, true);
       const info = await ensureDaemon(directory, cfg);
@@ -314,6 +317,7 @@ export function createRemoteServer({
   const remoteStore = store || new RemoteStore(directory);
   const pool = poolBridge || createPoolBridge(directory);
   let tailscaleIp = detectTailscale();
+  const routeMetaCache = new Map();
   const pendingPairings = new Map(); // code -> { expiresAt, label }
   const readManagementToken = () => {
     if (managementToken) return managementToken;
@@ -628,7 +632,12 @@ export function createRemoteServer({
               email: prev.email || q.email || '',
               account: prev.account || q.account || '',
               billing: prev.billing || q.billing || '',
+              quotaStatus: q.status || prev.quotaStatus || '',
             });
+          }
+          routeMetaCache.clear();
+          for (const [k, v] of routeMetaByRoute.entries()) {
+            routeMetaCache.set(k, { ...v, toolLabel: toolLabelFor(v.adapter) });
           }
 
           // Fetch cached per-route quota windows so every model displays 5s / 7g inline badges
@@ -836,6 +845,12 @@ export function createRemoteServer({
         if (action === 'add') {
           const cleanEff = effort && effort !== 'default' ? effort : undefined;
           filtered.push({ group, ...(cleanEff ? { effort: cleanEff } : {}) });
+          model.enabled = true;
+          if (Array.isArray(nextConfig.modelFilters)) {
+            nextConfig.modelFilters = nextConfig.modelFilters.filter(f =>
+              !(f.match === 'model' && f.value === modelId && (!f.routeId || f.routeId === routeId)),
+            );
+          }
         }
         model.memberships = filtered;
         model.group = filtered[0]?.group || 'unassigned';
@@ -958,7 +973,10 @@ export function createRemoteServer({
           const includeContext = body.includeContext !== false;
           const docBlocks = cleanAttachments.map(a => `[Eklenen Doküman: ${a.name}]\n${a.content}\n[/Eklenen Doküman]`).join('\n\n');
           const combinedUserPrompt = [rawPrompt, docBlocks].filter(Boolean).join('\n\n');
-          const finalPrompt = buildCompactPrompt(chat, combinedUserPrompt, includeContext);
+          const builtPrompt = buildCompactPrompt(chat, combinedUserPrompt, includeContext);
+          const finalPrompt = hasProject
+            ? builtPrompt
+            : `[Genel sohbet modu: Şu an bir proje klasörüne veya git deposuna bağlı değilsin. Dosya/repo arama veya repo uyarısı yapma; doğrudan kullanıcının mesajına doğal yanıt ver.]\n\n${builtPrompt}`;
 
           const taskReq = {
             prompt: finalPrompt,
@@ -975,21 +993,24 @@ export function createRemoteServer({
           };
 
           const submitted = await pool.submit(taskReq);
-          // Resolve toolLabel & subscription/email metadata for the assistant bubble
-          let routeMeta = { adapter: '', toolLabel: '', email: '', account: '', billing: '' };
-          try {
-            const conns = await pool.connections();
-            const found = (Array.isArray(conns) ? conns : []).find(c => c.id === submitted.routeId);
-            if (found) {
-              routeMeta = {
-                adapter: found.adapter || '',
-                toolLabel: toolLabelFor(found.adapter),
-                email: found.email || '',
-                account: found.account || '',
-                billing: found.billing || '',
-              };
-            }
-          } catch { /* best-effort */ }
+          // Resolve toolLabel & subscription/email metadata from cache (zero extra HTTP roundtrip on hot path)
+          let routeMeta = routeMetaCache.get(submitted.routeId) || { adapter: '', toolLabel: '', email: '', account: '', billing: '' };
+          if (!routeMeta.toolLabel) {
+            try {
+              const conns = await pool.connections();
+              const found = (Array.isArray(conns) ? conns : []).find(c => c.id === submitted.routeId);
+              if (found) {
+                routeMeta = {
+                  adapter: found.adapter || '',
+                  toolLabel: toolLabelFor(found.adapter),
+                  email: found.email || '',
+                  account: found.account || '',
+                  billing: found.billing || '',
+                };
+                routeMetaCache.set(submitted.routeId, routeMeta);
+              }
+            } catch { /* best-effort */ }
+          }
 
           const userMsg = remoteStore.appendMessage(chatId, {
             role: 'user',
@@ -1071,8 +1092,26 @@ export function createRemoteServer({
       }
       if (req.method === 'POST' && pathname === '/r/quotas/refresh') {
         const conns = await pool.connections();
-        await Promise.allSettled((conns || []).map(c => pool.liveQuota(c.id)));
+        await Promise.allSettled((conns || []).map(c => (typeof pool.refreshRouteAuth === 'function' ? pool.refreshRouteAuth(c.id) : pool.liveQuota(c.id))));
         return sendJson(res, 200, { quotas: await pool.quotas() });
+      }
+      const routeActionMatch = /^\/r\/routes\/([^/]+)\/(refresh-auth|login)$/.exec(pathname);
+      if (routeActionMatch && req.method === 'POST') {
+        const routeId = decodeURIComponent(routeActionMatch[1]);
+        const action = routeActionMatch[2];
+        if (action === 'refresh-auth') {
+          const snapshot = typeof pool.refreshRouteAuth === 'function'
+            ? await pool.refreshRouteAuth(routeId)
+            : await pool.liveQuota(routeId);
+          return sendJson(res, 200, { refreshed: true, routeId, quota: snapshot });
+        }
+        if (action === 'login') {
+          if (typeof pool.loginRoute !== 'function') {
+            throw new PoolError('LOGIN_UNAVAILABLE', 'Bu ortamda uzak giriş tetikleme desteklenmiyor.');
+          }
+          const result = await pool.loginRoute(routeId);
+          return sendJson(res, 200, { routeId, ...result });
+        }
       }
 
       // Pairing & device management

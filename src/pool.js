@@ -51,6 +51,8 @@ export class Pool {
     this.directory = dependencies.directory || dataDirectory();
     this.execute = dependencies.execute || execute;
     this.checkAuth = dependencies.checkAuth || checkAuth;
+    this.authCacheTtlMs = dependencies.authCacheTtlMs ?? (dependencies.checkAuth ? 0 : 60_000);
+    this.verifiedAuth = new Map();
     this.active = new Map();
     this.quotaRequests = new Map();
     this.taskTokens = new Map(); // sha256(token) -> running director/preflight run
@@ -218,6 +220,12 @@ export class Pool {
       const cached = this.store.quota(id);
       const age = cached?.observedAt ? now - Date.parse(cached.observedAt) : Infinity;
       const pinned = Boolean(request.routeId && request.modelId);
+      const blockedCache = cached?.status === 'auth_required' || cached?.status === 'rate_limited';
+      if (blockedCache) {
+        // Never block a user with a stale auth_required/rate_limited cache after login or reset.
+        toAwait.push(this.getQuota(id, true));
+        continue;
+      }
       if (allowStaleRefresh && cached && (age < 60_000 || pinned)) {
         // Use valid/pinned cached quota immediately (0 ms) and refresh in background if >15s old.
         if (age >= 15_000) void this.getQuota(id).catch(() => {});
@@ -353,11 +361,27 @@ export class Pool {
       }
     });
   }
+  authCacheKey(route, model) {
+    return `${route.id}|${route.billing}|${route.trustedSettings ? 1 : 0}|${route.profile || ''}|${route.runtime || ''}|${route.api?.secretRef || ''}|${route.adapter === 'qwen' ? (model?.id || '') : ''}`;
+  }
+  async verifyRouteAuth(route, workspace, model) {
+    const key = this.authCacheKey(route, model);
+    if (this.authCacheTtlMs > 0) {
+      const verifiedAt = this.verifiedAuth.get(key);
+      if (verifiedAt && Date.now() - verifiedAt < this.authCacheTtlMs) return;
+    }
+    await this.checkAuth(route, workspace, this.config.python, this.directory, model);
+    if (this.authCacheTtlMs > 0) this.verifiedAuth.set(key, Date.now());
+    if (this.store.quota(route.id)?.status === 'auth_required') {
+      try { this.store.deleteQuota(route.id); } catch { /* best-effort */ }
+      void this.getQuota(route.id, true).catch(() => {});
+    }
+  }
   async run(task, request, route, handle) {
     try {
       request.workspace = allowedWorkspace(request.workspace, request.probe?[path.join(this.directory,'probes')]:undefined);
       const model = this.select(request).selected;
-      await this.checkAuth(route, request.workspace, this.config.python, this.directory, model);
+      await this.verifyRouteAuth(route, request.workspace, model);
       if (handle.cancelled || this.closed) { director.failQueuedPreflight(this, task.id, handle.cancelReason || 'CANCELLED'); this.store.update(task.id, 'cancelled', null, handle.cancelReason || 'CANCELLED'); return; }
       const context = this.taskContext(request) || { directory: this.directory };
       context.secretEnv = this.secrets.get(task.id) || {};
@@ -409,6 +433,7 @@ export class Pool {
           });
         }
       } else if (outcome.error === 'AUTH_REQUIRED') {
+        this.verifiedAuth.clear();
         const previous = this.store.quota(route.id);
         this.store.saveQuota(route.id, {
           connection: route.id, adapter: route.adapter, billing: route.billing,

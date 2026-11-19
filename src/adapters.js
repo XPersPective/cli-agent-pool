@@ -1037,9 +1037,11 @@ function mergeCatalogModelsInto(route, catalog, filters) {
       else if (model.billing === 'free') delete model.billing;
     }
   }
-  if(route.adapter==='mimo' || route.adapter==='opencode' && route.billing==='free') {
+  if((route.adapter==='mimo' || (route.adapter==='opencode' && route.billing==='free')) && catalog.models.length > 0) {
     const available=new Set(catalog.models.map(model=>model.id));
-    for(const model of route.models) if(!available.has(model.id))model.enabled=false;
+    for(const model of route.models) {
+      if(!available.has(model.id) && !(model.memberships?.length)) model.enabled=false;
+    }
   }
   if (route.adapter === 'agy') {
     for (const model of route.models) if (['gemini-2.5-pro','gemini-2.5-flash','gemini-3-flash'].includes(model.id) && !catalog.models.some(item => item.id === model.id)) model.enabled = false;
@@ -1078,7 +1080,7 @@ function mergeCatalogModelsInto(route, catalog, filters) {
     } else {
       if (route.models.length >= MAX_ROUTE_MODELS && (route.adapter === 'opencode' || route.adapter === 'mimo')) {
         const liveIds = new Set(catalog.models.map(m => m.id));
-        const pruneIdx = route.models.findIndex(m => !liveIds.has(m.id) && !(m.memberships?.length) && !['high', 'medium', 'low'].includes(m.group));
+        const pruneIdx = route.models.findIndex(m => !liveIds.has(m.id) && !(m.memberships?.length) && (!m.group || m.group === 'unassigned'));
         if (pruneIdx >= 0) route.models.splice(pruneIdx, 1);
       }
       if (route.models.length < MAX_ROUTE_MODELS) {

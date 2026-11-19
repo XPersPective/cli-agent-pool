@@ -107,7 +107,7 @@ export async function claudeQuota(home = homedir(), configDir = null) {
   if (live) {
     const { status, data } = await request('https://api.anthropic.com/api/oauth/usage', { headers: { Authorization: `Bearer ${oauth.accessToken}`, 'anthropic-beta': 'oauth-2025-04-20' } });
     if (status === 200) return withStatus(claudeWindows(data), { auth: oauth.subscriptionType || 'claude.ai', source: 'anthropic-oauth-usage', ...(oauth.subscriptionType ? { note: `Plan: ${oauth.subscriptionType}${email ? ` (${email})` : ''}` } : {}), ...emailExtra });
-    if (status === 401 || status === 403) return authRequired('anthropic-oauth-usage', 'Claude oturumu geçersiz veya reddedildi; claude auth login çalıştırın.', emailExtra);
+    if ((status === 401 || status === 403) && !oauth.refreshToken) return authRequired('anthropic-oauth-usage', 'Claude oturumu geçersiz veya reddedildi; claude auth login çalıştırın.', emailExtra);
     if (status === 0 || status >= 500) sawNetworkError = true;
   }
   // Claude Code stores the last server snapshot itself; use it only while fresh.

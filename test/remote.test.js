@@ -817,10 +817,11 @@ test('v2.25.0: project chat runs write without forced execute JSON protocol, no 
     });
     assert.equal(submitted[1].kind, 'text');
     assert.equal(submitted[1].mode, 'response');
+    assert.match(submitted[1].prompt, /Genel sohbet modu/);
     assert.ok(submitted[1].workspace.endsWith('remote-chat-sandbox'));
     assert.notEqual(submitted[1].workspace, ws);
 
-    // 3. UI & cookie contract checks: no edit-mode toggle, no spinning send arrow, 1-year session cookie
+    // 3. UI & cookie contract checks: no edit-mode toggle, no spinning send arrow, 1-year session cookie, HTTP-safe copyText, auth badge
     assert.match(redeem.headers.get('set-cookie') || '', /Max-Age=31536000/);
     const html = readFileSync(path.resolve('remote/public/index.html'), 'utf8');
     const js = readFileSync(path.resolve('remote/public/app.js'), 'utf8');
@@ -828,6 +829,9 @@ test('v2.25.0: project chat runs write without forced execute JSON protocol, no 
     assert.doesNotMatch(html, /id="edit-mode-toggle-btn"/);
     assert.doesNotMatch(css, /\.send-btn\.sending\s+svg/);
     assert.match(js, /isRawReportJson/);
+    assert.match(js, /async function copyText/);
+    assert.match(js, /execCommand\('copy'\)/);
+    assert.match(js, /🔒 Giriş gerekli/);
     assert.doesNotMatch(js, /entry\.isGit\s*\?\s*'📦/);
     assert.match(js, /Tamam — Bu Klasörü Seç/);
     assert.match(readFileSync(path.resolve('src/folder-picker.cs'), 'utf8'), /CenterScreen/);

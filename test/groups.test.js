@@ -89,3 +89,35 @@ test('submitLive uses valid cached quota immediately without blocking on slow li
   assert.equal(slowProbeStarted, 1, 'stale >15s quota still refreshes in background');
   assert.ok(task.id);
 });
+
+test('submitLive re-probes stale auth_required immediately and Pool caches verified checkAuth safely', async t => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'pool-auth-refresh-'));
+  const config = configSchema.parse({ workspaceRoots: [directory], routes: [{ id: 'claude-test', adapter: 'claude', executable: process.execPath, enabled: true, trustedSettings: true, billing: 'subscription', models: [{ id: 'haiku', alias: 'Haiku', group: 'low', kinds: ['text'] }] }] });
+  const store = new Store(':memory:');
+  store.saveQuota('claude-test', { status: 'auth_required', windows: [], observedAt: new Date().toISOString() });
+  let authCalls = 0;
+  let forceProbes = 0;
+  const pool = new Pool(config, store, {
+    directory,
+    authCacheTtlMs: 60_000,
+    checkAuth: async () => { authCalls++; },
+    execute: () => ({ cancel() {}, done: Promise.resolve({ result: 'selam' }) }),
+  });
+  t.after(async () => { await pool.close(); store.close(); await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
+  pool.getQuota = async (id, force) => {
+    if (force) forceProbes++;
+    const fresh = { status: 'available', windows: [{ remainingPercent: 95 }], observedAt: new Date().toISOString() };
+    store.saveQuota(id, fresh);
+    return fresh;
+  };
+  const first = await pool.submitLive({ prompt: 'slm', kind: 'text', routeId: 'claude-test', modelId: 'haiku', workspace: directory, idempotencyKey: 'auth-recovered-1' });
+  for (let i = 0; i < 100 && pool.get(first.id).state !== 'succeeded'; i++) await new Promise(r => setTimeout(r, 10));
+  assert.equal(forceProbes, 1, 'auth_required cache must be force re-probed immediately');
+  assert.equal(pool.get(first.id).state, 'succeeded');
+  assert.equal(authCalls, 1);
+
+  const second = await pool.submitLive({ prompt: 'slm 2', kind: 'text', routeId: 'claude-test', modelId: 'haiku', workspace: directory, idempotencyKey: 'auth-recovered-2' });
+  for (let i = 0; i < 100 && pool.get(second.id).state !== 'succeeded'; i++) await new Promise(r => setTimeout(r, 10));
+  assert.equal(pool.get(second.id).state, 'succeeded');
+  assert.equal(authCalls, 1, 'verified checkAuth is cached within TTL to avoid repeated CLI spawns');
+});

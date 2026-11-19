@@ -108,6 +108,22 @@ export function managementOperation(pool, management, body) {
     return pool.store.deleteTask(body.taskId);
   }
   if (body.operation === 'resolve') return pool.resolveInspected({ taskId: body.taskId, reviewed: body.reviewed, note: body.note });
+  if (body.operation === 'refresh_route_auth') {
+    const route = pool.config.routes.find(item => item.id === body.routeId);
+    if (!route) throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı.');
+    pool.verifiedAuth?.clear?.();
+    return pool.getQuota(route.id, true);
+  }
+  if (body.operation === 'login_route') {
+    const view = configView(management.directory);
+    const route = view.config.routes.find(item => item.id === body.routeId);
+    if (!route) throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı.');
+    pool.verifiedAuth?.clear?.();
+    try {
+      if (pool.store.quota?.(route.id)?.status === 'auth_required') pool.store.deleteQuota?.(route.id);
+    } catch { /* best-effort */ }
+    return openCliLogin(route, { directory: management.directory, python: pool.config.python });
+  }
   if (body.operation === 'shutdown') {
     const activeCount = pool.active?.size || 0;
     if (activeCount > 0 && !body.force) {
@@ -346,6 +362,10 @@ export function browserUI(pool, management, { openLogin = openCliLogin } = {}) {
           pendingSwitches.set(route.id, staging);
           return { pending: route.id, profile: staging.profile, isolated: true, opened: opened.opened, message: opened.message };
         }
+        pool.verifiedAuth?.clear?.();
+        try {
+          if (pool.store.quota?.(route.id)?.status === 'auth_required') pool.store.deleteQuota?.(route.id);
+        } catch { /* best-effort */ }
         return openLogin(route, { directory: management.directory, python: pool.config.python });
       }
       if (operation === 'finish_switch') {
@@ -388,6 +408,7 @@ export function browserUI(pool, management, { openLogin = openCliLogin } = {}) {
         const active = (pool.list?.(500, 0, true) || []).some(task => task.routeId === routeId && ['queued', 'starting', 'running', 'cancelling', 'needs_review'].includes(task.state));
         if (active) throw new PoolError('ROUTE_BUSY', `${routeId} üzerinde çalışan veya bekleyen görev var.`);
         clearProfileAuth(route, management.directory);
+        pool.verifiedAuth?.clear?.();
         try { pool.store.deleteQuota?.(routeId); } catch {}
         return { ...annotateView(configView(management.directory), management.directory), loggedOutRoute: routeId };
       }
@@ -445,30 +466,45 @@ export function browserUI(pool, management, { openLogin = openCliLogin } = {}) {
       if (operation === 'select') return pool.selectLive(payload);
       if (operation === 'save') return managementOperation(pool, management, { ...payload, operation: 'save' });
       if (operation === 'scan_import') {
-        const view = configView(management.directory);
-        const imported = importDiscoveredRoutes(view.config, management.directory);
-        const targetRoutes = imported.config.routes.filter(route =>
+        const initialView = configView(management.directory);
+        const targetRoutes = initialView.config.routes.filter(route =>
           !route.api && (payload.routeId ? route.id === payload.routeId : liveCatalogAdapters.has(route.adapter)),
         );
         const catalogErrors = [];
         const fetched = await Promise.all(targetRoutes.map(async route => {
           try {
             await prepareCatalogRoute(route);
-            return { route, catalog: await catalogFor(route), error: null };
+            return { routeId: route.id, catalog: await catalogFor(route), error: null };
           } catch (error) {
-            return { route, catalog: null, error: error instanceof PoolError ? error.message : 'Model sürümleri alınamadı.' };
+            return { routeId: route.id, catalog: null, error: error instanceof PoolError ? error.message : 'Model sürümleri alınamadı.' };
           }
         }));
-        for (const { route, catalog, error } of fetched) {
-          if (error) { catalogErrors.push({ routeId: route.id, message: error }); continue; }
+        // Re-read latest config AFTER slow network/CLI scans so user edits made in the meantime are never overwritten.
+        const latestView = configView(management.directory);
+        const imported = importDiscoveredRoutes(latestView.config, management.directory);
+        for (const { routeId, catalog, error } of fetched) {
+          if (error) { catalogErrors.push({ routeId, message: error }); continue; }
+          const target = imported.config.routes.find(r => r.id === routeId);
+          if (!target) continue;
           try {
-            migrateFilterAliases(imported.config.modelFilters, route.id, catalog);
-            imported.addedModels += mergeCatalogModels(route, catalog, []);
+            migrateFilterAliases(imported.config.modelFilters, target.id, catalog);
+            imported.addedModels += mergeCatalogModels(target, catalog, []);
           } catch (mergeError) {
-            catalogErrors.push({ routeId: route.id, message: mergeError instanceof PoolError ? mergeError.message : 'Model kataloğu birleştirilemedi.' });
+            catalogErrors.push({ routeId: target.id, message: mergeError instanceof PoolError ? mergeError.message : 'Model kataloğu birleştirilemedi.' });
           }
         }
-        pool.config = saveConfig(management.directory, imported.config, view.revision);
+        pool.config = saveConfig(management.directory, imported.config, latestView.revision);
+        pool.verifiedAuth?.clear?.();
+        // Refresh any auth_required routes immediately (bounded) so login status updates across Pool & Remote.
+        const authStaleRoutes = pool.config.routes.filter(r => r.enabled && (!payload.routeId || r.id === payload.routeId) && pool.store.quota?.(r.id)?.status === 'auth_required');
+        if (authStaleRoutes.length) {
+          let t;
+          await Promise.race([
+            Promise.allSettled(authStaleRoutes.map(r => pool.getQuota(r.id, true))),
+            new Promise(resolve => { t = setTimeout(resolve, 4000); t.unref?.(); }),
+          ]);
+          clearTimeout(t);
+        }
         pool.schedule();
         return { ...annotateView(configView(management.directory), management.directory), addedRoutes: imported.addedRoutes, addedModels: imported.addedModels, refreshedModels: imported.refreshedModels, discoveredCount: imported.discoveredCount, catalogErrors };
       }
@@ -535,6 +571,15 @@ export function browserUI(pool, management, { openLogin = openCliLogin } = {}) {
         migrateFilterAliases(view.config.modelFilters, targetRoute.id, catalog);
         const addedModels = mergeCatalogModels(targetRoute, catalog, []);
         pool.config = saveConfig(management.directory, view.config, view.revision);
+        pool.verifiedAuth?.clear?.();
+        if (pool.store.quota?.(targetRoute.id)?.status === 'auth_required') {
+          let t;
+          await Promise.race([
+            pool.getQuota(targetRoute.id, true).catch(() => {}),
+            new Promise(resolve => { t = setTimeout(resolve, 4000); t.unref?.(); }),
+          ]);
+          clearTimeout(t);
+        }
         pool.schedule();
         return { ...annotateView(configView(management.directory), management.directory), addedModels, totalModels: targetRoute.models.length };
       }

@@ -268,6 +268,11 @@
 
   function renderInlineQuotaTags(model) {
     const wrap = el('span', { className: 'model-quotas-inline' });
+    const qStatus = model?.quotaStatus || model?.quota?.status || '';
+    if (qStatus === 'auth_required') {
+      wrap.appendChild(el('span', { className: 'q-tag danger', text: '🔒 Giriş gerekli' }));
+      return wrap;
+    }
     const wins = Array.isArray(model?.quotaWindows) && model.quotaWindows.length
       ? model.quotaWindows.slice(0, 2)
       : (model?.quota?.remainingPercent != null && Number.isFinite(model.quota.remainingPercent)
@@ -314,6 +319,32 @@
     btn.disabled = state.sending || !hasContent;
     btn.classList.toggle('sending', state.sending);
     btn.setAttribute('aria-busy', String(state.sending));
+  }
+
+  // --- Universal Clipboard Helper (works on HTTPS, localhost, AND HTTP Tailscale mobile) ---
+  async function copyText(text) {
+    const value = String(text ?? '');
+    if (!value) throw new Error('Kopyalanacak metin yok.');
+    if (window.isSecureContext && navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(value);
+        return;
+      } catch { /* fall through to textarea fallback */ }
+    }
+    const ta = document.createElement('textarea');
+    ta.value = value;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-9999px';
+    ta.style.left = '-9999px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, value.length);
+    const ok = document.execCommand('copy');
+    ta.remove();
+    if (!ok) throw new Error('Tarayıcı panoya kopyalamaya izin vermedi.');
   }
 
   // --- Document Viewer & Downloader ---
@@ -439,7 +470,7 @@
           text: 'Kopyala',
           onClick: async () => {
             try {
-              await navigator.clipboard.writeText(code);
+              await copyText(code);
               copyBtn.textContent = 'Kopyalandı';
               setTimeout(() => { copyBtn.textContent = 'Kopyala'; }, 1500);
             } catch { toast('Kopyalanamadı', true); }
@@ -834,7 +865,7 @@
           className: 'mini-action-btn',
           text: '📋 Kopyala',
           onClick: async () => {
-            try { await navigator.clipboard.writeText(displayText); toast('Yanıt kopyalandı.'); }
+            try { await copyText(displayText); toast('Yanıt kopyalandı.'); }
             catch { toast('Kopyalanamadı.', true); }
           },
         }),
@@ -980,7 +1011,12 @@
     }
     for (const q of state.quotas) {
       const pct = Number.isFinite(q.remainingPercent) ? Math.round(q.remainingPercent) : null;
+      const isAuthReq = q.status === 'auth_required';
       const fillCls = pct == null ? '' : pct <= 10 ? ' danger' : pct <= 30 ? ' warn' : '';
+      const statusText = isAuthReq ? '🔒 Giriş gerekli'
+        : q.status === 'rate_limited' ? 'Kota doldu'
+          : pct != null ? `%${pct}` : (q.status === 'available' ? 'Hazır' : 'Bilinmiyor');
+      const badgeCls = isAuthReq || q.status === 'rate_limited' ? 'badge badge-danger' : 'badge';
       const winsRow = Array.isArray(q.windows) && q.windows.length
         ? el('div', { className: 'quota-win-row' }, q.windows.slice(0, 6).map(w => {
             const wp = Math.round(w.remainingPercent);
@@ -994,11 +1030,37 @@
             el('strong', { text: q.toolLabel || q.adapter || q.routeId || 'Bağlantı' }),
             q.email ? el('span', { className: 'sub-pill', text: q.email }) : el('span', { className: 'sub-pill', text: q.routeId }),
           ]),
-          pct != null ? el('span', { className: 'badge', text: `%${pct}` }) : el('span', { className: 'badge', text: q.status || '?' }),
+          el('span', { className: badgeCls, text: statusText }),
         ]),
-        el('div', { className: 'muted', text: `${q.billing || ''} · ${q.models || 0} model` }),
+        el('div', { className: 'muted', text: `${q.billing || ''} · ${q.models || 0} model${q.note ? ` · ${q.note}` : ''}` }),
         pct != null ? el('div', { className: 'quota-bar' }, el('div', { className: `quota-fill${fillCls}`, style: `width:${Math.max(0, Math.min(100, pct))}%` })) : null,
         winsRow,
+        el('div', { className: 'btn-row', style: 'margin-top:6px' }, [
+          isAuthReq ? el('button', {
+            type: 'button',
+            className: 'btn btn-primary btn-sm',
+            text: '🔑 Giriş Yap',
+            onClick: async () => {
+              try {
+                const res = await api(`/r/routes/${encodeURIComponent(q.routeId)}/login`, { method: 'POST', body: {} });
+                toast(res.message || 'Giriş penceresi bilgisayarda açıldı; girişten sonra Kontrol Et düğmesine basın.');
+              } catch (err) { toast(err.message, true); }
+            },
+          }) : null,
+          el('button', {
+            type: 'button',
+            className: 'btn btn-secondary btn-sm',
+            text: '🔄 Kontrol Et',
+            onClick: async () => {
+              toast(`${q.routeId} oturum ve kotası kontrol ediliyor…`);
+              try {
+                await api(`/r/routes/${encodeURIComponent(q.routeId)}/refresh-auth`, { method: 'POST', body: {} });
+                await refreshState(false);
+                toast(`${q.routeId} güncellendi.`);
+              } catch (err) { toast(err.message, true); }
+            },
+          }),
+        ]),
       ]));
     }
   }
@@ -1976,7 +2038,7 @@
 
     // Document Viewer Dialog actions
     $('doc-copy-btn').addEventListener('click', async () => {
-      try { await navigator.clipboard.writeText(state.activeDoc.content); toast('Doküman kopyalandı.'); }
+      try { await copyText(state.activeDoc.content); toast('Doküman kopyalandı.'); }
       catch { toast('Kopyalanamadı.', true); }
     });
     $('doc-download-btn').addEventListener('click', () => downloadTextFile(state.activeDoc.name, state.activeDoc.content));
@@ -2117,11 +2179,11 @@
     $('open-pair-settings-btn').addEventListener('click', () => void openPairingDialog());
     $('regen-pair-btn').addEventListener('click', () => void openPairingDialog());
     $('copy-pair-url-btn').addEventListener('click', async () => {
-      try { await navigator.clipboard.writeText($('pair-url-input').value); toast('Eşleştirme bağlantısı kopyalandı.'); }
+      try { await copyText($('pair-url-input').value); toast('Eşleştirme bağlantısı kopyalandı.'); }
       catch { toast('Kopyalanamadı', true); }
     });
     $('copy-acl-btn').addEventListener('click', async () => {
-      try { await navigator.clipboard.writeText($('tailscale-acl-code').textContent); toast('Tailscale ACL kopyalandı.'); }
+      try { await copyText($('tailscale-acl-code').textContent); toast('Tailscale ACL kopyalandı.'); }
       catch { toast('Kopyalanamadı', true); }
     });
   }
