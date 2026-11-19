@@ -1,11 +1,11 @@
 // Native vendor quota readers. Credentials are read from the official CLI's own
 // local store, kept in memory for one request and never written or returned.
 import { createHash } from 'node:crypto';
-import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runProcess } from './process.js';
 
 const TIMEOUT_MS = 10_000;
 
@@ -163,10 +163,18 @@ const ANTIGRAVITY_CLIENT = { id: '1071006060591-tmhssin2h21lcre235vtolojh4g403ep
 const ANTIGRAVITY_ENDPOINTS = ['https://daily-cloudcode-pa.googleapis.com', 'https://cloudcode-pa.googleapis.com'];
 const credentialScript = fileURLToPath(new URL('./wincred.ps1', import.meta.url));
 
-function windowsCredential(target) {
-  return new Promise(resolve => {
-    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', credentialScript, '-Target', target], { windowsHide: true, timeout: TIMEOUT_MS, maxBuffer: 65_536 }, (error, stdout) => resolve(error ? null : stdout));
-  });
+async function windowsCredential(target) {
+  try {
+    const res = await runProcess({
+      argv: ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', credentialScript, '-Target', target],
+      cwd: path.dirname(credentialScript),
+      timeoutMs: TIMEOUT_MS,
+      maxBytes: 65_536,
+    }).done;
+    return !res.stopReason && res.code === 0 ? res.output : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function antigravityToken(home, { tokenFile, credentialStore = true, fetchImpl = fetch } = {}) {

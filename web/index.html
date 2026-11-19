@@ -18,6 +18,7 @@
       <button id="discard-settings" class="quiet-icon" type="button" aria-label="Değişiklikleri geri al" title="Değişiklikleri geri al" hidden>↶</button>
       <button id="save-pool" class="quiet-icon" type="button" aria-label="Değişiklikleri kaydet" title="Değişiklikleri kaydet" hidden disabled>✓</button>
       <button id="refresh" class="quiet-icon" type="button" aria-label="Bağlantı ve kotaları yenile" title="Bağlantı ve kotaları yenile">↻</button>
+      <button id="open-remote" class="topbar-btn" type="button" title="CLI Agent Remote sohbet ve telefon QR penceresini aç">Remote Sohbet</button>
       <button id="update-app" class="topbar-btn" type="button" title="Kurulumu, kısayolları ve skill dağıtımını yenile; sürüm değişirse servis otomatik yeniden başlar">Güncelle</button>
       <button id="safe-exit" class="topbar-btn danger-soft" type="button" title="Arka plan servisini güvenli şekilde kapat ve çık">Güvenli çıkış</button>
       <button id="connection-state" type="button" class="connection-state" role="status" title="Bağlantıyı yenile / yeniden bağlan">Bağlanıyor</button>
@@ -25,6 +26,11 @@
   </header>
   <main>
     <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+    <div id="console-fix-banner" class="notice" role="region" aria-label="Windows arka plan konsol izni" hidden>
+      <span>Windows 11'de arka plan CLI kontrollerinin boş terminal hatası (0x800700e8) açmasını önlemek için Varsayılan Konsol ayarına izin verin.</span>
+      <button id="apply-console-fix" type="button" class="topbar-btn">İzin Ver ve Düzelt</button>
+      <button id="dismiss-console-fix" type="button" class="quiet-icon" aria-label="Bildirimi kapat">✕</button>
+    </div>
     <section id="pool-panel" aria-label="Ajan havuzu">
       <div class="pool-view-tools">
         <span class="hint">Görünüm</span>

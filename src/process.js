@@ -147,3 +147,33 @@ export async function capture(argv, cwd, python, extraEnv = {}, timeoutMs = 15_0
   if (result.stopReason) throw new PoolError(result.stopReason, 'CLI kontrolü tamamlanamadı. Kurulumu ve Python erişimini kontrol edin.');
   return result;
 }
+
+// Spawn a detached background daemon without popping a Windows console window.
+// Node's detached:true omits CREATE_NO_WINDOW in libuv, so on Windows we hand
+// off through pythonw.exe with CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP.
+export function spawnDetachedHidden(argv, { cwd, env = process.env, python = process.platform === 'win32' ? 'python' : 'python3' } = {}) {
+  if (process.platform === 'win32') {
+    const pyw = resolveWindowsPython(python, { preferWindowless: true });
+    if (/pythonw\.exe$/i.test(pyw)) {
+      const launcher = 'import json, subprocess, sys\ncmd = json.loads(sys.argv[1])\ncwd = sys.argv[2]\nflags = 0x08000000 | 0x00000200\nsi = subprocess.STARTUPINFO()\nsi.dwFlags |= subprocess.STARTF_USESHOWWINDOW\nsi.wShowWindow = subprocess.SW_HIDE\nsubprocess.Popen(cmd, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags, startupinfo=si, close_fds=True)\n';
+      const child = spawn(pyw, ['-c', launcher, JSON.stringify(argv), cwd || process.cwd()], {
+        cwd,
+        env,
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      child.unref();
+      return child;
+    }
+  }
+  const child = spawn(argv[0], argv.slice(1), {
+    cwd,
+    env,
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  child.unref();
+  return child;
+}

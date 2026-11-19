@@ -65,48 +65,52 @@ internal static class Dashboard {
         ShowWindowAsync(windows[0], 9);
         SetForegroundWindow(windows[0]);
     }
-    static string EnsureUrl(string directory, string node, string pool) {
-        var start = new ProcessStartInfo(node, Quote(pool) + " ensure") { UseShellExecute=false, CreateNoWindow=true, RedirectStandardOutput=true, RedirectStandardError=true, WorkingDirectory=directory };
+    static string EnsureUrl(string directory, string node, string pool, string ensureCommand) {
+        var start = new ProcessStartInfo(node, Quote(pool) + " " + ensureCommand) { UseShellExecute=false, CreateNoWindow=true, RedirectStandardOutput=true, RedirectStandardError=true, WorkingDirectory=directory };
         start.EnvironmentVariables["CLI_AGENT_POOL_HOME"] = directory;
         start.StandardOutputEncoding = Encoding.UTF8;
         start.StandardErrorEncoding = Encoding.UTF8;
         using (var process = Process.Start(start)) {
             var output = process.StandardOutput.ReadToEndAsync();
             var error = process.StandardError.ReadToEndAsync();
-            if (!process.WaitForExit(30000)) { process.Kill(); throw new Exception("Pool servisinin yaniti zaman asimina ugradi."); }
+            if (!process.WaitForExit(30000)) { process.Kill(); throw new Exception("Servis yaniti zaman asimina ugradi."); }
             string text = output.Result;
             if (process.ExitCode != 0) {
                 try { var failure = new JavaScriptSerializer().Deserialize<Dictionary<string,object>>((text + error.Result).Substring((text + error.Result).IndexOf("{\"error\""))); throw new ApplicationException(Convert.ToString(((Dictionary<string,object>)failure["error"])["message"])); }
                 catch (ApplicationException) { throw; }
-                catch { File.WriteAllText(Path.Combine(directory,"dashboard-start-error.log"), "Exit: " + process.ExitCode + "\r\n" + error.Result); throw new Exception("Pool servisi baslatilamadi (" + process.ExitCode + "): " + error.Result); }
+                catch { File.WriteAllText(Path.Combine(directory,"dashboard-start-error.log"), "Exit: " + process.ExitCode + "\r\n" + error.Result); throw new Exception("Servis baslatilamadi (" + process.ExitCode + "): " + error.Result); }
             }
             int jsonStart = text.IndexOf('{');
             Dictionary<string,object> payload = jsonStart >= 0 ? new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(text.Substring(jsonStart)) : null;
             string dashboard = payload != null && payload.ContainsKey("dashboard") ? Convert.ToString(payload["dashboard"]) : null;
             if (string.IsNullOrWhiteSpace(dashboard)) {
                 File.WriteAllText(Path.Combine(directory,"dashboard-start-error.log"), "Exit: 0\r\nStdout: " + text + "\r\nStderr: " + error.Result);
-                throw new Exception("Pool servisi panel baglantisini dondurmedi. Kurulumu (npm run setup) kontrol edin.");
+                throw new Exception("Servis pencere baglantisini dondurmedi. Kurulumu (npm run setup) kontrol edin.");
             }
             return dashboard;
         }
     }
     [STAThread] static int Main(string[] args) {
         try {
-            if (args.Length != 3) throw new ArgumentException("Invalid dashboard launch arguments");
+            if (args.Length != 3 && args.Length != 4) throw new ArgumentException("Invalid dashboard launch arguments");
+            bool isRemote = (args.Length == 4 && args[3] == "remote") || args[1] == "--remote-url";
+            string appTitle = isRemote ? "CLI Agent Remote" : "CLI Agent Pool";
             // The MSIX host may virtualize LocalAppData. The installed helper's physical
             // parent is the runtime actually containing its config and service capability.
             string directory = Directory.GetParent(Path.GetDirectoryName(Application.ExecutablePath)).FullName;
-            string profile = Path.Combine(directory, "dashboard-browser");
+            string profile = Path.Combine(directory, isRemote ? "remote-browser" : "dashboard-browser");
             string key;
             using (var hash = SHA256.Create()) key = BitConverter.ToString(hash.ComputeHash(Encoding.UTF8.GetBytes(directory.ToUpperInvariant()))).Replace("-", "");
-            using (var mutex = new Mutex(false, "Local\\CLI-Agent-Pool-UI-" + key)) {
+            using (var mutex = new Mutex(false, (isRemote ? "Local\\CLI-Agent-Remote-UI-" : "Local\\CLI-Agent-Pool-UI-") + key)) {
                 bool owned;
                 try { owned=mutex.WaitOne(45000); } catch (AbandonedMutexException) { owned=true; }
-                if (!owned) throw new Exception("Panel acilisi halen devam ediyor. Biraz sonra yeniden deneyin.");
+                if (!owned) throw new Exception("Pencere acilisi halen devam ediyor. Biraz sonra yeniden deneyin.");
                 try {
                     // A user may have stopped the service while leaving this browser window open.
                     // Every normal shortcut invocation must repair service state before focusing it.
-                    string url = args[1] == "--url" ? args[2] : EnsureUrl(directory, args[1], args[2]);
+                    string url = (args[1] == "--url" || args[1] == "--remote-url")
+                        ? args[2]
+                        : EnsureUrl(directory, args[1], args[2], isRemote ? "remote-ensure" : "ensure");
                     var windows = Windows(profile);
                     if (windows.Count > 0) { Activate(windows); return 0; }
                     RetireWindowlessProfile(profile);
@@ -125,11 +129,11 @@ internal static class Dashboard {
                         Thread.Sleep(200); windows=Windows(profile);
                         if (windows.Count>0) { Activate(windows); return 0; }
                     }
-                    throw new Exception("Tarayici baslatildi fakat panel penceresi olusmadi.");
+                    throw new Exception("Tarayici baslatildi fakat pencere olusmadi.");
                 } finally { mutex.ReleaseMutex(); }
             }
         } catch (Exception error) {
-            if (args.Length>1 && args[1]=="--url") Console.Error.WriteLine(error.Message);
+            if (args.Length>1 && (args[1]=="--url" || args[1]=="--remote-url")) Console.Error.WriteLine(error.Message);
             else MessageBox.Show(error.Message, "CLI Agent Pool", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 1;
         }

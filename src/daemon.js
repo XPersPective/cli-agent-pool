@@ -10,7 +10,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { initialize, loadConfig, configView, saveConfig, allowedWorkspace, dataDirectory, PoolError } from './config.js';
 import { importDiscoveredRoutes } from './adapters.js';
-import { capture } from './process.js';
+import { capture, spawnDetachedHidden } from './process.js';
 import { version } from './version.js';
 import { taskHeader } from './task-header.js';
 import { waitForTask } from './task-protocol.js';
@@ -60,14 +60,11 @@ export async function ensureDaemon(directory, config = ensureInitialized(directo
     // Startup never kills a PID or an arbitrary listener to claim the port.
     if (error?.status) throw error;
   }
-  const child = spawn(process.execPath, [poolBinPath, 'serve'], {
+  spawnDetachedHidden([process.execPath, poolBinPath, 'serve'], {
     cwd: directory,
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true,
     env: { ...process.env, CLI_AGENT_POOL_HOME: directory },
+    python: config.python,
   });
-  child.unref();
 
   for (let attempt = 0; attempt < 60; attempt++) {
     await delay(100);
@@ -79,6 +76,87 @@ export async function ensureDaemon(directory, config = ensureInitialized(directo
     }
   }
   throw new PoolError('DAEMON_START_TIMEOUT', 'CLI Agent Pool arka plan servisi başlatılamadı.');
+}
+
+export async function remoteManagementRequest(directory, body, port = 43128) {
+  const managementToken = readFileSync(path.join(directory, 'management-token'), 'utf8').trim();
+  const response = await fetch(`http://127.0.0.1:${port}/r/manage`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${managementToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(4000),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    const err = new PoolError(response.status === 401 ? 'DAEMON_IDENTITY_CONFLICT' : 'MANAGE_FAILED', `Remote yönetim isteği başarısız (${response.status}): ${text}`);
+    err.status = response.status;
+    throw err;
+  }
+  return response.json();
+}
+
+export async function ensureRemoteDaemon(directory, { host = 'tailscale', port = 43128, python = undefined } = {}) {
+  const config = ensureInitialized(directory, false);
+  try {
+    const info = await remoteManagementRequest(directory, { operation: 'pair_local' }, port);
+    return { ...info, started: false };
+  } catch (error) {
+    if (error?.status) throw error;
+  }
+  spawnDetachedHidden([process.execPath, poolBinPath, 'remote', '--host', host, '--port', String(port)], {
+    cwd: directory,
+    env: { ...process.env, CLI_AGENT_POOL_HOME: directory },
+    python: python || config.python,
+  });
+  for (let attempt = 0; attempt < 60; attempt++) {
+    await delay(100);
+    try {
+      const info = await remoteManagementRequest(directory, { operation: 'pair_local' }, port);
+      return { ...info, started: true };
+    } catch {
+      // Wait until Remote HTTP listener is ready.
+    }
+  }
+  throw new PoolError('REMOTE_START_TIMEOUT', 'CLI Agent Remote arka plan servisi başlatılamadı.');
+}
+
+export async function stopRemoteDaemon(directory, port = 43128) {
+  try {
+    return await remoteManagementRequest(directory, { operation: 'shutdown' }, port);
+  } catch (error) {
+    if (error?.status) throw error;
+    return { stopped: true, alreadyStopped: true };
+  }
+}
+
+const CONHOST_GUID = '{B23D10C0-E52E-411E-9D5B-209FDF7094FF}';
+
+export async function windowsConsoleHostStatus(python = 'python', { platform = process.platform, runCapture = capture } = {}) {
+  if (platform !== 'win32') return { supported: false, fixed: true, needsFix: false };
+  try {
+    const res = await runCapture(['reg.exe', 'query', 'HKCU\\Console\\%%Startup'], homedir(), python, {}, 5000);
+    const text = res.output || '';
+    const cons = /DelegationConsole\s+REG_SZ\s+(\S+)/i.exec(text)?.[1] || '';
+    const term = /DelegationTerminal\s+REG_SZ\s+(\S+)/i.exec(text)?.[1] || '';
+    const fixed = cons.toUpperCase() === CONHOST_GUID && term.toUpperCase() === CONHOST_GUID;
+    return { supported: true, fixed, needsFix: !fixed, delegationConsole: cons || 'default', delegationTerminal: term || 'default' };
+  } catch {
+    return { supported: true, fixed: false, needsFix: true, delegationConsole: 'default', delegationTerminal: 'default' };
+  }
+}
+
+export async function applyWindowsConsoleHostFix(python = 'python', { platform = process.platform, runCapture = capture } = {}) {
+  if (platform !== 'win32') return { supported: false, fixed: true, applied: false };
+  const key = 'HKCU\\Console\\%%Startup';
+  const r1 = await runCapture(['reg.exe', 'add', key, '/v', 'DelegationConsole', '/t', 'REG_SZ', '/d', CONHOST_GUID, '/f'], homedir(), python, {}, 5000);
+  const r2 = await runCapture(['reg.exe', 'add', key, '/v', 'DelegationTerminal', '/t', 'REG_SZ', '/d', CONHOST_GUID, '/f'], homedir(), python, {}, 5000);
+  if (r1.code !== 0 || r2.code !== 0) {
+    throw new PoolError('CONSOLE_FIX_FAILED', 'Windows konsol delegasyon ayarı güncellenemedi.');
+  }
+  return { supported: true, fixed: true, applied: true, delegationConsole: CONHOST_GUID, delegationTerminal: CONHOST_GUID };
 }
 
 async function dashboardExecutable(directory) {
@@ -97,16 +175,21 @@ async function dashboardExecutable(directory) {
   return executable;
 }
 
-export async function openDashboardWindow(url) {
+export async function openDashboardWindow(url, { remote = false } = {}) {
   const windows = process.platform === 'win32';
   const executable = windows ? await dashboardExecutable(dataDirectory()) : process.platform === 'darwin' ? 'open' : 'xdg-open';
-  const proc = spawn(executable, windows ? [dataDirectory(),'--url',url] : [url], { detached:true, stdio:'ignore', windowsHide:false });
+  const winArgs = remote ? [dataDirectory(), '--remote-url', url, 'remote'] : [dataDirectory(), '--url', url];
+  const proc = spawn(executable, windows ? winArgs : [url], { detached:true, stdio:'ignore', windowsHide:false });
   if(windows) {
     const [code] = await once(proc,'exit');
-    if(code!==0) throw new PoolError('DASHBOARD_FAILED','Panel penceresi acilamadi.');
+    if(code!==0) throw new PoolError('DASHBOARD_FAILED', remote ? 'Remote penceresi acilamadi.' : 'Panel penceresi acilamadi.');
   } else await once(proc,'spawn');
   proc.unref();
   return { launchRequested:true, mode:windows?'app-window':'default-browser' };
+}
+
+export async function openRemoteWindow(url) {
+  return openDashboardWindow(url, { remote: true });
 }
 
 export async function apiRequest(directory, routePath, { method = 'GET', body } = {}) {
@@ -281,35 +364,40 @@ export async function checkUpdateStatus({ runningVersion = version, installedRoo
 
 export function scheduleServiceRestart(directory, targetPoolBin = poolBinPath) {
   const entry = targetPoolBin || poolBinPath;
-  const child = spawn(process.execPath, [entry, 'restart'], {
+  spawnDetachedHidden([process.execPath, entry, 'restart'], {
     cwd: directory,
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true,
     env: { ...process.env, CLI_AGENT_POOL_HOME: directory },
   });
-  child.unref();
   return { scheduled: true };
 }
 
-export async function installDesktopAndSkills(directory, installedRoot = null) {
+export async function installDesktopAndSkills(directory, installedRoot = null, { fixConsole = false } = {}) {
   const config = ensureInitialized(directory, true);
   const daemonInfo = await ensureDaemon(directory, config);
+  let remoteInfo = null;
+  try { remoteInfo = await ensureRemoteDaemon(directory, { python: config.python }); } catch { /* optional */ }
   const activeRoot = resolveRuntimeRoot(installedRoot);
   const activePoolBin = path.join(activeRoot, 'bin', 'pool.js');
   const installedVersion = readInstalledVersion(activeRoot);
   const liveVersion = (await liveServiceVersion(config)) || version;
+  const consoleHost = fixConsole
+    ? await applyWindowsConsoleHostFix(config.python)
+    : await windowsConsoleHostStatus(config.python);
 
   const results = {
     dataDirectory: directory,
     runtimePath: activeRoot,
     endpoint: daemonInfo.endpoint,
+    remotePort: remoteInfo?.port || 43128,
     routesConfigured: config.routes.length,
     runningVersion: liveVersion,
     installedVersion,
     restartRequired: updateNeedsRestart(liveVersion, installedVersion),
+    windowsConsoleHost: consoleHost,
     desktopShortcut: null,
     startMenuShortcut: null,
+    remoteDesktopShortcut: null,
+    remoteStartMenuShortcut: null,
     skillsManager: null,
   };
 
@@ -337,9 +425,18 @@ foreach ($targetDir in @($desktop, $startMenu)) {
     $sc.Description = 'CLI Agent Pool - Yerel AI CLI ve Model Havuzu'
     $sc.IconLocation = $icon
     $sc.Save()
+
+    $remoteLnk = Join-Path $targetDir 'CLI Agent Remote.lnk'
+    $rsc = $sh.CreateShortcut($remoteLnk)
+    $rsc.TargetPath = $launcher
+    $rsc.Arguments = '"' + $workDir + '" "' + $node + '" "' + $pool + '" "remote"'
+    $rsc.WorkingDirectory = $workDir
+    $rsc.Description = 'CLI Agent Remote - Mobil ve Masaustu Ajan Sohbeti'
+    $rsc.IconLocation = $icon
+    $rsc.Save()
   }
 }
-Write-Output (ConvertTo-Json @{ desktop = (Join-Path $desktop 'CLI Agent Pool.lnk'); startMenu = (Join-Path $startMenu 'CLI Agent Pool.lnk'); runtimeDirectory = [IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName($sc.TargetPath)) })
+Write-Output (ConvertTo-Json @{ desktop = (Join-Path $desktop 'CLI Agent Pool.lnk'); startMenu = (Join-Path $startMenu 'CLI Agent Pool.lnk'); remoteDesktop = (Join-Path $desktop 'CLI Agent Remote.lnk'); remoteStartMenu = (Join-Path $startMenu 'CLI Agent Remote.lnk'); runtimeDirectory = [IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName($sc.TargetPath)) })
 `;
     const shortcutRes = await capture(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', psScript], directory, config.python);
     if (shortcutRes.code !== 0) throw new PoolError('SHORTCUT_FAILED', 'Windows kisayollari olusturulamadi.');
@@ -348,6 +445,8 @@ Write-Output (ConvertTo-Json @{ desktop = (Join-Path $desktop 'CLI Agent Pool.ln
         const parsed = JSON.parse(shortcutRes.output.trim());
         results.desktopShortcut = parsed.desktop;
         results.startMenuShortcut = parsed.startMenu;
+        results.remoteDesktopShortcut = parsed.remoteDesktop;
+        results.remoteStartMenuShortcut = parsed.remoteStartMenu;
         if (parsed.runtimeDirectory) {
           const locator = path.join(homedir(),'.cli-agent-pool');
           mkdirSync(locator,{recursive:true,mode:0o700});

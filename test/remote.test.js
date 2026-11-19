@@ -6,6 +6,7 @@ import path from 'node:path';
 import { encodeQrMatrix, qrSvg } from '../remote/qr.js';
 import { buildCompactPrompt, RemoteStore } from '../remote/store.js';
 import { createRemoteServer, detectTailscaleIp, listDirectoriesSafe } from '../remote/server.js';
+import { windowsConsoleHostStatus, applyWindowsConsoleHostFix } from '../src/daemon.js';
 
 function makeTempDir(prefix = 'pool-remote-test-') {
   return mkdtempSync(path.join(tmpdir(), prefix));
@@ -355,4 +356,98 @@ test('Remote PWA frontend follows modern web guidance & safe DOM rules', () => {
 
   // Zero innerHTML in app.js (prevents XSS from untrusted model/task text)
   assert.doesNotMatch(js, /\.innerHTML\s*=/);
+});
+
+test('Remote /r/manage issues fresh local pairing URLs, rejects bad auth/origin, and stops cleanly', async () => {
+  const dir = makeTempDir('pool-remote-mgmt-');
+  const mgmtToken = 'a'.repeat(64);
+  const remote = createRemoteServer({
+    directory: dir,
+    port: 0,
+    host: '127.0.0.1',
+    managementToken: mgmtToken,
+    poolBridge: {
+      getConfig: () => ({ port: 43127, workspaceRoots: [] }),
+      health: async () => ({ status: 'stopped', version: null, connections: 0, models: 0, active: 0 }),
+    },
+  });
+  try {
+    const info = await remote.listen();
+    const base = `http://127.0.0.1:${info.port}`;
+
+    // Missing token -> 401
+    assert.equal((await fetch(`${base}/r/manage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ operation: 'pair_local' }),
+    })).status, 401);
+
+    // Browser Origin header -> 403
+    assert.equal((await fetch(`${base}/r/manage`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${mgmtToken}`, Origin: 'http://evil.example', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ operation: 'pair_local' }),
+    })).status, 403);
+
+    // Valid pair_local -> fresh single-use pairing URL
+    const pairRes = await fetch(`${base}/r/manage`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${mgmtToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ operation: 'pair_local' }),
+    });
+    assert.equal(pairRes.status, 200);
+    const pairData = await pairRes.json();
+    assert.match(pairData.dashboard, /^http:\/\/127\.0\.0\.1:\d+\/\?pair=[a-f0-9]+$/);
+    const redeem = await fetch(pairData.dashboard, { redirect: 'manual' });
+    assert.equal(redeem.status, 303);
+    assert.match(redeem.headers.get('set-cookie') || '', /pool_remote=/);
+
+    // Shutdown operation succeeds
+    const stopRes = await fetch(`${base}/r/manage`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${mgmtToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ operation: 'shutdown' }),
+    });
+    assert.equal(stopRes.status, 200);
+    assert.equal((await stopRes.json()).stopped, true);
+  } finally {
+    await remote.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('windowsConsoleHostStatus and applyWindowsConsoleHostFix detect and write Console Host GUID', async () => {
+  const before = await windowsConsoleHostStatus('python', {
+    platform: 'win32',
+    runCapture: async () => ({ code: 0, output: '' }),
+  });
+  assert.equal(before.needsFix, true);
+  assert.equal(before.fixed, false);
+
+  const after = await windowsConsoleHostStatus('python', {
+    platform: 'win32',
+    runCapture: async () => ({
+      code: 0,
+      output: '    DelegationConsole    REG_SZ    {B23D10C0-E52E-411E-9D5B-209FDF7094FF}\r\n    DelegationTerminal    REG_SZ    {B23D10C0-E52E-411E-9D5B-209FDF7094FF}\r\n',
+    }),
+  });
+  assert.equal(after.needsFix, false);
+  assert.equal(after.fixed, true);
+
+  const calls = [];
+  const applied = await applyWindowsConsoleHostFix('python', {
+    platform: 'win32',
+    runCapture: async argv => { calls.push(argv); return { code: 0, output: '' }; },
+  });
+  assert.equal(applied.applied, true);
+  assert.equal(calls.length, 2);
+  assert.ok(calls[0].includes('DelegationConsole'));
+  assert.ok(calls[1].includes('DelegationTerminal'));
+
+  const cs = readFileSync(path.resolve('src/dashboard.cs'), 'utf8');
+  assert.match(cs, /remote-browser/);
+  assert.match(cs, /remote-ensure/);
+  const poolHtml = readFileSync(path.resolve('web/index.html'), 'utf8');
+  assert.match(poolHtml, /id="open-remote"/);
+  assert.match(poolHtml, /id="console-fix-banner"/);
 });

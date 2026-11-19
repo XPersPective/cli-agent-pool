@@ -103,6 +103,19 @@
 - [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.18.0`.
 - [x] **Doğrulama kanıtı (2.18.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate` ve `npm test` (206/206) çalıştırılarak doğrulandı.
 
+## 2.21.0 — Çift Tıklanabilir `CLI Agent Remote` Kısayolu, Otomatik Başlatma, Panel Entegrasyonu ve Sıfır Konsol Penceresi
+- [x] **Çift tıklanabilir `CLI Agent Remote` kısayolu ve ayrı pencere profili (`src/dashboard.cs`, `src/daemon.js`, `bin/pool.js`, `remote/server.js`)**:
+  - `remote/server.js` içine yalnızca `127.0.0.1` + `management-token` ile erişilebilen `POST /r/manage` (`pair_local`, `shutdown`) ucu eklendi; böylece bilgisayardan her açılışta taze tek kullanımlık eşleştirme bağlantısı üretilir ve "Yetkilendirme Gerekli" ekranına düşülmez.
+  - `src/dashboard.cs`, `CLI Agent Remote` için ayrı `remote-browser` profili ve ayrı tek-örnek kilidi (`CLI-Agent-Remote-UI`) destekleyecek şekilde genişletildi; `CLI Agent Pool` açıkken Remote penceresi bağımsız açılır.
+  - `node bin/pool.js install` Masaüstü ve Başlat Menüsü'ne hem `CLI Agent Pool.lnk` hem de çift tıklanabilir `CLI Agent Remote.lnk` oluşturur; `cli-agent-pool serve` / `open` / `ensure` başladığında `remote` arka plan servisi de otomatik başlatılır (`remote-open`, `remote-ensure`, `remote-stop`).
+  - `CLI Agent Pool` üst çubuğuna tek tıkla oturum açılmış Remote penceresini açan **Remote Sohbet** düğmesi (`#open-remote` / `open_remote`) ve Remote QR penceresine ağ durumu rozeti + 3 adımlı kamera okutma rehberi eklendi.
+- [x] **Windows arka plan konsol pencerelerinin tamamen kesilmesi (`src/process.js`, `src/quotas.js`, `src/daemon.js`, `bin/pool.js`, `src/web.js`, `web/index.html`, `web/app.js`)**:
+  - `spawnDetachedHidden`, Windows'ta arka plan `serve`/`restart`/`remote` süreçlerini libuv'un `CREATE_NO_WINDOW`'u düşüren `detached: true` yerine `pythonw.exe` + `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP` üzerinden sessizce başlatır.
+  - `src/quotas.js` içindeki `windowsCredential` doğrudan `execFile('powershell.exe')` yerine `runProcess` (`pythonw.exe` + `CREATE_NO_WINDOW`) kullanır.
+  - Windows 11'de arka plan CLI kontrollerinin boş Windows Terminal hatası (`0x800700e8`) açmasını önlemek için `windowsConsoleHostStatus`, `applyWindowsConsoleHostFix`, `cli-agent-pool fix-console`, `cli-agent-pool install --fix-console` ve panelde izin isteyen tek tık **İzin Ver ve Düzelt** çubuğu (`#console-fix-banner`) eklendi.
+- [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.21.0`.
+- [x] **Doğrulama kanıtı (2.21.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate`, `npm test` (`220/220`, yeni `/r/manage` ve Windows konsol düzeltme testleri dahil) ve canlı `install --fix-console` + `remote-open` doğrulaması.
+
 ## 2.20.0 — Mobil ve Masaüstü Uzaktan Ajan Sohbet ve Kontrol Arayüzü (`remote/`)
 - [x] **Bağımsız `remote/` uzaktan kontrol ve mobil PWA uygulaması (`remote/server.js`, `remote/store.js`, `remote/qr.js`, `remote/public/*`)**:
   - `cli-agent-pool` yerel loopback (`127.0.0.1:43127`) mimarisi bozulmadan, aynı repo içinde `remote/` alt klasöründe ayrı bir istemci/köprü sunucusu eklendi; böylece `cli-agent-pool` güncellendikçe mobil arayüz de otomatik güncel kalır.

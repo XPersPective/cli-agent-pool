@@ -11,7 +11,7 @@ import { accountProfileAdapters, clearProfileAuth, clearProfileDirectory, wslPre
 import { codexControl } from './codex-control.js';
 import { saveSecret, hasSecret } from './secrets-store.js';
 import { childEnvironment, runProcess } from './process.js';
-import { installDesktopAndSkills, scheduleServiceRestart, checkUpdateStatus, readInstalledVersion, updateNeedsRestart } from './daemon.js';
+import { installDesktopAndSkills, scheduleServiceRestart, checkUpdateStatus, readInstalledVersion, updateNeedsRestart, ensureRemoteDaemon, openRemoteWindow, windowsConsoleHostStatus, applyWindowsConsoleHostFix } from './daemon.js';
 
 const execPicker = async (file, args, options) => {
   const result = await runProcess({ argv: [file, ...args], cwd: process.cwd(), extraEnv: options.env, timeoutMs: options.timeout, maxBytes: options.maxBuffer, windowsHide: options.windowsHide }).done;
@@ -459,6 +459,17 @@ export function browserUI(pool, management, { openLogin = openCliLogin } = {}) {
       if (operation === 'check_update') {
         cachedUpdateStatus = await checkUpdateStatus({ runningVersion: version, force: Boolean(payload.force) });
         return cachedUpdateStatus;
+      }
+      if (operation === 'open_remote') {
+        const info = await ensureRemoteDaemon(management.directory, { python: pool.config.python });
+        const win = await openRemoteWindow(info.localUrl);
+        return { opened: true, port: info.port, tailscaleIp: info.tailscaleIp, ...win };
+      }
+      if (operation === 'console_status') {
+        return windowsConsoleHostStatus(pool.config.python);
+      }
+      if (operation === 'fix_console') {
+        return applyWindowsConsoleHostFix(pool.config.python);
       }
       if (operation === 'secret') {
         saveSecret(management.directory, payload.secretRef, payload.secret);

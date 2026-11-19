@@ -5,7 +5,7 @@ import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { dataDirectory, initialize, loadConfig, configView, saveConfig, PoolError } from '../src/config.js';
 import { discover, commandArgv, routeCatalog, importDiscoveredRoutes, mergeCatalogModels } from '../src/adapters.js';
-import { capture } from '../src/process.js';
+import { capture, spawnDetachedHidden } from '../src/process.js';
 import { Store } from '../src/store.js';
 import { Pool } from '../src/pool.js';
 import { createServer } from '../src/server.js';
@@ -14,7 +14,7 @@ import { prepareWslProfile, prepareNativeAgyProfile } from '../src/accounts.js';
 import { stdioBridge } from '../src/stdio.js';
 import { rpcRequest } from '../src/rpc.js';
 import { version } from '../src/version.js';
-import { ensureInitialized, ensureDaemon, managementRequest, openDashboardWindow, withMcpClient, apiRequest, callPoolTool, runTaskFromCli, installDesktopAndSkills, scheduleServiceRestart } from '../src/daemon.js';
+import { ensureInitialized, ensureDaemon, ensureRemoteDaemon, stopRemoteDaemon, managementRequest, openDashboardWindow, openRemoteWindow, windowsConsoleHostStatus, applyWindowsConsoleHostFix, withMcpClient, apiRequest, callPoolTool, runTaskFromCli, installDesktopAndSkills, scheduleServiceRestart } from '../src/daemon.js';
 import { createRemoteServer } from '../remote/server.js';
 import { waitForTask } from '../src/task-protocol.js';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -71,7 +71,11 @@ export async function main(args = process.argv.slice(2)) {
       '',
       '  install                 Set up local pool, scan CLIs, create Desktop shortcut & deploy skill',
       '  open                    Auto-start background service if needed and open desktop app window',
-      '  remote                  Start mobile/desktop Remote Agent Chat PWA (--host 127.0.0.1|tailscale --port 43128 --open)',
+      '  remote-open             Auto-start Pool + Remote services and open authenticated Remote desktop window',
+      '  remote-ensure           Ensure background Remote service is running and print a fresh local pairing URL',
+      '  remote-stop             Stop the background Remote service',
+      '  remote                  Run Remote Agent Chat PWA in foreground (--host 127.0.0.1|tailscale --port 43128 --open)',
+      '  fix-console             Check or apply Windows Console Host fix to stop background 0x800700e8 popups (--status)',
       '  ensure                  Ensure background pool service is running',
       '  stop                    Safely stop the background pool service (--force to stop during active tasks)',
       '  restart                 Stop the background service and start a fresh one (used after an update)',
@@ -106,7 +110,8 @@ export async function main(args = process.argv.slice(2)) {
     return;
   }
   if (command === 'install' || command === 'setup') {
-    const res = await installDesktopAndSkills(directory);
+    const { flags } = parseFlags(rest);
+    const res = await installDesktopAndSkills(directory, null, { fixConsole: Boolean(flags['fix-console']) });
     if (res.restartRequired) {
       const targetBin = res.runtimePath ? path.join(res.runtimePath, 'bin', 'pool.js') : undefined;
       scheduleServiceRestart(directory, targetBin);
@@ -115,24 +120,71 @@ export async function main(args = process.argv.slice(2)) {
     print(res);
     return;
   }
+  if (command === 'fix-console') {
+    ownerOnly();
+    const { flags } = parseFlags(rest);
+    const config = ensureInitialized(directory, false);
+    print(flags.status
+      ? await windowsConsoleHostStatus(config.python)
+      : await applyWindowsConsoleHostFix(config.python));
+    return;
+  }
   if (command === 'open' || command === 'ui' || command === 'dashboard') {
     const config = ensureInitialized(directory, false);
     const info = await ensureDaemon(directory, config);
+    void ensureRemoteDaemon(directory, { python: config.python }).catch(() => {});
     const windowInfo = await openDashboardWindow(info.dashboard);
     print({ ...info, ...windowInfo });
+    return;
+  }
+  if (command === 'remote-ensure') {
+    ownerOnly();
+    const { flags } = parseFlags(rest);
+    const config = ensureInitialized(directory, false);
+    try { await ensureDaemon(directory, config); } catch { /* Remote UI can still start Pool */ }
+    const port = flags.port !== undefined ? Number(flags.port) : 43128;
+    const host = String(flags.host || 'tailscale');
+    print(await ensureRemoteDaemon(directory, { host, port, python: config.python }));
+    return;
+  }
+  if (command === 'remote-open') {
+    ownerOnly();
+    const { flags } = parseFlags(rest);
+    const config = ensureInitialized(directory, false);
+    try { await ensureDaemon(directory, config); } catch { /* Remote UI can still start Pool */ }
+    const port = flags.port !== undefined ? Number(flags.port) : 43128;
+    const host = String(flags.host || 'tailscale');
+    const info = await ensureRemoteDaemon(directory, { host, port, python: config.python });
+    const windowInfo = await openRemoteWindow(info.localUrl);
+    print({ ...info, ...windowInfo });
+    return;
+  }
+  if (command === 'remote-stop') {
+    ownerOnly();
+    const { flags } = parseFlags(rest);
+    const port = flags.port !== undefined ? Number(flags.port) : 43128;
+    print(await stopRemoteDaemon(directory, port));
     return;
   }
   if (command === 'remote') {
     ownerOnly();
     const { values } = multiFlags(rest);
-    const host = String(values.host?.[values.host.length - 1] || '127.0.0.1');
+    const host = String(values.host?.[values.host.length - 1] || 'tailscale');
     const portArg = values.port?.[values.port.length - 1];
     const port = portArg !== undefined ? Number(portArg) : 43128;
     if (!Number.isInteger(port) || port < 0 || port > 65535) {
       throw new PoolError('INVALID_REQUEST', '--port 0 ile 65535 arasında tam sayı olmalıdır.');
     }
     const allowHosts = (values['allow-host'] || []).filter(v => typeof v === 'string');
-    const remote = createRemoteServer({ directory, port, host, allowHosts });
+    let closing = false;
+    let remote = null;
+    const shutdown = async () => {
+      if (closing) return;
+      closing = true;
+      if (remote) await remote.close();
+      process.exit(0);
+    };
+    remote = createRemoteServer({ directory, port, host, allowHosts, onShutdown: shutdown });
     const info = await remote.listen();
     print({
       status: 'listening',
@@ -140,22 +192,17 @@ export async function main(args = process.argv.slice(2)) {
       pairingHint: 'Tek kullanımlık eşleştirme bağlantısını açın veya arayüzdeki QR kodu telefonunuzdan okutun.',
     });
     if (values.open) {
-      try { await openDashboardWindow(info.localUrl); } catch { /* headless fallback */ }
+      try { await openRemoteWindow(info.localUrl); } catch { /* headless fallback */ }
     }
-    let closing = false;
-    const shutdown = async () => {
-      if (closing) return;
-      closing = true;
-      await remote.close();
-      process.exit(0);
-    };
     process.once('SIGINT', () => { void shutdown(); });
     process.once('SIGTERM', () => { void shutdown(); });
     return;
   }
   if (command === 'ensure' || command === 'start') {
     const config = ensureInitialized(directory, true);
-    print(await ensureDaemon(directory, config));
+    const info = await ensureDaemon(directory, config);
+    void ensureRemoteDaemon(directory, { python: config.python }).catch(() => {});
+    print(info);
     return;
   }
   if (command === 'stop') {
@@ -190,14 +237,11 @@ export async function main(args = process.argv.slice(2)) {
         break; // Port boşaldı.
       }
     }
-    const child = spawn(process.execPath, [fileURLToPath(import.meta.url), 'serve'], {
+    spawnDetachedHidden([process.execPath, fileURLToPath(import.meta.url), 'serve'], {
       cwd: directory,
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true,
       env: { ...process.env, CLI_AGENT_POOL_HOME: directory },
+      python: config.python,
     });
-    child.unref();
     print({ restarted: true, endpoint: `http://127.0.0.1:${config.port}/mcp` });
     return;
   }
@@ -415,6 +459,7 @@ export async function main(args = process.argv.slice(2)) {
     const address = await app.listen();
     writeFileSync(pidFile, String(process.pid), 'utf8');
     print({ status: 'listening', endpoint: `http://127.0.0.1:${address.port}/mcp`, dashboard: app.uiURL(), authentication: 'Bearer token from private access-token file; dashboard uses a separate HttpOnly browser session' });
+    void ensureRemoteDaemon(directory, { python: config.python }).catch(() => {});
     // Refresh the owner's native Antigravity permissions in account profiles; failures only affect that route.
     for (const route of config.routes.filter(route => route.runtime === 'wsl')) void prepareWslProfile(route, config.python, directory).catch(() => {});
     for (const route of config.routes.filter(route => route.adapter === 'agy' && route.profile && route.runtime !== 'wsl')) {

@@ -908,6 +908,17 @@
       const svgEl = svgDoc.documentElement;
       $('pair-qr-box').replaceChildren(document.importNode(svgEl, true));
       $('pair-url-input').value = res.url;
+      const netBadge = $('pair-net-badge');
+      const guide = $('pair-guide-text');
+      if (res.tailscaleIp) {
+        netBadge.className = 'badge badge-ok';
+        netBadge.textContent = `Tailscale aktif: ${res.tailscaleIp}`;
+        guide.textContent = '1. Telefonda Tailscale açık olsun. 2. Telefonunuzun normal Kamera uygulamasıyla bu QR kodu okutun ve linke dokunun (otomatik giriş yapılır). 3. Tarayıcıdan "Ana ekrana ekle" diyerek uygulama gibi kullanın.';
+      } else {
+        netBadge.className = 'badge badge-warn';
+        netBadge.textContent = 'Yalnız bu bilgisayar (127.0.0.1) — Tailscale algılanmadı';
+        guide.textContent = 'Telefondan bağlanmak için bilgisayara ve telefona Tailscale kurun, sonra CLI Agent Remote penceresini yeniden açın; QR otomatik olarak güvenli Tailscale adresinizle üretilir.';
+      }
     } catch (err) {
       $('pair-qr-box').replaceChildren(el('p', { className: 'muted', text: err.message }));
     }

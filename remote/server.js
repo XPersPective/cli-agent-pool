@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir, networkInterfaces } from 'node:os';
 import path from 'node:path';
@@ -227,11 +227,24 @@ export function createRemoteServer({
   allowHosts = [],
   poolBridge = null,
   store = null,
+  managementToken = null,
+  onShutdown = null,
 } = {}) {
   const remoteStore = store || new RemoteStore(directory);
   const pool = poolBridge || createPoolBridge(directory);
   const tailscaleIp = detectTailscaleIp();
   const pendingPairings = new Map(); // code -> { expiresAt, label }
+  const readManagementToken = () => {
+    if (managementToken) return managementToken;
+    const file = path.join(directory, 'management-token');
+    return existsSync(file) ? readFileSync(file, 'utf8').trim() : '';
+  };
+  const tokenMatches = (provided, expected) => {
+    if (!provided || !expected) return false;
+    const a = Buffer.from(provided);
+    const b = Buffer.from(expected);
+    return a.length === b.length && timingSafeEqual(a, b);
+  };
 
   const staticFiles = new Map([
     ['/', ['text/html; charset=utf-8', () => readFileSync(path.join(publicDir, 'index.html'))]],
@@ -287,7 +300,7 @@ export function createRemoteServer({
     res.end(JSON.stringify(body));
   };
 
-  const unauthHtml = `<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CLI Agent Remote</title><style>body{margin:0;min-height:100dvh;display:grid;place-items:center;padding:24px;background:#0b0d12;color:#edf1f7;font:15px/1.6 system-ui,sans-serif}.box{max-width:420px;padding:24px;border:1px solid #262d3d;border-radius:16px;background:#141821}h1{margin:0 0 8px;font-size:19px}p{margin:0;color:#9aa6bd;font-size:14px}</style></head><body><div class="box"><h1>Yetkilendirme Gerekli</h1><p>Bu cihaz henüz eşleştirilmemiş veya oturum iptal edilmiş. Bilgisayarınızdaki CLI Agent Remote ekranından yeni bir QR kodu okutun veya tek kullanımlık bağlantıyı açın.</p></div></body></html>`;
+  const unauthHtml = `<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CLI Agent Remote</title><style>body{margin:0;min-height:100dvh;display:grid;place-items:center;padding:24px;background:#0b0d12;color:#edf1f7;font:15px/1.6 system-ui,sans-serif}.box{max-width:440px;padding:24px;border:1px solid #262d3d;border-radius:16px;background:#141821}h1{margin:0 0 10px;font-size:19px}p{margin:0 0 10px;color:#9aa6bd;font-size:14px}strong{color:#edf1f7}</style></head><body><div class="box"><h1>Yetkilendirme Gerekli</h1><p>Bu cihaz henüz eşleştirilmemiş veya tek kullanımlık bağlantı daha önce kullanılmış.</p><p><strong>Bilgisayarda açmak için:</strong> Masaüstündeki <strong>CLI Agent Remote</strong> kısayoluna çift tıklayın veya CLI Agent Pool üst çubuğundaki <strong>Remote Sohbet</strong> düğmesine basın.</p><p><strong>Telefonda açmak için:</strong> Bilgisayarda açılan CLI Agent Remote ekranından <strong>Telefon Bağla (QR)</strong> kodunu telefon kamerasıyla okutun.</p></div></body></html>`;
 
   const handler = async (req, res) => {
     const actualPort = req.socket?.localPort || port;
@@ -299,6 +312,49 @@ export function createRemoteServer({
     catch { return sendJson(res, 400, { error: { code: 'INVALID_URL', message: 'Geçersiz adres.' } }); }
 
     const pathname = url.pathname;
+
+    // Loopback-only management endpoint (authenticated with management-token)
+    if (req.method === 'POST' && pathname === '/r/manage') {
+      const remoteAddr = req.socket?.remoteAddress || '';
+      const isLoopback = remoteAddr === '127.0.0.1' || remoteAddr === '::1' || remoteAddr === '::ffff:127.0.0.1';
+      if (!isLoopback || req.headers.host !== `127.0.0.1:${actualPort}` || 'origin' in req.headers || 'sec-fetch-site' in req.headers) {
+        return sendJson(res, 403, { error: { code: 'ORIGIN_DENIED', message: 'Yönetim ucu yalnızca yerel makineden çağrılabilir.' } });
+      }
+      const authHeader = String(req.headers.authorization || '');
+      const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+      if (!tokenMatches(bearer, readManagementToken())) {
+        return sendJson(res, 401, { error: { code: 'UNAUTHORIZED', message: 'Yönetim anahtarı geçersiz.' } });
+      }
+      let body = {};
+      try { body = await readJsonBody(req); } catch (err) {
+        return sendJson(res, 400, { error: { code: err.code || 'INVALID_JSON', message: err.message } });
+      }
+      if (body.operation === 'pair_local') {
+        const created = createPairingCode(body.label || 'Bilgisayar');
+        const localUrl = `http://127.0.0.1:${actualPort}/?pair=${created.code}`;
+        const tailscaleUrl = tailscaleIp && bindTargets.includes(tailscaleIp)
+          ? `http://${tailscaleIp}:${actualPort}/?pair=${created.code}`
+          : null;
+        return sendJson(res, 200, {
+          dashboard: localUrl,
+          localUrl,
+          tailscaleUrl,
+          port: actualPort,
+          tailscaleIp,
+          bindTargets,
+          version,
+        });
+      }
+      if (body.operation === 'shutdown') {
+        sendJson(res, 200, { stopped: true });
+        setTimeout(() => {
+          if (typeof onShutdown === 'function') void onShutdown();
+          else void closeAll();
+        }, 40);
+        return;
+      }
+      return sendJson(res, 400, { error: { code: 'INVALID_REQUEST', message: 'Bilinmeyen yönetim işlemi.' } });
+    }
 
     // Public PWA manifest & icon (no sensitive data)
     if (req.method === 'GET' && (pathname === '/manifest.webmanifest' || pathname === '/icon.svg')) {
@@ -648,6 +704,13 @@ export function createRemoteServer({
   const bindTargets = host === 'tailscale'
     ? (tailscaleIp ? ['127.0.0.1', tailscaleIp] : ['127.0.0.1'])
     : [host];
+  const closeAll = async () => {
+    await Promise.all(servers.map(s => new Promise(resolve => {
+      try { s.closeAllConnections?.(); } catch { /* ignore */ }
+      s.close(() => resolve());
+    })));
+    servers.length = 0;
+  };
 
   return {
     store: remoteStore,
@@ -675,9 +738,6 @@ export function createRemoteServer({
         : null;
       return { port: boundPort, bindTargets, tailscaleIp, localUrl, tailscaleUrl };
     },
-    async close() {
-      await Promise.all(servers.map(s => new Promise(resolve => s.close(() => resolve()))));
-      servers.length = 0;
-    },
+    close: closeAll,
   };
 }

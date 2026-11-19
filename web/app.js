@@ -730,6 +730,28 @@ async function triggerSafeExit() {
   }
 }
 
+$('open-remote')?.addEventListener('click', () => void action(async () => {
+  await call('open_remote');
+  notice('CLI Agent Remote penceresi açıldı.');
+}));
+$('apply-console-fix')?.addEventListener('click', () => void action(async () => {
+  await call('fix_console');
+  const banner = $('console-fix-banner');
+  if (banner) banner.hidden = true;
+  notice('Windows Konsol Ana Bilgisayarı ayarı uygulandı. Arka plan konsol hata pencereleri artık açılmayacak.');
+}));
+$('dismiss-console-fix')?.addEventListener('click', () => {
+  const banner = $('console-fix-banner');
+  if (banner) banner.hidden = true;
+});
+void (async () => {
+  try {
+    const status = await call('console_status');
+    const banner = $('console-fix-banner');
+    if (banner && status?.needsFix) banner.hidden = false;
+  } catch { /* ignore */ }
+})();
+
 $('update-app')?.addEventListener('click', () => void action(triggerUpdate));
 $('settings-update')?.addEventListener('click', () => void action(triggerUpdate));
 $('safe-exit')?.addEventListener('click', () => void action(triggerSafeExit));

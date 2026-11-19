@@ -341,10 +341,12 @@
       <button type="button" class="icon-btn dialog-close" data-close-dialog="pair-dialog" aria-label="Kapat">✕</button>
     </div>
     <div class="dialog-body pair-body">
-      <p class="muted">Telefonunuzda Tailscale açıksa QR kodu okutun. Kod 5 dakika geçerlidir ve ilk açılışta otomatik silinir.</p>
+      <div id="pair-net-badge" class="badge">Ağ kontrol ediliyor…</div>
+      <p id="pair-guide-text" class="muted">1. Telefonunuzun normal <strong>Kamera</strong> uygulamasını açıp bu QR kodu okutun. 2. Açılan bağlantıya dokunun (otomatik giriş yapılır). 3. Tarayıcı menüsünden <strong>Ana ekrana ekle</strong> diyerek uygulama gibi kullanın.</p>
       <div id="pair-qr-box" class="qr-box" aria-label="Eşleştirme QR kodu"></div>
       <div class="pair-url-row">
-        <input id="pair-url-input" type="text" class="text-input mono" readonly aria-label="Eşleştirme bağlantısı">
+        <label for="pair-url-input" class="sr-only">Eşleştirme bağlantısı</label>
+        <input id="pair-url-input" type="text" class="text-input mono" readonly>
         <button id="copy-pair-url-btn" type="button" class="btn btn-secondary btn-sm">Kopyala</button>
       </div>
       <div class="btn-row">
