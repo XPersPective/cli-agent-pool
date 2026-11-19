@@ -152,6 +152,16 @@
 - [x] **Doğrulama kanıtı (2.20.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate`, `npm test` (`218/218`, yeni `test/remote.test.js` dahil) ve canlı `cli-agent-pool` servisi üzerinden `/r/state` uçtan uca entegrasyon testi doğrulandı.
 
 ## 2.19.0 — Onay/Ekleme Kilidi Düzeltmesi, Windows Pythonw İzolasyonu, 300 Model Sınırı, Neon/Ağ Hata Düzeltmeleri ve Otomatik Güncelleme Bildirimi
+## 2.26.0 — Sıfır Beklemeli Kota Önbelleği (`submitLive`), Sabit `C:\repositories` Kaldırılması ve Tam Klasör Kaldırma Kontrolü
+- [x] **`submitLive` ~5 saniyelik canlı kota beklemesi giderildi (`src/pool.js`)**:
+  - `selectLive(request, { allowStaleRefresh: true, maxWaitMs: 2500 })`: Önbellekte geçerli (`< 60s`) veya sabitlenmiş `routeId + modelId` kotası varsa görev **anında (0 ms)** başlar; 15 saniyeden eski kotalar arka planda sessizce tazelenir. Soğuk kota yoklaması en fazla 2.5 sn ile sınırlandı.
+  - Remote SSE yoklama aralığı `800 ms` → `250 ms` hızlandırıldı (`remote/server.js`).
+- [x] **Kafaya göre eklenen `C:\repositories` / `D:\repositories` kaldırıldı ve tüm klasörler kaldırılabilir oldu (`remote/server.js`, `remote/public/app.js`)**:
+  - `listDirectoriesSafe` içindeki sabit `'D:\\repositories'`, `'C:\\repositories'` girdileri kaldırıldı; yalnızca gerçek işletim sistemi sürücüleri ve kullanıcı dizini listelenir.
+  - `POST /r/folders/shared` (`remove`) Windows'ta büyük/küçük harf duyarsız normalleştirme ile hem `sharedFolders` hem `favoriteFolders` hem `workspaceRoots` kayıtlarını temizler; `#folder-favorites-list` içindeki her satıra doğrudan **Kaldır** düğmesi eklendi.
+- [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.26.0`.
+- [x] **Doğrulama kanıtı (2.26.0)**: `npm run check`, `npm run secrets` (107 dosya temiz), `npm audit --audit-level=moderate` (0 açık), `npm test` (`224/224` geçti; yeni `submitLive` hız ve klasör kaldırma testleri dahil).
+
 ## 2.25.2 — Dinamik Tailscale Algılama ve Canlı Dinleyici Bağlama
 - [x] **Tailscale sonradan açıldığında yeniden başlatma gerekmeden otomatik algılama ve dinleme (`remote/server.js`)**:
   - `createRemoteServer` içinde `tailscaleIp` artık açılışta donup kalmıyor; `syncTailscaleListener()` ile `/r/state`, `/r/pair`, `/r/manage` (`pair_local`) çağrılarında ve 15 saniyelik arka plan kontrolünde Tailscale IP'si canlı algılanıp `43128` portunda otomatik bağlanıyor (IP değiştiğinde veya koptuğunda eski dinleyici temizlenir).

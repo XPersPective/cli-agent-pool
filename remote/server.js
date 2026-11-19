@@ -79,7 +79,7 @@ export function listDirectoriesSafe(requestedPath = '', workspaceRoots = []) {
       }
     }
     const candidates = [
-      ...(process.platform === 'win32' ? ['D:\\repositories', 'C:\\repositories', ...winDrives] : ['/']),
+      ...(process.platform === 'win32' ? winDrives : ['/']),
       homedir(),
     ];
     for (const c of candidates) {
@@ -587,7 +587,7 @@ export function createRemoteServer({
             push('error', { message: err instanceof PoolError ? err.message : 'Görev durumu okunamadı.' });
             break;
           }
-          await new Promise(resolve => setTimeout(resolve, 800));
+          await new Promise(resolve => setTimeout(resolve, 250));
         }
         if (!res.writableEnded) res.end();
       };
@@ -721,8 +721,15 @@ export function createRemoteServer({
       // POST /r/folders/favorite
       if (req.method === 'POST' && pathname === '/r/folders/favorite') {
         const body = await readJsonBody(req);
-        const cfg = pool.getConfig();
-        const checked = listDirectoriesSafe(body.path || '', cfg.workspaceRoots || []);
+        const rawPath = String(body.path || '').trim();
+        if (body.action === 'remove') {
+          const norm = p => (process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p));
+          const targetKey = rawPath ? norm(rawPath) : '';
+          remoteStore.state.favoriteFolders = remoteStore.state.favoriteFolders.filter(f => norm(f) !== targetKey);
+          remoteStore.writeState();
+          return sendJson(res, 200, { favoriteFolders: remoteStore.state.favoriteFolders });
+        }
+        const checked = listDirectoriesSafe(rawPath, []);
         const favoriteFolders = remoteStore.toggleFavoriteFolder(checked.current);
         return sendJson(res, 200, { favoriteFolders });
       }
@@ -733,19 +740,29 @@ export function createRemoteServer({
         const action = body.action === 'remove' ? 'remove' : 'add';
         if (action === 'remove') {
           const target = String(body.path || '').trim();
-          remoteStore.removeSharedFolder(target);
+          const norm = p => {
+            try { return process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p); }
+            catch { return String(p || '').trim().toLowerCase(); }
+          };
+          const targetKey = target ? norm(target) : '';
+          remoteStore.state.sharedFolders = remoteStore.state.sharedFolders.filter(f => norm(f) !== targetKey);
+          remoteStore.state.favoriteFolders = remoteStore.state.favoriteFolders.filter(f => norm(f) !== targetKey);
+          remoteStore.writeState();
           let nextRoots = [];
           try {
             if (typeof pool.manageGet === 'function' && typeof pool.manageSave === 'function') {
               const view = await pool.manageGet();
-              const roots = (view.config.workspaceRoots || []).filter(r => r !== target);
+              const roots = (view.config.workspaceRoots || []).filter(r => norm(r) !== targetKey);
               if (roots.length !== (view.config.workspaceRoots || []).length) {
                 await pool.manageSave({ ...view.config, workspaceRoots: roots }, view.revision);
               }
               nextRoots = roots;
             }
           } catch { /* keep remote store updated */ }
-          return sendJson(res, 200, { sharedFolders: [...new Set([...nextRoots, ...remoteStore.state.sharedFolders])] });
+          return sendJson(res, 200, {
+            sharedFolders: [...new Set([...nextRoots, ...remoteStore.state.sharedFolders])],
+            favoriteFolders: remoteStore.state.favoriteFolders,
+          });
         }
         // Owner explicitly adding a new drive or folder root: validate directory exists on disk without workspaceRoots block
         const checked = listDirectoriesSafe(body.path || '', []);

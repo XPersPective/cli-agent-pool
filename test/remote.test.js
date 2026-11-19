@@ -880,6 +880,23 @@ test('v2.25.0: project chat runs write without forced execute JSON protocol, no 
       })).json();
       assert.equal(afterPair.tailscaleIp, '127.0.0.2');
       assert.match(afterPair.url, /^http:\/\/127\.0\.0\.2:/);
+
+      // 5. Root directory listing never injects hardcoded C:\repositories or D:\repositories; add & remove shared/favorite works cleanly
+      const rootDirs = listDirectoriesSafe('', []);
+      assert.equal(rootDirs.entries.some(e => /^[cd]:\\repositories$/i.test(e.path)), false);
+      const favAdd = await fetch(`http://127.0.0.1:${dynInfo.port}/r/folders/favorite`, {
+        method: 'POST',
+        headers: { Cookie: dynCookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: ws }),
+      });
+      assert.equal((await favAdd.json()).favoriteFolders.length, 1);
+      const sharedRm = await fetch(`http://127.0.0.1:${dynInfo.port}/r/folders/shared`, {
+        method: 'POST',
+        headers: { Cookie: dynCookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'remove', path: ws.toUpperCase() }),
+      });
+      const rmData = await sharedRm.json();
+      assert.equal(rmData.favoriteFolders.length, 0);
     } finally {
       await dynRemote.close();
       rmSync(dynDir, { recursive: true, force: true });

@@ -1517,12 +1517,32 @@
           el('div', { className: 'picker-item-title', text: `📁 ${folderName(dir)}` }),
           el('div', { className: 'picker-item-sub mono', text: dir }),
         ]),
-        el('button', {
-          type: 'button',
-          className: 'btn btn-secondary btn-sm',
-          text: 'Seç',
-          onClick: () => void selectWorkspace(dir, true),
-        }),
+        el('div', { className: 'inline-btn-group' }, [
+          el('button', {
+            type: 'button',
+            className: 'btn btn-secondary btn-sm',
+            text: 'Seç',
+            onClick: () => void selectWorkspace(dir, true),
+          }),
+          el('button', {
+            type: 'button',
+            className: 'btn btn-ghost btn-sm',
+            title: 'Bu klasörü listeden kaldır',
+            'aria-label': `${folderName(dir)} klasörünü kaldır`,
+            text: 'Kaldır',
+            onClick: async () => {
+              try {
+                const res = await api('/r/folders/shared', { method: 'POST', body: { action: 'remove', path: dir } });
+                state.sharedFolders = res.sharedFolders || [];
+                if (Array.isArray(res.favoriteFolders)) state.favoriteFolders = res.favoriteFolders;
+                renderFolderBrowser();
+                renderSettingsView();
+                renderChatList();
+                toast('Klasör kaldırıldı.');
+              } catch (err) { toast(err.message, true); }
+            },
+          }),
+        ]),
       ]));
     }
 

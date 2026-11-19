@@ -207,12 +207,37 @@ export class Pool {
     this.quotaRequests.set(routeId, request);
     try { return await request; } finally { this.quotaRequests.delete(routeId); }
   }
-  async selectLive(request) {
+  async selectLive(request, { allowStaleRefresh = false, maxWaitMs = 0 } = {}) {
     const routes = new Set(this.models().filter(model => model.enabled && model.kinds.includes(request.kind) &&
       (!request.group || model.group === request.group) && (!request.routeId || model.routeId === request.routeId) &&
       (!request.modelId || model.id === request.modelId) && (request.routeId || model.billing !== 'paid_api' || model.autoSelect)).map(model => model.routeId));
     // Unsupported/offline quota probes stay unknown; never invent a balance.
-    await Promise.allSettled([...routes].map(id => this.getQuota(id)));
+    const now = Date.now();
+    const toAwait = [];
+    for (const id of routes) {
+      const cached = this.store.quota(id);
+      const age = cached?.observedAt ? now - Date.parse(cached.observedAt) : Infinity;
+      const pinned = Boolean(request.routeId && request.modelId);
+      if (allowStaleRefresh && cached && (age < 60_000 || pinned)) {
+        // Use valid/pinned cached quota immediately (0 ms) and refresh in background if >15s old.
+        if (age >= 15_000) void this.getQuota(id).catch(() => {});
+        continue;
+      }
+      toAwait.push(this.getQuota(id));
+    }
+    if (toAwait.length) {
+      const work = Promise.allSettled(toAwait);
+      if (maxWaitMs > 0) {
+        let timer;
+        await Promise.race([
+          work,
+          new Promise(resolve => { timer = setTimeout(resolve, maxWaitMs); timer.unref?.(); }),
+        ]);
+        clearTimeout(timer);
+      } else {
+        await work;
+      }
+    }
     return this.select(request);
   }
   async probeModel(input) {
@@ -226,7 +251,9 @@ export class Pool {
     const request = taskSchema.parse(input);
     if (request.profile === 'director' && !options.owner) throw new PoolError('OWNER_ONLY', 'Director tasks require the owner surface.');
     allowedWorkspace(request.workspace, probe?[path.join(this.directory,'probes')]:undefined);
-    if (!this.store.byKey(request.idempotencyKey)) { await this.selectLive(request); }
+    if (!this.store.byKey(request.idempotencyKey)) {
+      await this.selectLive(request, { allowStaleRefresh: true, maxWaitMs: 2500 });
+    }
     return this.submit(input,probe,options);
   }
   submit(input, probe = false, options = {}) {

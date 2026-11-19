@@ -69,3 +69,23 @@ test('strength suggestions distinguish named families and leave unknown models u
   assert.equal(suggestGroup('vendor/solar-model'), null);
   assert.equal(suggestGroup('MiniMax-M3'), null);
 });
+
+test('submitLive uses valid cached quota immediately without blocking on slow live quota probes', async t => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'pool-fast-submit-'));
+  const config = configSchema.parse({ workspaceRoots: [directory], routes: [{ id: 'fast', adapter: 'codex', executable: process.execPath, enabled: true, billing: 'subscription', models: [{ id: 'm1', alias: 'M1', group: 'low', kinds: ['text'] }] }] });
+  const store = new Store(':memory:');
+  store.saveQuota('fast', { status: 'available', windows: [{ remainingPercent: 80 }], observedAt: new Date(Date.now() - 25_000).toISOString() });
+  let slowProbeStarted = 0;
+  const pool = new Pool(config, store, { directory, checkAuth: async () => {}, execute: () => ({ cancel() {}, done: Promise.resolve({ result: 'hi' }) }) });
+  t.after(async () => { await pool.close(); store.close(); await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
+  pool.getQuota = async () => {
+    slowProbeStarted++;
+    await new Promise(resolve => { const timer = setTimeout(resolve, 4000); timer.unref?.(); });
+    return { status: 'available', windows: [{ remainingPercent: 80 }], observedAt: new Date().toISOString() };
+  };
+  const startedAt = Date.now();
+  const task = await pool.submitLive({ prompt: 'slm', kind: 'text', routeId: 'fast', modelId: 'm1', workspace: directory, idempotencyKey: 'fast-submit-cached-1' });
+  assert.ok(Date.now() - startedAt < 500, 'submitLive must not block 4s when cached quota exists');
+  assert.equal(slowProbeStarted, 1, 'stale >15s quota still refreshes in background');
+  assert.ok(task.id);
+});
