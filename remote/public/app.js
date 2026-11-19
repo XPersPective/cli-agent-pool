@@ -536,8 +536,13 @@
     return root;
   }
 
-  // --- View Switching ---
-  function switchView(view) {
+  // --- View Switching & Mobile Back-Gesture History Management ---
+  function pushHistoryGuard(tag) {
+    try { history.pushState({ capRemote: true, tag }, ''); } catch { /* ignore */ }
+  }
+
+  function switchView(view, { fromPopstate = false } = {}) {
+    const prev = state.view;
     state.view = view;
     document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === `view-${view}`));
     document.querySelectorAll('[data-view]').forEach(btn => btn.classList.toggle('active', btn.dataset.view === view));
@@ -546,6 +551,32 @@
     $('topbar-brand-icon').hidden = !isChat;
     if (view === 'chats') renderChatGroups($('mobile-chat-list'), true);
     if (view === 'calls' || view === 'pools' || view === 'settings') void refreshState(false);
+    if (!fromPopstate && view !== prev) pushHistoryGuard(`view:${view}`);
+  }
+
+  function initMobileBackNavigation() {
+    try {
+      history.replaceState({ capRemote: true, tag: 'root' }, '');
+      history.pushState({ capRemote: true, tag: 'view:chat' }, '');
+    } catch { /* ignore */ }
+    window.addEventListener('popstate', () => {
+      // 1. If any dialog is open, Back closes the dialog cleanly instead of leaving the app.
+      const openDialogs = [...document.querySelectorAll('dialog[open]')];
+      if (openDialogs.length) {
+        openDialogs[openDialogs.length - 1].close();
+        pushHistoryGuard(`view:${state.view}`);
+        return;
+      }
+      // 2. If on another view (Sohbetler / Çağrılar / Havuzlar / Ayarlar), Back returns to Chat.
+      if (state.view !== 'chat') {
+        switchView('chat', { fromPopstate: true });
+        pushHistoryGuard('view:chat');
+        return;
+      }
+      // 3. If already inside Chat, Back switches cleanly to the Chats list (never kicks out of the app).
+      switchView('chats', { fromPopstate: true });
+      pushHistoryGuard('view:chats');
+    });
   }
 
   // --- Rendering Topbar, Composer Inline Model & Workspace Strip ---
@@ -1353,9 +1384,13 @@
       ]));
     }
 
-    $('tailscale-status-text').textContent = state.tailscaleIp
-      ? `Tailscale IP algılandı: ${state.tailscaleIp} (Port: ${state.port}). Yalnızca Tailscale arayüzünüzden ve eşleşmiş cihazlardan erişilebilir.`
-      : 'Bu makinede aktif bir Tailscale IP (100.64.0.0/10) algılanmadı. Telefondan bağlanmak için bilgisayara ve telefona Tailscale kurun.';
+    $('tailscale-status-text').textContent = state.tailscaleHttpsUrl
+      ? `🔒 Tailscale HTTPS aktif: ${state.tailscaleHttpsUrl} (Telefon mikrofonu ve PWA tam destekli).`
+      : state.tailscaleIp
+        ? `Tailscale IP algılandı: ${state.tailscaleIp} (Port: ${state.port}). Mikrofon için sağdaki "HTTPS Aç" düğmesine basın.`
+        : 'Bu makinede aktif bir Tailscale IP (100.64.0.0/10) algılanmadı. Telefondan bağlanmak için bilgisayara ve telefona Tailscale kurun.';
+    const httpsBtn = $('enable-https-btn');
+    if (httpsBtn) httpsBtn.hidden = !state.tailscaleIp || Boolean(state.tailscaleHttpsUrl);
 
     const acl = { acls: [{ action: 'accept', src: ['tag:phone'], dst: [`tag:dev-pc:${state.port}`] }] };
     $('tailscale-acl-code').textContent = JSON.stringify(acl, null, 2);
@@ -1694,7 +1729,12 @@
       $('pair-url-input').value = res.url;
       const netBadge = $('pair-net-badge');
       const guide = $('pair-guide-text');
-      if (res.tailscaleIp) {
+      if (res.tailscaleHttpsUrl) {
+        state.tailscaleHttpsUrl = res.tailscaleHttpsUrl;
+        netBadge.className = 'badge badge-ok';
+        netBadge.textContent = `🔒 Tailscale HTTPS aktif: ${res.tailscaleHttpsUrl.replace(/^https:\/\//, '')}`;
+        guide.textContent = '1. Telefonda Tailscale açık olsun. 2. Kamerayla QR kodu okutup bağlantıya dokunun (güvenli HTTPS ile telefon mikrofonu ve pano tam çalışır; QR kodu yalnız okutma için 5 dk geçerlidir, eşleştikten sonra oturumunuz 1 yıl kalıcıdır). 3. "Ana ekrana ekle" ile uygulama gibi kullanın.';
+      } else if (res.tailscaleIp) {
         netBadge.className = 'badge badge-ok';
         netBadge.textContent = `Tailscale aktif: ${res.tailscaleIp}`;
         guide.textContent = '1. Telefonda Tailscale açık olsun. 2. Kamerayla QR kodu okutup bağlantıya dokunun (QR kodu yalnız okutma için 5 dk geçerlidir; eşleştikten sonra oturumunuz 1 yıl kalıcıdır, ağdan düşmezsiniz). 3. "Ana ekrana ekle" ile uygulama gibi kullanın.';
@@ -1883,7 +1923,12 @@
     const input = $('prompt-input');
     if (!window.isSecureContext) {
       input.focus();
-      toast('HTTP bağlantıda tarayıcı mikrofonu kısıtlıdır. Telefon klavyesindeki mikrofonu kullanın veya "tailscale serve --bg 43128" ile HTTPS açın.', true);
+      toast(
+        state.tailscaleHttpsUrl
+          ? `Mikrofon için güvenli HTTPS adresini açın: ${state.tailscaleHttpsUrl} (veya yeni QR okutun).`
+          : 'HTTP bağlantıda tarayıcı mikrofonu kısıtlıdır. Ayarlar → "HTTPS Aç" ile güvenli bağlantıyı etkinleştirin.',
+        true,
+      );
       return;
     }
     const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -1956,6 +2001,7 @@
       state.canPickNativeFolder = Boolean(data.canPickNativeFolder);
       state.devices = data.devices || [];
       state.tailscaleIp = data.tailscaleIp || null;
+      state.tailscaleHttpsUrl = data.tailscaleHttpsUrl || null;
       state.port = data.port || 43128;
       state.hostMode = data.hostMode || '127.0.0.1';
 
@@ -2186,12 +2232,22 @@
       try { await copyText($('tailscale-acl-code').textContent); toast('Tailscale ACL kopyalandı.'); }
       catch { toast('Kopyalanamadı', true); }
     });
+    $('enable-https-btn')?.addEventListener('click', async () => {
+      toast('Tailscale HTTPS tüneli açılıyor…');
+      try {
+        const res = await api('/r/tailscale/https', { method: 'POST', body: {} });
+        state.tailscaleHttpsUrl = res.tailscaleHttpsUrl || null;
+        renderSettingsView();
+        toast(`HTTPS aktif: ${state.tailscaleHttpsUrl}`);
+      } catch (err) { toast(err.message, true); }
+    });
   }
 
   // --- Boot ---
   applyTheme(readSavedTheme(), false);
   loadPreferences();
   initDialogLightDismiss();
+  initMobileBackNavigation();
   bindEvents();
   updateSendButton();
   void refreshState(true);

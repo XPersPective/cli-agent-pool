@@ -152,6 +152,16 @@
 - [x] **Doğrulama kanıtı (2.20.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate`, `npm test` (`218/218`, yeni `test/remote.test.js` dahil) ve canlı `cli-agent-pool` servisi üzerinden `/r/state` uçtan uca entegrasyon testi doğrulandı.
 
 ## 2.19.0 — Onay/Ekleme Kilidi Düzeltmesi, Windows Pythonw İzolasyonu, 300 Model Sınırı, Neon/Ağ Hata Düzeltmeleri ve Otomatik Güncelleme Bildirimi
+## 2.28.0 — Otomatik Tailscale HTTPS (Telefon Mikrofonu + Güvenlik Duvarı Aşımı) ve Mobil Geri Tuşu Yönetimi
+- [x] **Tailscale HTTPS otomatik algılama ve QR önceliği (`remote/server.js`, `remote/public/index.html`, `remote/public/app.js`)**:
+  - `detectTailscaleHttpsUrl()` (`tailscale serve status --json`, BOM-güvenli, shell-free) ve `enableTailscaleHttps()` (`POST /r/tailscale/https`, Ayarlar'da tek tık **`🔒 HTTPS Aç`** düğmesi) eklendi.
+  - Tailscale HTTPS aktif olduğunda QR kodları otomatik olarak `https://<cihaz>.<tailnet>.ts.net/?pair=...` ile üretilir; bu sayede hem Windows Güvenlik Duvarı (`Private` profil engeli) tamamen aşılır hem telefon mikrofonu (`SpeechRecognition`), pano kopyalama ve PWA kurulumu tam çalışır.
+  - Mevcut oturum jetonları ve `remote-state.json` eşleşmiş cihazları hiçbir güncellemede sıfırlanmaz.
+- [x] **Mobil geri tuşu (`popstate`) yönetimi (`remote/public/app.js`)**:
+  - `initMobileBackNavigation()`: Telefonda geri kaydırma/tuşuna basıldığında uygulamadan atmak yerine önce açık pencereyi (dialog) kapatır; başka sekmedeyse **Sohbet**'e, sohbetteyse **Sohbetler** listesine geçer.
+- [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.28.0`.
+- [x] **Doğrulama kanıtı (2.28.0)**: `npm run check`, `npm run secrets` (107 dosya temiz), `npm audit --audit-level=moderate` (0 açık), `npm test` (`225/225` geçti).
+
 ## 2.27.0 — Claude/Oturum Senkronizasyonu, OpenCode Üyelik Koruması, Projesiz Sohbet Bağlamı, HTTP Pano Kopyalama ve `checkAuth` Önbelleği
 - [x] **Oturum / giriş durumu her yerde anında güncellenir (`src/quotas.js`, `src/pool.js`, `src/web.js`, `remote/server.js`, `remote/public/app.js`)**:
   - `claudeQuota`: `refreshToken` mevcutken Anthropic usage uç noktasından gelen geçici `401/403` yanıtı artık bağlantıyı sahte `auth_required` kilidine sokmaz.

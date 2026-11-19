@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { encodeQrMatrix, qrSvg } from '../remote/qr.js';
 import { buildCompactPrompt, RemoteStore } from '../remote/store.js';
-import { createRemoteServer, detectTailscaleIp, listDirectoriesSafe } from '../remote/server.js';
+import { createRemoteServer, detectTailscaleHttpsUrl, detectTailscaleIp, listDirectoriesSafe } from '../remote/server.js';
 import { windowsConsoleHostStatus, applyWindowsConsoleHostFix } from '../src/daemon.js';
 import { buildArguments } from '../src/adapters.js';
 
@@ -842,12 +842,14 @@ test('v2.25.0: project chat runs write without forced execute JSON protocol, no 
 
     // 4. Dynamic Tailscale detection: starts with Tailscale OFF, then connects later -> POST /r/pair auto-detects & binds it
     let simulatedTs = null;
+    let simulatedHttps = null;
     const dynDir = makeTempDir('pool-remote-dynts-');
     const dynRemote = createRemoteServer({
       directory: dynDir,
       port: 0,
       host: 'tailscale',
       detectTailscale: () => simulatedTs,
+      detectTailscaleHttps: async () => simulatedHttps,
       poolBridge: {
         getConfig: () => ({ port: 43127, workspaceRoots: [] }),
         health: async () => ({ status: 'ok', version: '2.25.2', connections: 0, models: 0, active: 0 }),
@@ -887,6 +889,16 @@ test('v2.25.0: project chat runs write without forced execute JSON protocol, no 
       assert.equal(afterPair.tailscaleIp, '127.0.0.2');
       assert.match(afterPair.url, /^http:\/\/127\.0\.0\.2:/);
 
+      // When Tailscale HTTPS serve is active, QR prefers HTTPS URL automatically (mobile mic + firewall bypass)
+      simulatedHttps = 'https://demo-pc.tail1234.ts.net';
+      const httpsPair = await (await fetch(`http://127.0.0.1:${dynInfo.port}/r/pair`, {
+        method: 'POST',
+        headers: { Cookie: dynCookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: 'Telefon', useTailscale: true }),
+      })).json();
+      assert.equal(httpsPair.tailscaleHttpsUrl, 'https://demo-pc.tail1234.ts.net');
+      assert.match(httpsPair.url, /^https:\/\/demo-pc\.tail1234\.ts\.net\/\?pair=/);
+
       // 5. Root directory listing never injects hardcoded C:\repositories or D:\repositories; add & remove shared/favorite works cleanly
       const rootDirs = listDirectoriesSafe('', []);
       assert.equal(rootDirs.entries.some(e => /^[cd]:\\repositories$/i.test(e.path)), false);
@@ -903,6 +915,19 @@ test('v2.25.0: project chat runs write without forced execute JSON protocol, no 
       });
       const rmData = await sharedRm.json();
       assert.equal(rmData.favoriteFolders.length, 0);
+
+      // 6. Tailscale HTTPS detection (BOM-safe) & QR preference + mobile back navigation
+      const parsedHttps = await detectTailscaleHttpsUrl(43128, {
+        run: async () => ({
+          stdout: '\uFEFF' + JSON.stringify({
+            Web: { 'demo-pc.tail1234.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:43128' } } } },
+          }),
+        }),
+      });
+      assert.equal(parsedHttps, 'https://demo-pc.tail1234.ts.net');
+      assert.match(html, /id="enable-https-btn"/);
+      assert.match(js, /initMobileBackNavigation/);
+      assert.match(js, /popstate/);
     } finally {
       await dynRemote.close();
       rmSync(dynDir, { recursive: true, force: true });

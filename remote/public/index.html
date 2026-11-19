@@ -316,9 +316,14 @@
 
           <!-- Tailscale Network, HTTPS Mic & ACL Card -->
           <div class="panel-card">
-            <h3>Tailscale Ağ Güvenliği &amp; HTTPS</h3>
-            <p id="tailscale-status-text" class="muted">Ağ bilgisi kontrol ediliyor…</p>
-            <p class="muted" style="margin-top:8px">Telefonda tarayıcı mikrofonunun da doğrudan çalışması için Tailscale HTTPS tünelini açabilirsiniz: <code class="md-inline-code">tailscale serve --bg 43128</code></p>
+            <div class="card-row">
+              <div>
+                <h3>Tailscale Ağ Güvenliği &amp; HTTPS</h3>
+                <p id="tailscale-status-text" class="muted">Ağ bilgisi kontrol ediliyor…</p>
+              </div>
+              <button id="enable-https-btn" type="button" class="btn btn-primary btn-sm" hidden>🔒 HTTPS Aç</button>
+            </div>
+            <p class="muted" style="margin-top:8px">HTTPS açıkken telefon mikrofonu, pano kopyalama ve Ana Ekrana Ekle tam çalışır; QR kod otomatik olarak güvenli HTTPS adresinizle üretilir.</p>
             <details class="acl-details">
               <summary>Önerilen Tailscale ACL (Yalnızca port 43128 açık)</summary>
               <pre id="tailscale-acl-code" class="code-block"></pre>

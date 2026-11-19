@@ -1,9 +1,11 @@
 import http from 'node:http';
+import { execFile } from 'node:child_process';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir, networkInterfaces } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { allowedWorkspace, configView, dataDirectory, PoolError } from '../src/config.js';
 import { ensureDaemon, ensureInitialized, managementRequest, scheduleServiceRestart } from '../src/daemon.js';
 import { pickWindowsFolder } from '../src/web.js';
@@ -12,9 +14,56 @@ import { version } from '../src/version.js';
 import { qrSvg } from './qr.js';
 import { buildCompactPrompt, RemoteStore } from './store.js';
 
+const execFileAsync = promisify(execFile);
 const publicDir = fileURLToPath(new URL('./public', import.meta.url));
 const TERMINAL_STATES = new Set(['succeeded', 'failed', 'timed_out', 'cancelled', 'needs_review']);
 const SKIP_DIRS = new Set(['$RECYCLE.BIN', 'System Volume Information', 'node_modules', '.git', '.hg', '.svn']);
+
+export function findTailscaleExecutable() {
+  if (process.platform === 'win32') {
+    const candidates = [
+      path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Tailscale', 'tailscale.exe'),
+      path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Tailscale', 'tailscale.exe'),
+    ];
+    for (const c of candidates) {
+      try { if (existsSync(c)) return c; } catch { /* ignore */ }
+    }
+  }
+  return 'tailscale';
+}
+
+export async function detectTailscaleHttpsUrl(port = 43128, { run = execFileAsync } = {}) {
+  try {
+    const exe = findTailscaleExecutable();
+    const { stdout } = await run(exe, ['serve', 'status', '--json'], { timeout: 2500, windowsHide: true, maxBuffer: 65_536 });
+    const clean = String(stdout || '').replace(/^\uFEFF/, '').trim();
+    if (!clean || !clean.startsWith('{')) return null;
+    const data = JSON.parse(clean);
+    const web = data?.Web || {};
+    const targetRe = new RegExp(`^https?:\\/\\/(?:127\\.0\\.0\\.1|localhost):${Number(port)}\\/?$`, 'i');
+    for (const [hostPort, entry] of Object.entries(web)) {
+      const handlers = entry?.Handlers || {};
+      const matched = Object.values(handlers).some(h => targetRe.test(String(h?.Proxy || '')));
+      if (matched) {
+        const hostOnly = String(hostPort).replace(/:443$/, '');
+        if (/^[a-z0-9.-]+(?::\d+)?$/i.test(hostOnly)) return `https://${hostOnly}`;
+      }
+    }
+  } catch { /* tailscale serve not active or CLI absent */ }
+  return null;
+}
+
+export async function enableTailscaleHttps(port = 43128, { run = execFileAsync } = {}) {
+  const exe = findTailscaleExecutable();
+  try {
+    await run(exe, ['serve', '--bg', String(port)], { timeout: 12_000, windowsHide: true, maxBuffer: 65_536 });
+  } catch (err) {
+    throw new PoolError('TAILSCALE_HTTPS_FAILED', `Tailscale HTTPS tüneli açılamadı: ${err?.stderr || err?.message || 'tailscale serve başarısız'}`.slice(0, 300));
+  }
+  const url = await detectTailscaleHttpsUrl(port, { run });
+  if (!url) throw new PoolError('TAILSCALE_HTTPS_FAILED', 'Tailscale HTTPS tüneli başlatıldı ancak adres okunamadı.');
+  return url;
+}
 
 export function detectTailscaleIp(ifaces = networkInterfaces()) {
   for (const entries of Object.values(ifaces || {})) {
@@ -313,10 +362,14 @@ export function createRemoteServer({
   managementToken = null,
   onShutdown = null,
   detectTailscale = detectTailscaleIp,
+  detectTailscaleHttps = detectTailscaleHttpsUrl,
+  activateTailscaleHttps = enableTailscaleHttps,
 } = {}) {
   const remoteStore = store || new RemoteStore(directory);
   const pool = poolBridge || createPoolBridge(directory);
   let tailscaleIp = detectTailscale();
+  let tailscaleHttpsUrl = null;
+  let lastHttpsCheckAt = 0;
   const routeMetaCache = new Map();
   const pendingPairings = new Map(); // code -> { expiresAt, label }
   const readManagementToken = () => {
@@ -708,6 +761,7 @@ export function createRemoteServer({
           canPickNativeFolder: process.platform === 'win32' && (req.socket?.remoteAddress === '127.0.0.1' || req.socket?.remoteAddress === '::1' || req.socket?.remoteAddress === '::ffff:127.0.0.1'),
           devices: remoteStore.listDevices(),
           tailscaleIp,
+          tailscaleHttpsUrl,
           port: actualPort,
           hostMode: host,
         });
@@ -1114,19 +1168,34 @@ export function createRemoteServer({
         }
       }
 
+      // Enable Tailscale HTTPS proxy (tailscale serve --bg <port>) for mobile mic & PWA
+      if (req.method === 'POST' && pathname === '/r/tailscale/https') {
+        const httpsUrl = await activateTailscaleHttps(actualPort);
+        tailscaleHttpsUrl = httpsUrl;
+        lastHttpsCheckAt = Date.now();
+        return sendJson(res, 200, { enabled: true, tailscaleHttpsUrl: httpsUrl });
+      }
+
       // Pairing & device management
       if (req.method === 'POST' && pathname === '/r/pair') {
-        await syncTailscaleListener();
+        await syncTailscaleListener(true);
         const body = await readJsonBody(req);
         const created = createPairingCode(body.label || 'Telefon');
-        const preferredHost = body.useTailscale !== false && tailscaleIp ? `${tailscaleIp}:${actualPort}` : req.headers.host;
-        const proto = req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
-        const pairUrl = `${proto}://${preferredHost}/?pair=${created.code}`;
+        const useTs = body.useTailscale !== false;
+        let pairUrl;
+        if (useTs && tailscaleHttpsUrl) {
+          pairUrl = `${tailscaleHttpsUrl.replace(/\/$/, '')}/?pair=${created.code}`;
+        } else {
+          const preferredHost = useTs && tailscaleIp ? `${tailscaleIp}:${actualPort}` : req.headers.host;
+          const proto = req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+          pairUrl = `${proto}://${preferredHost}/?pair=${created.code}`;
+        }
         return sendJson(res, 200, {
           ...created,
           url: pairUrl,
           localUrl: `http://127.0.0.1:${actualPort}/?pair=${created.code}`,
           tailscaleIp,
+          tailscaleHttpsUrl,
           qrSvg: qrSvg(pairUrl),
         });
       }
@@ -1174,24 +1243,31 @@ export function createRemoteServer({
     if (!bindTargets.includes(bindHost)) bindTargets.push(bindHost);
   };
 
-  // Dynamically detect Tailscale connect/reconnect without restarting Remote.
-  const syncTailscaleListener = async () => {
+  // Dynamically detect Tailscale IP & active Tailscale HTTPS serve without restarting Remote.
+  const syncTailscaleListener = async (forceHttpsCheck = false) => {
     if (closed) return tailscaleIp;
     if (syncInFlight) return syncInFlight;
     const job = (async () => {
       const latest = detectTailscale();
       tailscaleIp = latest || null;
-      if (host !== 'tailscale' || !servers.size) return tailscaleIp;
-      // Close stale non-loopback Tailscale listeners if IP changed or disconnected
-      for (const [boundHost, srv] of [...servers.entries()]) {
-        if (boundHost !== '127.0.0.1' && boundHost !== tailscaleIp) {
-          servers.delete(boundHost);
-          try { srv.closeAllConnections?.(); } catch { /* ignore */ }
-          await new Promise(resolve => srv.close(() => resolve()));
+      if (host === 'tailscale' && servers.size) {
+        // Close stale non-loopback Tailscale listeners if IP changed or disconnected
+        for (const [boundHost, srv] of [...servers.entries()]) {
+          if (boundHost !== '127.0.0.1' && boundHost !== tailscaleIp) {
+            servers.delete(boundHost);
+            try { srv.closeAllConnections?.(); } catch { /* ignore */ }
+            await new Promise(resolve => srv.close(() => resolve()));
+          }
+        }
+        if (tailscaleIp && !servers.has(tailscaleIp)) {
+          try { await bindHostServer(tailscaleIp); } catch { /* interface may still be settling */ }
         }
       }
-      if (tailscaleIp && !servers.has(tailscaleIp)) {
-        try { await bindHostServer(tailscaleIp); } catch { /* interface may still be settling */ }
+      if (tailscaleIp && (forceHttpsCheck || Date.now() - lastHttpsCheckAt > 20_000)) {
+        lastHttpsCheckAt = Date.now();
+        try { tailscaleHttpsUrl = await detectTailscaleHttps(activePort); } catch { tailscaleHttpsUrl = null; }
+      } else if (!tailscaleIp) {
+        tailscaleHttpsUrl = null;
       }
       return tailscaleIp;
     })();
