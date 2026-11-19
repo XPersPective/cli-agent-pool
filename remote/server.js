@@ -1,11 +1,13 @@
 import http from 'node:http';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir, networkInterfaces } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { allowedWorkspace, configView, dataDirectory, PoolError } from '../src/config.js';
 import { ensureDaemon, ensureInitialized, managementRequest, scheduleServiceRestart } from '../src/daemon.js';
+import { pickWindowsFolder } from '../src/web.js';
+import { quotaApplies } from '../web/pool-state.js';
 import { version } from '../src/version.js';
 import { qrSvg } from './qr.js';
 import { buildCompactPrompt, RemoteStore } from './store.js';
@@ -69,8 +71,15 @@ export function listDirectoriesSafe(requestedPath = '', workspaceRoots = []) {
       };
     }
     const defaults = [];
+    const winDrives = [];
+    if (process.platform === 'win32') {
+      for (const letter of 'CDEFGHIJKLMNOPQRSTUVWXYZ') {
+        const drive = `${letter}:\\`;
+        try { if (existsSync(drive)) winDrives.push(drive); } catch { /* skip */ }
+      }
+    }
     const candidates = [
-      ...(process.platform === 'win32' ? ['D:\\repositories', 'C:\\repositories', 'D:\\', 'C:\\'] : ['/']),
+      ...(process.platform === 'win32' ? ['D:\\repositories', 'C:\\repositories', ...winDrives] : ['/']),
       homedir(),
     ];
     for (const c of candidates) {
@@ -130,6 +139,43 @@ export function listDirectoriesSafe(requestedPath = '', workspaceRoots = []) {
     if (!allowedRoots.length || allowedRoots.some(root => pathWithinRoot(up, root))) parent = up;
   }
   return { current: real, parent, restricted: allowedRoots.length > 0, entries };
+}
+
+function shortWindowLabel(name = '') {
+  const lower = String(name || '').toLowerCase();
+  if (/5\s*h|5\s*s|300m|session|five.?hour/.test(lower)) return '5s';
+  if (/week|7\s*d|7\s*g|10080m|hafta/.test(lower)) return '7g';
+  if (/day|daily|24\s*h|gün/.test(lower)) return '24s';
+  if (/month|30\s*d|ay/.test(lower)) return '30g';
+  const tail = String(name || '').split(':').pop()?.trim() || '';
+  return tail.slice(0, 8) || 'kota';
+}
+
+function enrichModel(model, routeWindowsByRoute) {
+  const cleanEfforts = (Array.isArray(model.efforts) ? model.efforts : []).filter(e => e && e !== 'default');
+  const cleanEffort = model.effort && model.effort !== 'default' ? model.effort : '';
+  const routeWins = routeWindowsByRoute.get(model.routeId) || [];
+  const applicable = routeWins.filter(w => quotaApplies(w, model.modelId || model.id) && Number.isFinite(w.remainingPercent));
+  const byLabel = new Map();
+  for (const w of applicable) {
+    const label = shortWindowLabel(w.name);
+    const prev = byLabel.get(label);
+    if (!prev || w.remainingPercent < prev.remainingPercent) {
+      byLabel.set(label, { label, name: w.name, remainingPercent: Math.round(w.remainingPercent), resetsAt: w.resetsAt ?? null });
+    }
+  }
+  const order = { '5s': 0, '24s': 1, '7g': 2, '30g': 3 };
+  const quotaWindows = [...byLabel.values()].sort((a, b) => (order[a.label] ?? 9) - (order[b.label] ?? 9));
+  return {
+    ...model,
+    effort: cleanEffort,
+    efforts: cleanEfforts,
+    quotaWindows,
+  };
+}
+
+function sortModelsAlpha(list = []) {
+  return [...list].sort((a, b) => String(a.name || a.modelId || '').localeCompare(String(b.name || b.modelId || ''), 'tr', { sensitivity: 'base' }));
 }
 
 async function readJsonBody(req, limitBytes = 262_144) {
@@ -193,6 +239,7 @@ function createPoolBridge(directory, customFetch = fetch) {
       return all;
     },
     quotas: () => requestPool('/api/quotas', { auth: true }),
+    routeQuota: routeId => requestPool(`/api/quotas/${encodeURIComponent(routeId)}`, { auth: true }),
     liveQuota: routeId => requestPool(`/api/quotas/${encodeURIComponent(routeId)}?live=1`, { auth: true, timeoutMs: 45_000 }),
     connections: () => requestPool('/api/connections', { auth: true }),
     tasks: (limit = 50) => requestPool(`/api/tasks?limit=${limit}`, { auth: true }),
@@ -285,8 +332,8 @@ export function createRemoteServer({
     if (host && host !== '0.0.0.0' && host !== 'tailscale' && lower === `${host.toLowerCase()}:${listenPort}`) return true;
     if (host === '0.0.0.0') return true;
     if (allowedHostSet.has(lower) || allowedHostSet.has(lower.split(':')[0])) return true;
-    // Allow Tailscale MagicDNS (*.ts.net) when tailscale mode or explicit host is active
-    if (host === 'tailscale' && /^[a-z0-9-]+\.[a-z0-9-]+\.ts\.net(?::\d+)?$/.test(lower)) return true;
+    // Allow Tailscale MagicDNS (*.ts.net) when tailscale mode or detected Tailscale IP is active
+    if ((host === 'tailscale' || tailscaleIp) && /^[a-z0-9-]+\.[a-z0-9-]+\.ts\.net(?::\d+)?$/.test(lower)) return true;
     return false;
   };
 
@@ -529,11 +576,29 @@ export function createRemoteServer({
           if (qRes.status === 'fulfilled') quotas = qRes.value?.connections || (Array.isArray(qRes.value) ? qRes.value : []);
           if (cRes.status === 'fulfilled') connections = Array.isArray(cRes.value) ? cRes.value : [];
           if (tRes.status === 'fulfilled') tasks = Array.isArray(tRes.value) ? tRes.value : (tRes.value?.tasks || []);
+
+          // Fetch cached per-route quota windows so every model displays 5s / 7g inline badges
+          const routeWindowsByRoute = new Map();
+          if (quotas.length && typeof pool.routeQuota === 'function') {
+            const detailRes = await Promise.allSettled(quotas.map(q => pool.routeQuota(q.routeId)));
+            quotas = quotas.map((q, idx) => {
+              const wins = detailRes[idx]?.status === 'fulfilled'
+                ? (detailRes[idx].value?.connections?.[0]?.windows || detailRes[idx].value?.windows || [])
+                : [];
+              if (wins.length) routeWindowsByRoute.set(q.routeId, wins);
+              return { ...q, windows: wins };
+            });
+          }
+
+          models = sortModelsAlpha(models.map(m => enrichModel(m, routeWindowsByRoute)));
           if (pools.length && typeof pool.poolModels === 'function') {
             const perPool = await Promise.allSettled(pools.map(p => pool.poolModels(p.id)));
             pools = pools.map((p, idx) => ({
               ...p,
-              models: perPool[idx]?.status === 'fulfilled' ? (perPool[idx].value?.models || []) : [],
+              models: sortModelsAlpha(
+                (perPool[idx]?.status === 'fulfilled' ? (perPool[idx].value?.models || []) : [])
+                  .map(m => enrichModel(m, routeWindowsByRoute)),
+              ),
             }));
           }
         }
@@ -548,9 +613,11 @@ export function createRemoteServer({
           connections,
           tasks,
           chats: remoteStore.listChats(),
+          sharedFolders: remoteStore.state.sharedFolders,
           favoriteFolders: remoteStore.state.favoriteFolders,
           recentFolders: remoteStore.state.recentFolders,
           workspaceRoots: cfg.workspaceRoots || [],
+          canPickNativeFolder: process.platform === 'win32' && (req.socket?.remoteAddress === '127.0.0.1' || req.socket?.remoteAddress === '::1' || req.socket?.remoteAddress === '::ffff:127.0.0.1'),
           devices: remoteStore.listDevices(),
           tailscaleIp,
           port: actualPort,
@@ -561,8 +628,16 @@ export function createRemoteServer({
       // GET /r/dirs?path=...
       if (req.method === 'GET' && pathname === '/r/dirs') {
         const cfg = pool.getConfig();
-        const result = listDirectoriesSafe(url.searchParams.get('path') || '', cfg.workspaceRoots || []);
-        return sendJson(res, 200, result);
+        const requested = url.searchParams.get('path') || '';
+        const browseAll = url.searchParams.get('browseAll') === '1';
+        const effectiveRoots = cfg.workspaceRoots?.length
+          ? cfg.workspaceRoots
+          : (!browseAll && remoteStore.state.sharedFolders.length ? remoteStore.state.sharedFolders : []);
+        const result = listDirectoriesSafe(requested, effectiveRoots);
+        return sendJson(res, 200, {
+          ...result,
+          canBrowseAll: !cfg.workspaceRoots?.length && remoteStore.state.sharedFolders.length > 0 && !browseAll,
+        });
       }
 
       // POST /r/folders/favorite
@@ -572,6 +647,31 @@ export function createRemoteServer({
         const checked = listDirectoriesSafe(body.path || '', cfg.workspaceRoots || []);
         const favoriteFolders = remoteStore.toggleFavoriteFolder(checked.current);
         return sendJson(res, 200, { favoriteFolders });
+      }
+
+      // POST /r/folders/shared — add or remove shared project roots
+      if (req.method === 'POST' && pathname === '/r/folders/shared') {
+        const body = await readJsonBody(req);
+        const action = body.action === 'remove' ? 'remove' : 'add';
+        if (action === 'remove') {
+          return sendJson(res, 200, { sharedFolders: remoteStore.removeSharedFolder(body.path || '') });
+        }
+        const cfg = pool.getConfig();
+        const checked = listDirectoriesSafe(body.path || '', cfg.workspaceRoots || []);
+        const sharedFolders = remoteStore.addSharedFolder(checked.current);
+        return sendJson(res, 200, { sharedFolders, added: checked.current });
+      }
+
+      // POST /r/folders/pick — native Windows folder dialog (loopback desktop only)
+      if (req.method === 'POST' && pathname === '/r/folders/pick') {
+        const remoteAddr = req.socket?.remoteAddress || '';
+        const isLoopback = remoteAddr === '127.0.0.1' || remoteAddr === '::1' || remoteAddr === '::ffff:127.0.0.1';
+        if (!isLoopback) {
+          throw new PoolError('PICKER_UNAVAILABLE', 'Yerel Windows klasör seçicisi yalnızca bilgisayar ekranında açılabilir; telefonda web klasör gezginini kullanın.');
+        }
+        const body = await readJsonBody(req);
+        const picked = await pickWindowsFolder(body.initialPath || '', { directory });
+        return sendJson(res, 200, { path: picked || '', cancelled: !picked });
       }
 
       // Chats CRUD
@@ -624,15 +724,32 @@ export function createRemoteServer({
           const body = await readJsonBody(req);
           const rawPrompt = String(body.prompt || '').trim();
           if (!rawPrompt) throw new PoolError('INVALID_REQUEST', 'Gönderilecek mesaj boş olamaz.');
-          const workspace = String(body.workspace || chat.workspace || '').trim();
-          if (!workspace) throw new PoolError('INVALID_REQUEST', 'Önce bir çalışma klasörü seçin.');
-          const cfg = pool.getConfig();
-          const checkedDir = listDirectoriesSafe(workspace, cfg.workspaceRoots || []);
-          const canonicalWorkspace = cfg.workspaceRoots?.length ? allowedWorkspace(checkedDir.current, cfg.workspaceRoots) : checkedDir.current;
-          remoteStore.updateChat(chatId, { workspace: canonicalWorkspace });
 
-          const kind = ['text', 'read', 'write'].includes(body.kind) ? body.kind : 'read';
-          const mode = kind === 'write' ? (body.mode === 'response' ? 'response' : 'execute') : 'response';
+          const requestedWorkspace = body.workspace !== undefined ? String(body.workspace || '').trim() : String(chat.workspace || '').trim();
+          const cfg = pool.getConfig();
+          let canonicalWorkspace = '';
+          let hasProject = false;
+
+          if (requestedWorkspace) {
+            const checkedDir = listDirectoriesSafe(requestedWorkspace, cfg.workspaceRoots || []);
+            canonicalWorkspace = cfg.workspaceRoots?.length ? allowedWorkspace(checkedDir.current, cfg.workspaceRoots) : checkedDir.current;
+            hasProject = true;
+            remoteStore.updateChat(chatId, { workspace: canonicalWorkspace });
+          } else {
+            // Projesiz (Sohbet) modu: nötr, boş bir sohbet sandbox klasörü kullan; hiçbir proje klasörüne dokunma.
+            const sandbox = path.join(directory, 'remote-chat-sandbox');
+            mkdirSync(sandbox, { recursive: true, mode: 0o700 });
+            canonicalWorkspace = cfg.workspaceRoots?.length ? canonicalRoots(cfg.workspaceRoots)[0] || sandbox : realpathSync(sandbox);
+            if (chat.workspace) remoteStore.updateChat(chatId, { workspace: '' });
+          }
+
+          const kind = hasProject
+            ? (['text', 'read', 'write'].includes(body.kind) ? body.kind : 'write')
+            : 'text';
+          const mode = hasProject && kind === 'write'
+            ? (body.mode === 'response' ? 'response' : 'execute')
+            : 'response';
+          const cleanEffort = body.effort && body.effort !== 'default' ? String(body.effort) : '';
           const includeContext = body.includeContext !== false;
           const finalPrompt = buildCompactPrompt(chat, rawPrompt, includeContext);
 
@@ -644,7 +761,7 @@ export function createRemoteServer({
             ...(body.group ? { group: String(body.group) } : {}),
             ...(body.routeId ? { routeId: String(body.routeId) } : {}),
             ...(body.modelId ? { modelId: String(body.modelId) } : {}),
-            ...(body.effort ? { effort: String(body.effort) } : {}),
+            ...(cleanEffort ? { effort: cleanEffort } : {}),
             timeoutSeconds: Number.isInteger(body.timeoutSeconds) ? body.timeoutSeconds : 600,
             clientLabel: `Remote (${device.label})`,
             idempotencyKey: `remote-${randomUUID()}`,
@@ -654,7 +771,7 @@ export function createRemoteServer({
           const userMsg = remoteStore.appendMessage(chatId, {
             role: 'user',
             text: rawPrompt,
-            workspace: canonicalWorkspace,
+            workspace: hasProject ? canonicalWorkspace : '',
             kind,
             mode,
             includeContext,
@@ -666,7 +783,7 @@ export function createRemoteServer({
             routeId: submitted.routeId,
             modelId: submitted.modelId,
             group: submitted.group || body.group || null,
-            effort: submitted.effort || body.effort || null,
+            effort: (submitted.effort && submitted.effort !== 'default') ? submitted.effort : (cleanEffort || null),
             kind,
             mode,
             state: submitted.state || 'queued',

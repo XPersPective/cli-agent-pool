@@ -21,6 +21,7 @@ function emptyState() {
     version: 1,
     cookieKey: randomBytes(32).toString('hex'),
     devices: [],
+    sharedFolders: [],
     favoriteFolders: [],
     recentFolders: [],
     chats: [],
@@ -84,6 +85,7 @@ export class RemoteStore {
         version: 1,
         cookieKey: typeof parsed.cookieKey === 'string' && parsed.cookieKey.length >= 32 ? parsed.cookieKey : base.cookieKey,
         devices: Array.isArray(parsed.devices) ? parsed.devices : [],
+        sharedFolders: Array.isArray(parsed.sharedFolders) ? parsed.sharedFolders : [],
         favoriteFolders: Array.isArray(parsed.favoriteFolders) ? parsed.favoriteFolders : [],
         recentFolders: Array.isArray(parsed.recentFolders) ? parsed.recentFolders : [],
         chats: Array.isArray(parsed.chats) ? parsed.chats : [],
@@ -174,6 +176,24 @@ export class RemoteStore {
     }
     this.writeState();
     return this.state.favoriteFolders;
+  }
+
+  addSharedFolder(folder) {
+    const clean = String(folder || '').trim();
+    if (!clean) return this.state.sharedFolders;
+    if (!this.state.sharedFolders.includes(clean)) {
+      this.state.sharedFolders = [clean, ...this.state.sharedFolders].slice(0, 32);
+      this.writeState();
+    }
+    return this.state.sharedFolders;
+  }
+
+  removeSharedFolder(folder) {
+    const clean = String(folder || '').trim();
+    const before = this.state.sharedFolders.length;
+    this.state.sharedFolders = this.state.sharedFolders.filter(f => f !== clean);
+    if (this.state.sharedFolders.length !== before) this.writeState();
+    return this.state.sharedFolders;
   }
 
   listChats() {

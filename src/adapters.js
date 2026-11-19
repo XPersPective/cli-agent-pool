@@ -631,7 +631,10 @@ export function watchEvent(context, event) {
 export function buildArguments(route, model, task, context = null) {
   const directorRun = context?.profile === 'director';
   const argv = commandArgv(route);
-  const effort = task.effort;
+  const rawEffort = task.effort;
+  const effort = rawEffort && rawEffort !== 'default'
+    ? rawEffort
+    : (route.adapter === 'agy' && model.variants?.[rawEffort] ? rawEffort : undefined);
   if (Array.isArray(route.argsTemplate) && route.argsTemplate.length > 0) {
     const values = { model: model.id, effort: effort || 'default', workspace: task.workspace, prompt: task.prompt, kind: task.kind };
     const built = route.argsTemplate.map(token => token.replace(/\{(model|effort|workspace|prompt|kind)\}/g, (_, k) => String(values[k] ?? '')));

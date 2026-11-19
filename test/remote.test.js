@@ -7,6 +7,7 @@ import { encodeQrMatrix, qrSvg } from '../remote/qr.js';
 import { buildCompactPrompt, RemoteStore } from '../remote/store.js';
 import { createRemoteServer, detectTailscaleIp, listDirectoriesSafe } from '../remote/server.js';
 import { windowsConsoleHostStatus, applyWindowsConsoleHostFix } from '../src/daemon.js';
+import { buildArguments } from '../src/adapters.js';
 
 function makeTempDir(prefix = 'pool-remote-test-') {
   return mkdtempSync(path.join(tmpdir(), prefix));
@@ -484,4 +485,119 @@ test('windowsConsoleHostStatus and applyWindowsConsoleHostFix detect and write C
   const poolHtml = readFileSync(path.resolve('web/index.html'), 'utf8');
   assert.match(poolHtml, /id="open-remote"/);
   assert.match(poolHtml, /id="console-fix-banner"/);
+});
+
+test('effort "default" is never passed to Codex CLI or forwarded by Remote, and projectless chat works without a folder', async () => {
+  // Core adapter test: Codex must omit model_reasoning_effort when effort is "default"
+  const codexArgs = buildArguments(
+    { id: 'codex-acc2', adapter: 'codex', executable: process.execPath },
+    { id: 'gpt-6.2-astra' },
+    { workspace: process.cwd(), kind: 'text', mode: 'response', effort: 'default', prompt: 'merhaba' },
+  );
+  assert.equal(codexArgs.some(a => a.includes('model_reasoning_effort')), false);
+
+  const codexHighArgs = buildArguments(
+    { id: 'codex-acc2', adapter: 'codex', executable: process.execPath },
+    { id: 'gpt-6.2-astra' },
+    { workspace: process.cwd(), kind: 'text', mode: 'response', effort: 'high', prompt: 'merhaba' },
+  );
+  assert.ok(codexHighArgs.some(a => a.includes('model_reasoning_effort="high"')));
+
+  // Remote server test: projectless chat, stripped effort "default", alphabetical pool models + 5s/7g quotaWindows, shared folders
+  const dir = makeTempDir('pool-remote-v222-');
+  const sharedDir = makeTempDir('pool-remote-shared-');
+  const submitted = [];
+  const remote = createRemoteServer({
+    directory: dir,
+    port: 0,
+    host: '127.0.0.1',
+    poolBridge: {
+      getConfig: () => ({ port: 43127, workspaceRoots: [] }),
+      health: async () => ({ status: 'ok', version: '2.22.0', connections: 1, models: 2, active: 0 }),
+      pools: async () => ({ categories: [{ id: 'high', label: 'Yüksek', count: 2 }] }),
+      poolModels: async () => ({
+        models: [
+          { routeId: 'codex-acc2', modelId: 'z-model', name: 'Zeta Model', effort: 'default', efforts: ['default', 'low', 'high'], kinds: ['text', 'read', 'write'], billing: 'subscription', quota: { status: 'ok', remainingPercent: 80 } },
+          { routeId: 'codex-acc2', modelId: 'a-model', name: 'Alpha Model', effort: 'high', efforts: ['low', 'high'], kinds: ['text', 'read', 'write'], billing: 'subscription', quota: { status: 'ok', remainingPercent: 90 } },
+        ],
+      }),
+      catalogModels: async () => [],
+      quotas: async () => ({ connections: [{ routeId: 'codex-acc2', adapter: 'codex', billing: 'subscription', models: 2, status: 'ok', remainingPercent: 80 }] }),
+      routeQuota: async () => ({
+        connections: [{
+          routeId: 'codex-acc2',
+          windows: [
+            { name: '5h', remainingPercent: 92, resetsAt: null },
+            { name: 'weekly', remainingPercent: 80, resetsAt: null },
+          ],
+        }],
+      }),
+      connections: async () => [{ id: 'codex-acc2', adapter: 'codex' }],
+      tasks: async () => ({ tasks: [] }),
+      submit: async payload => {
+        submitted.push(payload);
+        return { id: '22222222-2222-4222-8222-222222222222', state: 'queued', routeId: 'codex-acc2', modelId: payload.modelId || 'a-model' };
+      },
+    },
+  });
+
+  try {
+    const info = await remote.listen();
+    const base = `http://127.0.0.1:${info.port}`;
+    const code = new URL(info.localUrl).searchParams.get('pair');
+    const redeem = await fetch(`${base}/r/redeem`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+    const cookie = (redeem.headers.get('set-cookie') || '').split(';')[0];
+
+    // Check alphabetical sorting + stripped "default" effort + 5s/7g quotaWindows
+    const stateData = await (await fetch(`${base}/r/state`, { headers: { Cookie: cookie } })).json();
+    const poolModels = stateData.pools[0].models;
+    assert.equal(poolModels[0].name, 'Alpha Model');
+    assert.equal(poolModels[1].name, 'Zeta Model');
+    assert.equal(poolModels[1].effort, '');
+    assert.deepEqual(poolModels[1].efforts, ['low', 'high']);
+    assert.deepEqual(poolModels[0].quotaWindows.map(w => `${w.label}:${w.remainingPercent}`), ['5s:92', '7g:80']);
+
+    // Shared folders add & remove
+    const addRes = await fetch(`${base}/r/folders/shared`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'add', path: sharedDir }),
+    });
+    assert.equal(addRes.status, 200);
+    assert.equal((await addRes.json()).sharedFolders.length, 1);
+
+    // Projectless chat (workspace = "") succeeds as text/response and never sends effort: "default"
+    const { chat } = await (await fetch(`${base}/r/chats`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspace: '' }),
+    })).json();
+    const sendRes = await fetch(`${base}/r/chats/${chat.id}/send`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'Selam nasılsın?', workspace: '', modelId: 'z-model', effort: 'default' }),
+    });
+    assert.equal(sendRes.status, 200);
+    assert.equal(submitted[0].kind, 'text');
+    assert.equal(submitted[0].mode, 'response');
+    assert.equal('effort' in submitted[0], false);
+
+    // UI contract checks for v2.22.0 layout
+    const html = readFileSync(path.resolve('remote/public/index.html'), 'utf8');
+    const js = readFileSync(path.resolve('remote/public/app.js'), 'utf8');
+    assert.doesNotMatch(html, /data-kind="read"/); // Old 3-way Sohbet/Analiz/Kod Yaz removed
+    assert.match(html, /id="picker-view-quotas-btn"/);
+    assert.match(html, /data-view="chats"/);
+    assert.match(html, /id="topbar-settings-btn"/);
+    assert.match(js, /ev\.kind/);
+    assert.match(js, /ev\.detail/);
+  } finally {
+    await remote.close();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(sharedDir, { recursive: true, force: true });
+  }
 });

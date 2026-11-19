@@ -23,24 +23,20 @@
 </head>
 <body>
   <div id="app" class="app-shell">
-    <!-- Mobile Drawer Backdrop -->
-    <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
-
-    <!-- Sidebar / Mobile Chat Drawer -->
+    <!-- Desktop Sidebar -->
     <aside id="sidebar" class="sidebar" aria-label="Sohbetler ve Gezinme">
       <div class="sidebar-head">
         <div class="brand">
-          <img src="/icon.svg" alt="" width="28" height="28" class="brand-icon">
+          <img src="/icon.svg" alt="" width="26" height="26" class="brand-icon">
           <div>
             <div class="brand-title">Agent Remote</div>
             <div id="sidebar-pool-status" class="brand-sub">Bağlanıyor…</div>
           </div>
         </div>
-        <button id="close-drawer-btn" type="button" class="icon-btn mobile-only" aria-label="Menüyü kapat">✕</button>
       </div>
 
       <div class="sidebar-actions">
-        <button id="new-chat-btn" type="button" class="btn btn-primary full-width">+ Yeni Sohbet</button>
+        <button id="new-chat-btn" type="button" class="btn btn-primary btn-sm full-width">+ Yeni Sohbet</button>
       </div>
 
       <nav class="desktop-nav" aria-label="Bölümler">
@@ -54,8 +50,8 @@
           <span id="nav-active-badge" class="badge badge-live" hidden>0</span>
         </button>
         <button type="button" class="nav-item" data-view="pools">
-          <span class="nav-ic" aria-hidden="true">📦</span>
-          <span>Havuzlar</span>
+          <span class="nav-ic" aria-hidden="true">📊</span>
+          <span>Havuzlar &amp; Kotalar</span>
         </button>
         <button type="button" class="nav-item" data-view="settings">
           <span class="nav-ic" aria-hidden="true">⚙️</span>
@@ -63,35 +59,42 @@
         </button>
       </nav>
 
-      <div class="sidebar-section-label">Sohbetler</div>
+      <div class="sidebar-section-label">Projeler &amp; Sohbetler</div>
       <div id="chat-list" class="chat-list" role="list"></div>
 
       <div class="sidebar-foot">
-        <button id="open-pair-sidebar-btn" type="button" class="btn btn-ghost full-width">📱 Telefon Bağla (QR)</button>
+        <button id="open-pair-sidebar-btn" type="button" class="btn btn-ghost btn-sm full-width">📱 Telefon Bağla (QR)</button>
       </div>
     </aside>
 
     <!-- Main Column -->
     <div class="main-col">
-      <!-- Top Bar -->
+      <!-- Clean Top Bar (Pool status + Settings + New Chat on right) -->
       <header class="topbar">
         <div class="topbar-left">
-          <button id="open-drawer-btn" type="button" class="icon-btn mobile-only" aria-label="Sohbet menüsünü aç">☰</button>
-          <button id="model-pill-btn" type="button" class="model-pill" aria-haspopup="dialog" aria-controls="model-dialog">
-            <span id="model-pill-dot" class="status-dot"></span>
-            <span class="model-pill-text">
-              <span id="model-pill-name" class="model-pill-name">Model Seç</span>
-              <span id="model-pill-meta" class="model-pill-meta">Otomatik havuz</span>
-            </span>
-            <span class="chevron" aria-hidden="true">▾</span>
-          </button>
+          <img src="/icon.svg" alt="" width="24" height="24" class="brand-icon mobile-only">
+          <div class="topbar-title-wrap">
+            <div id="topbar-chat-title" class="topbar-title">Yeni sohbet</div>
+            <div id="topbar-chat-sub" class="topbar-sub">Projesiz sohbet</div>
+          </div>
         </div>
         <div class="topbar-right">
-          <button id="quick-pool-btn" type="button" class="status-chip" title="CLI Agent Pool servis durumu">
+          <button id="quick-pool-btn" type="button" class="status-chip" title="CLI Agent Pool bağlantı durumu ve kotalar">
             <span id="pool-dot" class="status-dot"></span>
-            <span id="pool-chip-label" class="hide-xs">Pool</span>
+            <span id="pool-chip-label">Pool</span>
           </button>
-          <button id="quick-new-chat-btn" type="button" class="icon-btn" title="Yeni sohbet" aria-label="Yeni sohbet">＋</button>
+          <button id="topbar-settings-btn" type="button" class="icon-btn" title="Ayarlar, Tema ve QR" aria-label="Ayarlar">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.85 1 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+          </button>
+          <button id="quick-new-chat-btn" type="button" class="icon-btn" title="Yeni sohbet" aria-label="Yeni sohbet">
+            <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="12" y1="5" x2="12" y2="19"/>
+              <line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+          </button>
         </div>
       </header>
 
@@ -100,16 +103,6 @@
 
       <!-- VIEW 1: CHAT -->
       <section id="view-chat" class="view view-chat active" aria-label="Ajan Sohbeti">
-        <!-- Workspace Bar -->
-        <div class="workspace-bar">
-          <button id="folder-picker-btn" type="button" class="folder-current" aria-haspopup="dialog" aria-controls="folder-dialog">
-            <span aria-hidden="true">📁</span>
-            <span id="current-folder-label" class="folder-path">Çalışma klasörü seç…</span>
-            <span class="chevron" aria-hidden="true">▾</span>
-          </button>
-          <div id="folder-chips" class="folder-chips" aria-label="Hızlı klasörler"></div>
-        </div>
-
         <!-- Pool Offline Banner -->
         <div id="pool-offline-banner" class="alert-banner" hidden>
           <div>
@@ -123,10 +116,10 @@
         <main id="messages-feed" class="messages-feed" aria-live="polite">
           <div id="empty-chat-state" class="empty-state">
             <div class="empty-logo">
-              <img src="/icon.svg" alt="" width="48" height="48">
+              <img src="/icon.svg" alt="" width="44" height="44">
             </div>
             <h1>CLI Agent Remote</h1>
-            <p>Havuzdan model ve efor seçin, proje klasörünü belirleyin ve telefondan ya da masaüstünden ajanlara doğrudan görev verin.</p>
+            <p>Proje seçmeden doğrudan sohbet edebilir veya giriş alanının üstünden bir proje klasörü seçerek kodlama görevleri verebilirsiniz.</p>
             <div class="quick-prompts">
               <button type="button" class="quick-prompt-chip" data-prompt="Bu projedeki son git değişikliklerini ve dosya yapısını kısaca özetle.">📂 Projeyi özetle</button>
               <button type="button" class="quick-prompt-chip" data-prompt="Testleri çalıştır ve varsa hata veren noktaları raporla.">🧪 Testleri kontrol et</button>
@@ -136,51 +129,81 @@
           <div id="messages-list" class="messages-list"></div>
         </main>
 
-        <!-- Floating Composer -->
+        <!-- Antigravity-Style Unified Composer -->
         <form id="composer-form" class="composer-wrap">
-          <div class="composer-controls">
-            <div class="segmented" role="group" aria-label="Çalışma modu">
-              <button type="button" class="seg-btn" data-kind="text">Sohbet</button>
-              <button type="button" class="seg-btn active" data-kind="read">Analiz</button>
-              <button type="button" class="seg-btn" data-kind="write">Kod Yaz</button>
+          <div class="composer-card">
+            <!-- Project / Folder Strip RIGHT ABOVE Input -->
+            <div class="composer-top-strip">
+              <div class="project-pill-group">
+                <button id="folder-picker-btn" type="button" class="project-pill" aria-haspopup="dialog" aria-controls="folder-dialog">
+                  <span id="current-folder-icon" aria-hidden="true">💬</span>
+                  <span id="current-folder-label" class="project-pill-label">Projesiz (Sohbet)</span>
+                  <span class="chevron" aria-hidden="true">▾</span>
+                </button>
+                <button id="clear-folder-btn" type="button" class="project-clear-btn" title="Projeyi kaldır ve sohbet moduna dön" aria-label="Projeyi kaldır" hidden>✕</button>
+              </div>
+              <div id="folder-chips" class="folder-chips" aria-label="Hızlı projeler"></div>
+              <button id="context-toggle-btn" type="button" class="ctx-chip active" aria-pressed="true" title="Son 3 turun kısa özetini yeni modele aktarır">
+                <span id="context-toggle-label">Bağlam: Özet</span>
+              </button>
             </div>
-            <button id="context-toggle-btn" type="button" class="pill-toggle active" aria-pressed="true" title="Son 3 turun kısa özetini yeni modele aktarır">
-              <span aria-hidden="true">🧠</span>
-              <span id="context-toggle-label">Bağlam: Kısa özet</span>
-            </button>
-          </div>
 
-          <div class="composer-box">
-            <label for="prompt-input" class="sr-only">Mesaj girişi</label>
-            <textarea
-              id="prompt-input"
-              name="prompt"
-              rows="1"
-              placeholder="Ajana direktif yazın veya mikrofonla konuşun…"
-              autocomplete="off"
-            ></textarea>
-            <div class="composer-actions">
-              <button id="mic-btn" type="button" class="icon-btn mic-btn" aria-label="Sesle yazdır" title="Sesle yazdır (Türkçe)">
-                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <rect x="9" y="2" width="6" height="12" rx="3"/>
-                  <path d="M5 10a7 7 0 0 0 14 0"/>
-                  <line x1="12" y1="19" x2="12" y2="22"/>
-                  <line x1="8" y1="22" x2="16" y2="22"/>
-                </svg>
+            <!-- Auto-Growing Input -->
+            <div class="composer-input-row">
+              <label for="prompt-input" class="sr-only">Mesaj girişi</label>
+              <textarea
+                id="prompt-input"
+                name="prompt"
+                rows="1"
+                placeholder="Bir şey sorun veya görev verin…"
+                autocomplete="off"
+              ></textarea>
+            </div>
+
+            <!-- Bottom Row INSIDE Input Card: Left = Compact Model/Effort Selector, Right = Centered Mic + Sleek Send -->
+            <div class="composer-bottom-bar">
+              <button id="model-pill-btn" type="button" class="inline-model-btn" aria-haspopup="dialog" aria-controls="model-dialog">
+                <span id="model-pill-dot" class="mini-dot"></span>
+                <span id="model-pill-name" class="inline-model-name">Model Seç</span>
+                <span id="model-pill-meta" class="inline-model-meta"></span>
+                <span class="chevron" aria-hidden="true">▾</span>
               </button>
-              <button id="send-btn" type="submit" class="send-btn" aria-label="Gönder">
-                <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <line x1="12" y1="19" x2="12" y2="5"/>
-                  <polyline points="5 12 12 5 19 12"/>
-                </svg>
-              </button>
+
+              <div class="composer-actions">
+                <button id="mic-btn" type="button" class="circle-action-btn mic-btn" aria-label="Sesle yazdır" title="Sesle yazdır (Türkçe)">
+                  <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="9" y="2" width="6" height="12" rx="3"/>
+                    <path d="M5 10a7 7 0 0 0 14 0"/>
+                    <line x1="12" y1="19" x2="12" y2="22"/>
+                    <line x1="8" y1="22" x2="16" y2="22"/>
+                  </svg>
+                </button>
+                <button id="send-btn" type="submit" class="send-btn" aria-label="Gönder" disabled>
+                  <svg id="send-icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <line x1="12" y1="19" x2="12" y2="5"/>
+                    <polyline points="5 12 12 5 19 12"/>
+                  </svg>
+                </button>
+              </div>
             </div>
           </div>
           <div id="mic-status" class="mic-status" hidden>🎙️ Dinleniyor… Konuşmayı bitirince tekrar dokunun.</div>
         </form>
       </section>
 
-      <!-- VIEW 2: CALLS / TASKS -->
+      <!-- VIEW 2: MOBILE CHATS LIST (Grouped by Project Folder) -->
+      <section id="view-chats" class="view view-scroll" aria-label="Projeler ve Sohbetler">
+        <div class="section-header">
+          <div>
+            <h2>Sohbetler</h2>
+            <p class="muted">Proje klasörüne göre gruplanmış sohbetleriniz.</p>
+          </div>
+          <button id="mobile-new-chat-btn" type="button" class="btn btn-primary btn-sm">+ Yeni</button>
+        </div>
+        <div id="mobile-chat-list" class="card-stack"></div>
+      </section>
+
+      <!-- VIEW 3: CALLS / TASKS -->
       <section id="view-calls" class="view view-scroll" aria-label="Çağrılar ve Görev Geçmişi">
         <div class="section-header">
           <div>
@@ -192,12 +215,12 @@
         <div id="calls-list" class="card-stack"></div>
       </section>
 
-      <!-- VIEW 3: POOLS & QUOTAS -->
+      <!-- VIEW 4: POOLS & QUOTAS -->
       <section id="view-pools" class="view view-scroll" aria-label="Havuzlar ve Kotalar">
         <div class="section-header">
           <div>
-            <h2>Havuzlar ve Kotalar</h2>
-            <p class="muted">Bir modele dokunarak sohbet için hemen seçebilirsiniz.</p>
+            <h2>Havuzlar &amp; Kotalar</h2>
+            <p class="muted">Bağlantı kotaları ve havuz modelleri (seçmek için modele dokunun).</p>
           </div>
           <button id="refresh-quotas-btn" type="button" class="btn btn-secondary btn-sm">Kotaları Güncelle</button>
         </div>
@@ -205,16 +228,31 @@
         <div id="pools-grid" class="card-stack"></div>
       </section>
 
-      <!-- VIEW 4: SETTINGS -->
+      <!-- VIEW 5: SETTINGS -->
       <section id="view-settings" class="view view-scroll" aria-label="Ayarlar ve Servis Kontrolü">
         <div class="section-header">
           <div>
             <h2>Ayarlar &amp; Güvenlik</h2>
-            <p class="muted">Tema, CLI Agent Pool servis kontrolü, telefon eşleştirme ve Tailscale erişimi.</p>
+            <p class="muted">Tema, paylaşılan proje klasörleri, servis kontrolü ve telefon eşleştirme.</p>
           </div>
         </div>
 
         <div class="card-stack">
+          <!-- Shared Project Folders Card -->
+          <div class="panel-card">
+            <div class="card-row">
+              <div>
+                <h3>Paylaşılan Proje Klasörleri</h3>
+                <p class="muted">Birden fazla proje kökü ekleyebilirsiniz; seçtikleriniz klasör listesinde ve sol menüde hazır görünür.</p>
+              </div>
+            </div>
+            <div id="shared-folders-list" class="device-list"></div>
+            <div class="btn-row">
+              <button id="pick-native-folder-btn" type="button" class="btn btn-primary btn-sm" hidden>📁 Bilgisayardan Klasör Seç</button>
+              <button id="browse-add-shared-btn" type="button" class="btn btn-secondary btn-sm">Klasör Gezgini ile Ekle</button>
+            </div>
+          </div>
+
           <!-- Theme Card -->
           <div class="panel-card">
             <h3>Görünüm (Tema)</h3>
@@ -247,19 +285,20 @@
             <div class="card-row">
               <div>
                 <h3>Eşleştirilmiş Cihazlar</h3>
-                <p class="muted">Her QR kod tek kullanımlıktır ve 5 dakikada sona erer. Şüpheli cihazın oturumunu tek tıkla iptal edebilirsiniz.</p>
+                <p class="muted">Her QR kod tek kullanımlıktır ve 5 dakikada sona erer.</p>
               </div>
               <button id="open-pair-settings-btn" type="button" class="btn btn-primary btn-sm">QR Oluştur</button>
             </div>
             <div id="devices-list" class="device-list"></div>
           </div>
 
-          <!-- Tailscale Network & ACL Card -->
+          <!-- Tailscale Network, HTTPS Mic & ACL Card -->
           <div class="panel-card">
-            <h3>Tailscale Ağ Güvenliği</h3>
+            <h3>Tailscale Ağ Güvenliği &amp; HTTPS</h3>
             <p id="tailscale-status-text" class="muted">Ağ bilgisi kontrol ediliyor…</p>
+            <p class="muted" style="margin-top:8px">Telefonda tarayıcı mikrofonunun da doğrudan çalışması için Tailscale HTTPS tünelini açabilirsiniz: <code class="md-inline-code">tailscale serve --bg 43128</code></p>
             <details class="acl-details">
-              <summary>Önerilen Tailscale ACL (Sadece bu port 43128 açık)</summary>
+              <summary>Önerilen Tailscale ACL (Yalnızca port 43128 açık)</summary>
               <pre id="tailscale-acl-code" class="code-block"></pre>
               <button id="copy-acl-btn" type="button" class="btn btn-ghost btn-sm">ACL Kuralını Kopyala</button>
             </details>
@@ -267,11 +306,15 @@
         </div>
       </section>
 
-      <!-- Mobile Bottom Navigation -->
+      <!-- Mobile Bottom Navigation (4 crisp tabs: Sohbet, Sohbetler, Çağrılar, Havuzlar) -->
       <nav class="bottom-nav mobile-only" aria-label="Alt menü">
         <button type="button" class="bnav-item active" data-view="chat">
           <span aria-hidden="true">💬</span>
           <span>Sohbet</span>
+        </button>
+        <button type="button" class="bnav-item" data-view="chats">
+          <span aria-hidden="true">🗂️</span>
+          <span>Sohbetler</span>
         </button>
         <button type="button" class="bnav-item" data-view="calls">
           <span aria-hidden="true">⚡</span>
@@ -279,54 +322,54 @@
           <span id="bnav-active-badge" class="bnav-dot" hidden></span>
         </button>
         <button type="button" class="bnav-item" data-view="pools">
-          <span aria-hidden="true">📦</span>
+          <span aria-hidden="true">📊</span>
           <span>Havuzlar</span>
-        </button>
-        <button type="button" class="bnav-item" data-view="settings">
-          <span aria-hidden="true">⚙️</span>
-          <span>Ayarlar</span>
         </button>
       </nav>
     </div>
   </div>
 
-  <!-- DIALOG 1: MODEL / POOL / EFFORT PICKER -->
-  <dialog id="model-dialog" class="sheet-dialog" closedby="any" aria-labelledby="model-dialog-title">
-    <div class="dialog-head">
-      <h2 id="model-dialog-title">Havuz, Model &amp; Efor</h2>
+  <!-- DIALOG 1: ANTIGRAVITY-STYLE MODEL / POOL / EFFORT PICKER -->
+  <dialog id="model-dialog" class="sheet-dialog model-picker-dialog" closedby="any" aria-labelledby="model-dialog-title">
+    <div class="dialog-head compact-head">
+      <h2 id="model-dialog-title">Model &amp; Efor</h2>
       <button type="button" class="icon-btn dialog-close" data-close-dialog="model-dialog" aria-label="Kapat">✕</button>
     </div>
-    <div class="dialog-body">
-      <div class="picker-search-row">
-        <label for="model-search-input" class="sr-only">Model, sağlayıcı veya havuz ara</label>
-        <input id="model-search-input" type="search" class="text-input" placeholder="Model, sağlayıcı veya havuz ara…" autocomplete="off">
-      </div>
-      <div id="picker-pool-tabs" class="chip-row" role="tablist" aria-label="Havuz seçimi"></div>
-      <div id="picker-effort-section" class="effort-box" hidden>
-        <div class="effort-label">Akıl Yürütme Eforu</div>
-        <div id="picker-effort-chips" class="chip-row"></div>
-      </div>
-      <div id="picker-models-list" class="picker-list"></div>
+    <div class="picker-search-wrap">
+      <label for="model-search-input" class="sr-only">Model, sağlayıcı veya havuz ara</label>
+      <input id="model-search-input" type="search" class="text-input compact-input" placeholder="Model ara…" autocomplete="off">
+    </div>
+    <div id="picker-groups-list" class="dialog-body picker-groups-body"></div>
+    <div class="dialog-foot">
+      <button id="picker-view-quotas-btn" type="button" class="view-quotas-btn">
+        <span>📊 Kotaları Gör (View Quotas)</span>
+        <span aria-hidden="true">→</span>
+      </button>
     </div>
   </dialog>
 
   <!-- DIALOG 2: WORKSPACE FOLDER BROWSER -->
   <dialog id="folder-dialog" class="sheet-dialog" closedby="any" aria-labelledby="folder-dialog-title">
-    <div class="dialog-head">
-      <h2 id="folder-dialog-title">Çalışma Klasörü Seç</h2>
+    <div class="dialog-head compact-head">
+      <h2 id="folder-dialog-title">Proje Klasörü Seç</h2>
       <button type="button" class="icon-btn dialog-close" data-close-dialog="folder-dialog" aria-label="Kapat">✕</button>
     </div>
     <div class="dialog-body">
+      <div class="folder-quick-actions">
+        <button id="folder-no-project-btn" type="button" class="btn btn-secondary btn-sm">💬 Projesiz (Sohbet)</button>
+        <button id="folder-dialog-native-pick-btn" type="button" class="btn btn-primary btn-sm" hidden>📁 Bilgisayardan Seç</button>
+        <button id="folder-browse-all-btn" type="button" class="btn btn-ghost btn-sm" hidden>Tüm Sürücüler</button>
+      </div>
       <div class="folder-nav-bar">
         <button id="folder-up-btn" type="button" class="btn btn-secondary btn-sm">↑ Üst</button>
-        <div id="folder-browser-path" class="folder-browser-path">/</div>
+        <div id="folder-browser-path" class="folder-browser-path">Kök klasörler</div>
         <button id="folder-star-btn" type="button" class="icon-btn" title="Favorilere ekle/çıkar" aria-label="Favori">☆</button>
       </div>
       <div class="folder-select-row">
-        <button id="folder-select-current-btn" type="button" class="btn btn-primary full-width">Bu Klasörü Seç</button>
+        <button id="folder-select-current-btn" type="button" class="btn btn-primary btn-sm full-width">Bu Klasörü Seç</button>
       </div>
       <div id="folder-favorites-section" class="folder-subsection" hidden>
-        <div class="sub-label">Favori Klasörler</div>
+        <div class="sub-label">Paylaşılan &amp; Favori Klasörler</div>
         <div id="folder-favorites-list" class="picker-list compact"></div>
       </div>
       <div class="sub-label">Alt Klasörler</div>
@@ -336,7 +379,7 @@
 
   <!-- DIALOG 3: QR PAIRING -->
   <dialog id="pair-dialog" class="sheet-dialog" closedby="any" aria-labelledby="pair-dialog-title">
-    <div class="dialog-head">
+    <div class="dialog-head compact-head">
       <h2 id="pair-dialog-title">Telefon Eşleştir (Tek Kullanımlık)</h2>
       <button type="button" class="icon-btn dialog-close" data-close-dialog="pair-dialog" aria-label="Kapat">✕</button>
     </div>
@@ -357,7 +400,7 @@
 
   <!-- DIALOG 4: TASK / CALL INSPECTOR -->
   <dialog id="task-dialog" class="sheet-dialog" closedby="any" aria-labelledby="task-dialog-title">
-    <div class="dialog-head">
+    <div class="dialog-head compact-head">
       <h2 id="task-dialog-title">Görev Detayı</h2>
       <button type="button" class="icon-btn dialog-close" data-close-dialog="task-dialog" aria-label="Kapat">✕</button>
     </div>

@@ -15,7 +15,15 @@
     needs_review: ['İnceleme gerekli', 'badge-warn'],
   };
 
-  const KIND_LABELS = { text: 'Sohbet', read: 'Analiz', write: 'Kod Yaz' };
+  const EVENT_KIND_LABELS = {
+    state: 'Durum',
+    progress: 'İlerleme',
+    tool: 'Araç',
+    command: 'Komut',
+    error_detail: 'Hata detayı',
+    warning: 'Uyarı',
+    info: 'Bilgi',
+  };
 
   const state = {
     view: 'chat',
@@ -30,9 +38,11 @@
     chats: [],
     activeChatId: null,
     activeChat: null,
+    sharedFolders: [],
     favoriteFolders: [],
     recentFolders: [],
     workspaceRoots: [],
+    canPickNativeFolder: false,
     devices: [],
     tailscaleIp: null,
     port: 43128,
@@ -44,12 +54,11 @@
       modelName: '',
       effort: '',
       efforts: [],
-      kind: 'read',
       includeContext: true,
     },
-    pickerTab: 'all',
     pickerQuery: '',
-    folderBrowser: { current: '', parent: '', entries: [], restricted: false },
+    folderBrowser: { current: '', parent: '', entries: [], restricted: false, canBrowseAll: false },
+    folderDialogPurpose: 'workspace', // 'workspace' | 'shared'
     sending: false,
     streams: new Map(), // taskId -> EventSource
     recognition: null,
@@ -83,7 +92,7 @@
     box.classList.toggle('error', Boolean(isError));
     box.hidden = false;
     clearTimeout(state.toastTimer);
-    state.toastTimer = setTimeout(() => { box.hidden = true; }, isError ? 4600 : 2600);
+    state.toastTimer = setTimeout(() => { box.hidden = true; }, isError ? 4800 : 2600);
   }
 
   async function api(url, opts = {}) {
@@ -103,6 +112,36 @@
     return data;
   }
 
+  // --- Clean Error & Event Formatters ---
+  function cleanErrorMessage(raw) {
+    let text = String(raw || '').trim();
+    if (!text) return '';
+    for (let depth = 0; depth < 3; depth++) {
+      if (!text.startsWith('{')) break;
+      try {
+        const parsed = JSON.parse(text);
+        const candidate = parsed?.error?.message || parsed?.message || parsed?.detail;
+        if (typeof candidate === 'string' && candidate.trim()) {
+          text = candidate.trim();
+          continue;
+        }
+      } catch { /* keep text */ }
+      break;
+    }
+    return text;
+  }
+
+  function formatEventLine(ev) {
+    if (typeof ev === 'string') return ev;
+    if (!ev || typeof ev !== 'object') return '';
+    const kindKey = ev.kind || ev.type || '';
+    const label = EVENT_KIND_LABELS[kindKey] || kindKey || 'Adım';
+    const rawDetail = ev.detail ?? ev.message ?? ev.summary ?? '';
+    const detail = cleanErrorMessage(typeof rawDetail === 'string' ? rawDetail : JSON.stringify(rawDetail));
+    const time = ev.time ? formatTime(ev.time) : '';
+    return [time, label, detail].filter(Boolean).join(' · ');
+  }
+
   // --- Theme Management (dark-mode-toggle) ---
   function readSavedTheme() {
     try {
@@ -118,7 +157,7 @@
     if (meta) meta.content = valid;
     const isLight = valid === 'light' || (valid === 'light dark' && window.matchMedia('(prefers-color-scheme: light)').matches);
     const themeMeta = document.querySelector('meta[name="theme-color"]');
-    if (themeMeta) themeMeta.content = isLight ? '#f5f7fb' : '#0b0d12';
+    if (themeMeta) themeMeta.content = isLight ? '#f6f7f9' : '#0b0d12';
     if (persist) {
       try { localStorage.setItem(THEME_KEY, valid); } catch { /* ignore */ }
     }
@@ -163,13 +202,13 @@
     try {
       const saved = JSON.parse(localStorage.getItem(SELECTION_KEY) || 'null');
       if (saved && typeof saved === 'object') {
+        const eff = typeof saved.effort === 'string' && saved.effort !== 'default' ? saved.effort : '';
         Object.assign(state.selection, {
           group: typeof saved.group === 'string' ? saved.group : '',
           routeId: typeof saved.routeId === 'string' ? saved.routeId : '',
           modelId: typeof saved.modelId === 'string' ? saved.modelId : '',
           modelName: typeof saved.modelName === 'string' ? saved.modelName : '',
-          effort: typeof saved.effort === 'string' ? saved.effort : '',
-          kind: ['text', 'read', 'write'].includes(saved.kind) ? saved.kind : 'read',
+          effort: eff,
           includeContext: saved.includeContext !== false,
         });
       }
@@ -181,7 +220,7 @@
   }
 
   function folderName(p) {
-    if (!p) return 'Klasör seç…';
+    if (!p) return 'Projesiz';
     const clean = String(p).replace(/[\\/]+$/, '');
     const parts = clean.split(/[\\/]/).filter(Boolean);
     return parts.length ? parts[parts.length - 1] : clean;
@@ -194,11 +233,42 @@
     } catch { return ''; }
   }
 
-  function quotaBadge(quota) {
-    if (!quota || quota.remainingPercent == null || !Number.isFinite(quota.remainingPercent)) return null;
-    const pct = Math.round(quota.remainingPercent);
-    const cls = pct <= 10 ? 'badge badge-danger' : pct <= 30 ? 'badge badge-warn' : 'badge badge-ok';
-    return el('span', { className: cls, text: `%${pct}` });
+  function renderInlineQuotaTags(model) {
+    const wrap = el('span', { className: 'model-quotas-inline' });
+    const wins = Array.isArray(model?.quotaWindows) && model.quotaWindows.length
+      ? model.quotaWindows.slice(0, 2)
+      : (model?.quota?.remainingPercent != null && Number.isFinite(model.quota.remainingPercent)
+          ? [{ label: '', remainingPercent: Math.round(model.quota.remainingPercent) }]
+          : []);
+    for (const w of wins) {
+      const pct = Math.round(w.remainingPercent);
+      const cls = pct <= 10 ? 'q-tag danger' : pct <= 30 ? 'q-tag warn' : 'q-tag';
+      wrap.appendChild(el('span', { className: cls }, [
+        w.label ? `${w.label} ` : '',
+        el('strong', { text: `%${pct}` }),
+      ]));
+    }
+    return wrap;
+  }
+
+  function findModelObj(routeId, modelId) {
+    if (!modelId) return null;
+    for (const p of state.pools) {
+      const m = (p.models || []).find(x => x.modelId === modelId && (!routeId || x.routeId === routeId));
+      if (m) return m;
+    }
+    return state.models.find(x => x.modelId === modelId && (!routeId || x.routeId === routeId)) || null;
+  }
+
+  // --- Send Button Auto-Disable State ---
+  function updateSendButton() {
+    const btn = $('send-btn');
+    const input = $('prompt-input');
+    if (!btn || !input) return;
+    const hasText = input.value.trim().length > 0;
+    btn.disabled = state.sending || !hasText;
+    btn.classList.toggle('sending', state.sending);
+    btn.setAttribute('aria-busy', String(state.sending));
   }
 
   // --- Safe Markdown DOM Renderer (zero innerHTML) ---
@@ -294,31 +364,24 @@
     return root;
   }
 
-  // --- Navigation & Drawer ---
-  function setDrawer(open) {
-    $('sidebar').classList.toggle('open', open);
-    $('drawer-backdrop').hidden = !open;
-  }
-
+  // --- View Switching ---
   function switchView(view) {
     state.view = view;
     document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === `view-${view}`));
     document.querySelectorAll('[data-view]').forEach(btn => btn.classList.toggle('active', btn.dataset.view === view));
-    setDrawer(false);
+    if (view === 'chats') renderChatGroups($('mobile-chat-list'), true);
     if (view === 'calls' || view === 'pools' || view === 'settings') void refreshState(false);
   }
 
-  // --- Rendering ---
+  // --- Rendering Topbar, Composer Inline Model & Workspace Strip ---
   function renderTopbarAndStatus() {
     const running = state.poolHealth?.status === 'ok';
     const active = Number(state.poolHealth?.active || 0);
-    const poolDot = $('pool-dot');
-    poolDot.className = `status-dot ${running ? 'ok' : 'danger'}`;
+    $('pool-dot').className = `status-dot ${running ? 'ok' : 'danger'}`;
     $('pool-chip-label').textContent = running ? (active > 0 ? `Pool (${active})` : 'Pool') : 'Kapalı';
     $('sidebar-pool-status').textContent = running
       ? `v${state.poolHealth.version || '?'} · ${state.poolHealth.models || 0} model`
       : 'Servis kapalı';
-
     $('pool-offline-banner').hidden = running;
 
     const navBadge = $('nav-active-badge');
@@ -326,110 +389,156 @@
     navBadge.textContent = String(active);
     $('bnav-active-badge').hidden = active <= 0;
 
-    // Model pill
+    // Topbar chat title & project subtitle
+    const ws = state.activeChat?.workspace || '';
+    $('topbar-chat-title').textContent = state.activeChat?.title || 'Yeni sohbet';
+    $('topbar-chat-sub').textContent = ws ? `📁 ${folderName(ws)}` : '💬 Projesiz sohbet';
+
+    // Inline Antigravity-style Model Button inside Composer Bottom-Left
     const sel = state.selection;
     const poolObj = state.pools.find(p => p.id === sel.group);
     const poolLabel = poolObj?.label || sel.group;
     let title = 'Otomatik Model';
-    let meta = poolLabel ? `Havuz: ${poolLabel}` : 'En uygun havuzdan seç';
-    let dotClass = running ? 'status-dot ok' : 'status-dot warn';
+    let meta = poolLabel || '';
+    let dotClass = running ? 'mini-dot ok' : 'mini-dot warn';
 
     if (sel.modelId) {
       const found = findModelObj(sel.routeId, sel.modelId);
       title = found?.name || sel.modelName || sel.modelId;
       const parts = [];
-      if (poolLabel) parts.push(poolLabel);
-      if (sel.effort) parts.push(`Efor: ${sel.effort}`);
-      if (found?.quota?.remainingPercent != null) parts.push(`%${Math.round(found.quota.remainingPercent)}`);
-      meta = parts.join(' · ') || sel.routeId || 'Doğrudan model';
-      if (found?.quota?.remainingPercent != null && found.quota.remainingPercent <= 10) dotClass = 'status-dot danger';
+      if (sel.effort && sel.effort !== 'default') parts.push(sel.effort);
+      if (found?.quotaWindows?.length) {
+        parts.push(found.quotaWindows.slice(0, 2).map(w => `${w.label} %${w.remainingPercent}`).join(' '));
+      } else if (found?.quota?.remainingPercent != null) {
+        parts.push(`%${Math.round(found.quota.remainingPercent)}`);
+      }
+      meta = parts.join(' · ');
+      const minPct = found?.quota?.remainingPercent;
+      if (minPct != null && minPct <= 10) dotClass = 'mini-dot danger';
+      else if (minPct != null && minPct <= 30) dotClass = 'mini-dot warn';
     }
     $('model-pill-dot').className = dotClass;
     $('model-pill-name').textContent = title;
     $('model-pill-meta').textContent = meta;
 
-    // Composer toggles
-    document.querySelectorAll('[data-kind]').forEach(btn => {
-      btn.classList.toggle('active', btn.dataset.kind === sel.kind);
-    });
     const ctxBtn = $('context-toggle-btn');
     ctxBtn.classList.toggle('active', sel.includeContext);
     ctxBtn.setAttribute('aria-pressed', String(sel.includeContext));
-    $('context-toggle-label').textContent = sel.includeContext ? 'Bağlam: Kısa özet' : 'Bağlam: Kapalı';
+    $('context-toggle-label').textContent = sel.includeContext ? 'Bağlam: Özet' : 'Bağlam: Kapalı';
+    updateSendButton();
   }
 
-  function findModelObj(routeId, modelId) {
-    if (!modelId) return null;
-    for (const p of state.pools) {
-      const m = (p.models || []).find(x => x.modelId === modelId && (!routeId || x.routeId === routeId));
-      if (m) return m;
-    }
-    return state.models.find(x => x.modelId === modelId && (!routeId || x.routeId === routeId)) || null;
-  }
-
-  function renderWorkspaceBar() {
+  function renderWorkspaceStrip() {
     const ws = state.activeChat?.workspace || '';
-    $('current-folder-label').textContent = ws ? folderName(ws) : 'Çalışma klasörü seç…';
-    $('folder-picker-btn').title = ws || 'Çalışma klasörü seç';
+    const pill = $('folder-picker-btn');
+    pill.classList.toggle('has-project', Boolean(ws));
+    $('current-folder-icon').textContent = ws ? '📁' : '💬';
+    $('current-folder-label').textContent = ws ? folderName(ws) : 'Projesiz (Sohbet)';
+    pill.title = ws || 'Proje klasörü seçin (seçilmezse sohbet modunda çalışır)';
+    $('clear-folder-btn').hidden = !ws;
 
     const chips = $('folder-chips');
     chips.replaceChildren();
-    const combined = [...new Set([...state.favoriteFolders, ...state.recentFolders])].slice(0, 8);
+    const combined = [...new Set([...state.sharedFolders, ...state.favoriteFolders, ...state.recentFolders])]
+      .filter(dir => dir && dir !== ws)
+      .slice(0, 5);
     for (const dir of combined) {
-      const isFav = state.favoriteFolders.includes(dir);
       chips.appendChild(el('button', {
         type: 'button',
-        className: `folder-chip${dir === ws ? ' active' : ''}`,
+        className: 'folder-chip',
         title: dir,
-        text: `${isFav ? '★ ' : ''}${folderName(dir)}`,
+        text: `📁 ${folderName(dir)}`,
         onClick: () => void selectWorkspace(dir),
       }));
     }
   }
 
-  function renderChatList() {
-    const list = $('chat-list');
-    list.replaceChildren();
-    if (!state.chats.length) {
-      list.appendChild(el('div', { className: 'muted', text: 'Henüz sohbet yok.' }));
-      return;
+  // --- Grouped Chats by Project Folder (Sidebar + Mobile Chats View) ---
+  function renderChatGroups(container, isMobileView = false) {
+    if (!container) return;
+    container.replaceChildren();
+
+    const groups = new Map();
+    groups.set('', []); // Projesiz sohbetler always first
+    for (const dir of [...state.sharedFolders, ...state.favoriteFolders]) {
+      if (dir && !groups.has(dir)) groups.set(dir, []);
     }
     for (const chat of state.chats) {
-      const row = el('div', { className: `chat-item${chat.id === state.activeChatId ? ' active' : ''}`, role: 'listitem' }, [
-        el('button', {
-          type: 'button',
-          className: 'chat-item-main',
-          onClick: () => {
-            switchView('chat');
-            void openChat(chat.id);
-          },
-        }, [
-          el('div', { className: 'chat-item-title', text: chat.title || 'Yeni sohbet' }),
-          el('div', { className: 'chat-item-meta', text: chat.workspace ? folderName(chat.workspace) : `${chat.messageCount || 0} mesaj` }),
+      const key = chat.workspace || '';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(chat);
+    }
+
+    for (const [folderPath, chats] of groups.entries()) {
+      if (!chats.length && folderPath === '' && groups.size > 1) {
+        // Keep Projesiz header visible so user can 1-tap start a projectless chat
+      }
+      const groupWrap = el('div', { className: isMobileView ? 'panel-card chat-folder-group' : 'chat-folder-group' });
+      const head = el('div', { className: 'chat-folder-head' }, [
+        el('div', { className: 'chat-folder-name', title: folderPath || 'Proje klasörü olmadan sohbetler' }, [
+          el('span', { text: folderPath ? '📁' : '💬' }),
+          el('span', { text: folderPath ? folderName(folderPath) : 'Projesiz Sohbetler' }),
         ]),
         el('button', {
           type: 'button',
-          className: 'chat-del-btn',
-          'aria-label': 'Sohbeti sil',
-          title: 'Sohbeti sil',
-          text: '🗑',
-          onClick: async e => {
-            e.stopPropagation();
-            if (!window.confirm(`"${chat.title || 'Bu sohbet'}" silinsin mi?`)) return;
-            try {
-              await api(`/r/chats/${encodeURIComponent(chat.id)}`, { method: 'DELETE' });
-              if (state.activeChatId === chat.id) {
-                state.activeChatId = null;
-                state.activeChat = null;
-              }
-              await refreshState(false);
-              toast('Sohbet silindi.');
-            } catch (err) { toast(err.message, true); }
+          className: 'folder-add-chat-btn',
+          title: folderPath ? `${folderName(folderPath)} içinde yeni sohbet` : 'Yeni projesiz sohbet',
+          'aria-label': folderPath ? `${folderName(folderPath)} içinde yeni sohbet` : 'Yeni projesiz sohbet',
+          text: '+',
+          onClick: () => {
+            switchView('chat');
+            void createNewChat(folderPath);
           },
         }),
       ]);
-      list.appendChild(row);
+      groupWrap.appendChild(head);
+
+      if (!chats.length) {
+        groupWrap.appendChild(el('div', { className: 'chat-item-meta', style: 'padding: 2px 12px 4px', text: 'Henüz sohbet yok' }));
+      } else {
+        for (const chat of chats) {
+          groupWrap.appendChild(el('div', { className: `chat-item${chat.id === state.activeChatId ? ' active' : ''}`, role: 'listitem' }, [
+            el('button', {
+              type: 'button',
+              className: 'chat-item-main',
+              onClick: () => {
+                switchView('chat');
+                void openChat(chat.id);
+              },
+            }, [
+              el('div', { className: 'chat-item-title', text: chat.title || 'Yeni sohbet' }),
+              el('div', { className: 'chat-item-meta', text: `${chat.messageCount || 0} mesaj · ${formatTime(chat.updatedAt)}` }),
+            ]),
+            el('button', {
+              type: 'button',
+              className: 'chat-del-btn',
+              'aria-label': 'Sohbeti sil',
+              title: 'Sohbeti sil',
+              text: '🗑',
+              onClick: async e => {
+                e.stopPropagation();
+                if (!window.confirm(`"${chat.title || 'Bu sohbet'}" silinsin mi?`)) return;
+                try {
+                  await api(`/r/chats/${encodeURIComponent(chat.id)}`, { method: 'DELETE' });
+                  if (state.activeChatId === chat.id) {
+                    state.activeChatId = null;
+                    state.activeChat = null;
+                  }
+                  await refreshState(false);
+                  toast('Sohbet silindi.');
+                } catch (err) { toast(err.message, true); }
+              },
+            }),
+          ]));
+        }
+      }
+      container.appendChild(groupWrap);
     }
+  }
+
+  function renderChatList() {
+    renderChatGroups($('chat-list'), false);
+    if (state.view === 'chats') renderChatGroups($('mobile-chat-list'), true);
   }
 
   function renderAssistantBubble(msg) {
@@ -464,21 +573,22 @@
 
     const modelText = [
       msg.reportedModel || msg.modelId || 'Otomatik',
-      msg.effort ? `(${msg.effort})` : '',
+      msg.effort && msg.effort !== 'default' ? `(${msg.effort})` : '',
     ].filter(Boolean).join(' ');
 
     const bodyNodes = [
       el('div', { className: 'msg-head' }, [
         el('div', { className: 'msg-model-tag' }, [
           el('span', { text: modelText }),
-          msg.kind ? el('span', { className: 'badge', text: KIND_LABELS[msg.kind] || msg.kind }) : null,
+          msg.kind === 'text' ? el('span', { className: 'badge', text: 'Sohbet' }) : el('span', { className: 'badge', text: 'Proje' }),
         ]),
         headRight,
       ]),
     ];
 
     if (msg.error) {
-      bodyNodes.push(el('div', { className: 'error-box', text: msg.errorDetail || msg.error }));
+      const cleanErr = cleanErrorMessage(msg.errorDetail || msg.error);
+      bodyNodes.push(el('div', { className: 'error-box', text: cleanErr }));
     }
 
     const outputText = msg.result || msg.text || '';
@@ -502,14 +612,13 @@
     }
 
     if (Array.isArray(msg.events) && msg.events.length) {
-      const details = el('details', { className: 'events-details', ...(isActive ? { open: true } : {}) }, [
-        el('summary', { text: `Adımlar & olaylar (${msg.events.length})` }),
-        el('ul', { className: 'events-list' }, msg.events.slice(-12).map(ev => {
-          const line = typeof ev === 'string' ? ev : `${ev.type || 'olay'}${ev.message ? `: ${ev.message}` : ev.summary ? `: ${ev.summary}` : ''}`;
-          return el('li', { text: line });
-        })),
-      ]);
-      bodyNodes.push(details);
+      const formatted = msg.events.slice(-12).map(formatEventLine).filter(Boolean);
+      if (formatted.length) {
+        bodyNodes.push(el('details', { className: 'events-details', ...(isActive ? { open: true } : {}) }, [
+          el('summary', { text: `Adımlar & olaylar (${msg.events.length})` }),
+          el('ul', { className: 'events-list' }, formatted.map(line => el('li', { text: line }))),
+        ]));
+      }
     }
 
     return el('article', { className: 'msg msg-assistant' }, [
@@ -529,7 +638,7 @@
         list.appendChild(el('article', { className: 'msg msg-user' }, [
           el('div', { className: 'msg-bubble', text: msg.text || '' }),
           el('div', { className: 'msg-meta', text: [
-            msg.kind ? KIND_LABELS[msg.kind] : '',
+            msg.workspace ? `📁 ${folderName(msg.workspace)}` : '💬 Sohbet',
             msg.includeContext === false ? 'Sıfır bağlam' : '',
             formatTime(msg.at),
           ].filter(Boolean).join(' · ') }),
@@ -557,16 +666,16 @@
     for (const task of state.tasks) {
       const [label, cls] = STATE_LABELS[task.state] || [task.state || '?', 'badge'];
       const active = !TERMINAL_STATES.has(task.state);
-      const card = el('div', { className: 'panel-card' }, [
+      container.appendChild(el('div', { className: 'panel-card' }, [
         el('div', { className: 'card-row' }, [
           el('div', {}, [
             el('h3', { text: task.reportedModel || task.modelId || task.routeId || 'Görev' }),
-            el('p', { className: 'muted', text: `${task.workspace ? folderName(task.workspace) : ''} · ${KIND_LABELS[task.kind] || task.kind || ''}${task.clientLabel ? ` · ${task.clientLabel}` : ''}` }),
+            el('p', { className: 'muted', text: `${task.workspace ? folderName(task.workspace) : 'Sohbet'}${task.clientLabel ? ` · ${task.clientLabel}` : ''}` }),
           ]),
           el('span', { className: `badge ${cls}` }, [active ? el('span', { className: 'pulse-dot' }) : null, label]),
         ]),
         task.result ? el('p', { className: 'muted', text: String(task.result).slice(0, 180) }) : null,
-        task.error ? el('div', { className: 'error-box', text: task.errorDetail || task.error }) : null,
+        task.error ? el('div', { className: 'error-box', text: cleanErrorMessage(task.errorDetail || task.error) }) : null,
         el('div', { className: 'btn-row' }, [
           el('button', { type: 'button', className: 'btn btn-secondary btn-sm', text: 'İncele', onClick: () => void openTaskInspector(task.id) }),
           active ? el('button', {
@@ -582,8 +691,7 @@
             },
           }) : null,
         ]),
-      ]);
-      container.appendChild(card);
+      ]));
     }
   }
 
@@ -593,6 +701,13 @@
     for (const q of state.quotas || []) {
       const pct = Number.isFinite(q.remainingPercent) ? Math.round(q.remainingPercent) : null;
       const fillCls = pct == null ? '' : pct <= 10 ? ' danger' : pct <= 30 ? ' warn' : '';
+      const winsRow = Array.isArray(q.windows) && q.windows.length
+        ? el('div', { className: 'quota-win-row' }, q.windows.slice(0, 4).map(w => {
+            const wp = Math.round(w.remainingPercent);
+            const cls = wp <= 10 ? 'q-tag danger' : wp <= 30 ? 'q-tag warn' : 'q-tag';
+            return el('span', { className: cls }, [`${w.name.split(':').pop() || w.name} `, el('strong', { text: `%${wp}` })]);
+          }))
+        : null;
       qStrip.appendChild(el('div', { className: 'quota-card' }, [
         el('div', { className: 'card-row' }, [
           el('strong', { text: q.routeId || q.adapter || 'Bağlantı' }),
@@ -600,6 +715,7 @@
         ]),
         el('div', { className: 'muted', text: `${q.adapter || ''} · ${q.billing || ''} · ${q.models || 0} model` }),
         pct != null ? el('div', { className: 'quota-bar' }, el('div', { className: `quota-fill${fillCls}`, style: `width:${Math.max(0, Math.min(100, pct))}%` })) : null,
+        winsRow,
       ]));
     }
 
@@ -614,25 +730,28 @@
       const models = pool.models || [];
       const items = models.map(m => el('button', {
         type: 'button',
-        className: `picker-item${state.selection.modelId === m.modelId && state.selection.routeId === m.routeId ? ' selected' : ''}`,
+        className: `model-row${state.selection.modelId === m.modelId && state.selection.routeId === m.routeId ? ' selected' : ''}`,
         onClick: () => {
           chooseModel({ ...m, group: pool.id });
           switchView('chat');
           toast(`${m.name || m.modelId} seçildi.`);
         },
       }, [
-        el('div', { className: 'picker-item-main' }, [
-          el('div', { className: 'picker-item-title', text: m.name || m.modelId }),
-          el('div', { className: 'picker-item-sub', text: [m.routeId, m.effort ? `efor: ${m.effort}` : '', m.billing].filter(Boolean).join(' · ') }),
+        el('div', { className: 'model-row-left' }, [
+          el('span', { className: 'model-check', text: (state.selection.modelId === m.modelId && state.selection.routeId === m.routeId) ? '✓' : '' }),
+          el('div', { className: 'model-row-text' }, [
+            el('div', { className: 'model-row-name', text: m.name || m.modelId }),
+            el('div', { className: 'model-row-sub', text: [m.routeId, m.effort ? `efor: ${m.effort}` : ''].filter(Boolean).join(' · ') }),
+          ]),
         ]),
-        quotaBadge(m.quota),
+        renderInlineQuotaTags(m),
       ]));
 
       grid.appendChild(el('div', { className: 'panel-card' }, [
         el('div', { className: 'card-row' }, [
           el('div', {}, [
             el('h3', { text: pool.label || pool.id }),
-            el('p', { className: 'muted', text: `${models.length} model` }),
+            el('p', { className: 'muted', text: `${models.length} model (A→Z)` }),
           ]),
           el('button', {
             type: 'button',
@@ -645,12 +764,44 @@
             },
           }),
         ]),
-        el('div', { className: 'picker-list', style: 'margin-top:10px' }, items.length ? items : [el('p', { className: 'muted', text: 'Bu havuzda aktif model yok.' })]),
+        el('div', { className: 'picker-list', style: 'margin-top:8px' }, items.length ? items : [el('p', { className: 'muted', text: 'Bu havuzda aktif model yok.' })]),
       ]));
     }
   }
 
   function renderSettingsView() {
+    // Shared project folders
+    const sharedList = $('shared-folders-list');
+    sharedList.replaceChildren();
+    $('pick-native-folder-btn').hidden = !state.canPickNativeFolder;
+    if (!state.sharedFolders.length) {
+      sharedList.appendChild(el('p', { className: 'muted', text: 'Henüz özel paylaşılan proje klasörü eklenmemiş (tüm sürücülere gözatabilirsiniz).' }));
+    } else {
+      for (const dir of state.sharedFolders) {
+        sharedList.appendChild(el('div', { className: 'device-row' }, [
+          el('div', { style: 'min-width:0' }, [
+            el('strong', { text: `📁 ${folderName(dir)}` }),
+            el('div', { className: 'muted mono', text: dir }),
+          ]),
+          el('button', {
+            type: 'button',
+            className: 'btn btn-danger btn-sm',
+            text: 'Kaldır',
+            onClick: async () => {
+              try {
+                const res = await api('/r/folders/shared', { method: 'POST', body: { action: 'remove', path: dir } });
+                state.sharedFolders = res.sharedFolders || [];
+                renderSettingsView();
+                renderWorkspaceStrip();
+                renderChatList();
+                toast('Klasör paylaşımdan kaldırıldı.');
+              } catch (err) { toast(err.message, true); }
+            },
+          }),
+        ]));
+      }
+    }
+
     const running = state.poolHealth?.status === 'ok';
     $('settings-pool-badge').className = `badge ${running ? 'badge-ok' : 'badge-danger'}`;
     $('settings-pool-badge').textContent = running ? 'Çalışıyor' : 'Kapalı';
@@ -685,7 +836,7 @@
 
     $('tailscale-status-text').textContent = state.tailscaleIp
       ? `Tailscale IP algılandı: ${state.tailscaleIp} (Port: ${state.port}). Yalnızca Tailscale arayüzünüzden ve eşleşmiş cihazlardan erişilebilir.`
-      : 'Bu makinede aktif bir Tailscale IP (100.64.0.0/10) algılanmadı. Telefondan bağlanmak için bilgisayara ve telefona Tailscale kurup "cli-agent-pool remote --host tailscale" ile başlatın.';
+      : 'Bu makinede aktif bir Tailscale IP (100.64.0.0/10) algılanmadı. Telefondan bağlanmak için bilgisayara ve telefona Tailscale kurun.';
 
     const acl = {
       acls: [
@@ -699,7 +850,7 @@
     $('tailscale-acl-code').textContent = JSON.stringify(acl, null, 2);
   }
 
-  // --- Model / Pool / Effort Picker Dialog ---
+  // --- Antigravity-Style Model & Effort Picker Dialog ---
   function choosePoolAuto(groupId) {
     state.selection.group = groupId || '';
     state.selection.routeId = '';
@@ -712,109 +863,139 @@
   }
 
   function chooseModel(model) {
+    const cleanEfforts = (Array.isArray(model.efforts) ? model.efforts : []).filter(e => e && e !== 'default');
+    const candidateEffort = (model.effort && model.effort !== 'default') ? model.effort : '';
     state.selection.group = model.group || model.category || (Array.isArray(model.categories) ? model.categories[0] || '' : '');
     state.selection.routeId = model.routeId || '';
     state.selection.modelId = model.modelId || '';
     state.selection.modelName = model.name || model.modelId || '';
-    state.selection.efforts = Array.isArray(model.efforts) ? model.efforts : [];
-    state.selection.effort = model.effort || (state.selection.efforts.includes(state.selection.effort) ? state.selection.effort : (state.selection.efforts[0] || ''));
+    state.selection.efforts = cleanEfforts;
+    state.selection.effort = candidateEffort || (cleanEfforts.includes(state.selection.effort) ? state.selection.effort : '');
     saveSelection();
     renderTopbarAndStatus();
   }
 
   function renderModelPicker() {
-    const tabs = $('picker-pool-tabs');
-    tabs.replaceChildren();
-    const tabDefs = [
-      { id: 'all', label: 'Tüm Katalog' },
-      ...state.pools.map(p => ({ id: p.id, label: `${p.label || p.id} (${(p.models || []).length})` })),
-    ];
-    for (const t of tabDefs) {
-      tabs.appendChild(el('button', {
-        type: 'button',
-        className: `chip-btn${state.pickerTab === t.id ? ' active' : ''}`,
-        text: t.label,
-        onClick: () => {
-          state.pickerTab = t.id;
-          renderModelPicker();
-        },
-      }));
-    }
+    const body = $('picker-groups-list');
+    body.replaceChildren();
+    const q = state.pickerQuery.trim().toLowerCase();
 
-    // Effort chips if selected model has efforts
-    const currentModel = findModelObj(state.selection.routeId, state.selection.modelId);
-    const efforts = currentModel?.efforts || state.selection.efforts || [];
-    const effBox = $('picker-effort-section');
-    effBox.hidden = !efforts.length;
-    if (efforts.length) {
-      const effRow = $('picker-effort-chips');
-      effRow.replaceChildren();
-      for (const eff of efforts) {
+    const matchesSearch = m => !q || [m.name, m.modelId, m.routeId, m.billing, m.account].some(s => String(s || '').toLowerCase().includes(q));
+
+    const buildModelRow = (m, poolId) => {
+      const isSelected = state.selection.modelId === m.modelId && state.selection.routeId === m.routeId;
+      const efforts = (Array.isArray(m.efforts) ? m.efforts : []).filter(e => e && e !== 'default');
+      const wrap = el('div', { className: 'model-row-wrap' });
+
+      wrap.appendChild(el('button', {
+        type: 'button',
+        className: `model-row${isSelected ? ' selected' : ''}`,
+        onClick: () => {
+          chooseModel({ ...m, group: poolId || m.category || m.categories?.[0] || '' });
+          renderModelPicker();
+          if (!efforts.length) $('model-dialog').close();
+        },
+      }, [
+        el('div', { className: 'model-row-left' }, [
+          el('span', { className: 'model-check', text: isSelected ? '✓' : '' }),
+          el('div', { className: 'model-row-text' }, [
+            el('div', { className: 'model-row-name', text: m.name || m.modelId }),
+            el('div', { className: 'model-row-sub', text: m.routeId }),
+          ]),
+        ]),
+        renderInlineQuotaTags(m),
+      ]));
+
+      if (isSelected && efforts.length) {
+        const effRow = el('div', { className: 'effort-inline-row' });
         effRow.appendChild(el('button', {
           type: 'button',
-          className: `chip-btn${state.selection.effort === eff ? ' active' : ''}`,
-          text: eff,
+          className: `effort-pill${!state.selection.effort ? ' active' : ''}`,
+          text: 'Varsayılan',
           onClick: () => {
-            state.selection.effort = eff;
+            state.selection.effort = '';
             saveSelection();
             renderTopbarAndStatus();
-            renderModelPicker();
+            $('model-dialog').close();
           },
         }));
+        for (const eff of efforts) {
+          effRow.appendChild(el('button', {
+            type: 'button',
+            className: `effort-pill${state.selection.effort === eff ? ' active' : ''}`,
+            text: eff,
+            onClick: () => {
+              state.selection.effort = eff;
+              saveSelection();
+              renderTopbarAndStatus();
+              $('model-dialog').close();
+            },
+          }));
+        }
+        wrap.appendChild(effRow);
+      }
+      return wrap;
+    };
+
+    // Vertical stacked categories (High, Medium, Low, custom...) — A→Z inside each
+    let totalRendered = 0;
+    for (const pool of state.pools) {
+      const filtered = (pool.models || []).filter(matchesSearch);
+      if (q && !filtered.length) continue;
+      const isPoolAutoSelected = !state.selection.modelId && state.selection.group === pool.id;
+
+      const block = el('div', { className: 'picker-cat-block' }, [
+        el('div', { className: 'picker-cat-head' }, [
+          el('span', { className: 'picker-cat-title', text: `${pool.label || pool.id} (${filtered.length})` }),
+          el('button', {
+            type: 'button',
+            className: `picker-cat-auto${isPoolAutoSelected ? ' selected' : ''}`,
+            text: isPoolAutoSelected ? '✓ Otomatik' : 'Otomatik',
+            onClick: () => {
+              choosePoolAuto(pool.id);
+              $('model-dialog').close();
+            },
+          }),
+        ]),
+      ]);
+
+      for (const m of filtered) {
+        block.appendChild(buildModelRow(m, pool.id));
+        totalRendered++;
+      }
+      body.appendChild(block);
+    }
+
+    // If user is searching and there are catalog models outside pools, show them below
+    if (q) {
+      const seen = new Set(state.pools.flatMap(p => (p.models || []).map(m => `${m.routeId}::${m.modelId}`)));
+      const extras = state.models.filter(m => !seen.has(`${m.routeId}::${m.modelId}`) && matchesSearch(m));
+      if (extras.length) {
+        const block = el('div', { className: 'picker-cat-block' }, [
+          el('div', { className: 'picker-cat-head' }, [
+            el('span', { className: 'picker-cat-title', text: `Diğer Katalog (${extras.length})` }),
+          ]),
+        ]);
+        for (const m of extras) {
+          block.appendChild(buildModelRow(m, ''));
+          totalRendered++;
+        }
+        body.appendChild(block);
       }
     }
 
-    const list = $('picker-models-list');
-    list.replaceChildren();
-
-    // Auto-select option for current tab
-    const activePool = state.pools.find(p => p.id === state.pickerTab);
-    list.appendChild(el('button', {
-      type: 'button',
-      className: `picker-item${!state.selection.modelId && state.selection.group === (activePool ? activePool.id : '') ? ' selected' : ''}`,
-      onClick: () => {
-        choosePoolAuto(activePool ? activePool.id : '');
-        $('model-dialog').close();
-      },
-    }, [
-      el('div', { className: 'picker-item-main' }, [
-        el('div', { className: 'picker-item-title', text: activePool ? `✨ ${activePool.label || activePool.id} — Otomatik seç` : '✨ Otomatik en uygun model' }),
-        el('div', { className: 'picker-item-sub', text: 'Kotası müsait en iyi modeli CLI Agent Pool kendisi seçer.' }),
-      ]),
-    ]));
-
-    let sourceModels = activePool ? (activePool.models || []) : state.models;
-    const q = state.pickerQuery.trim().toLowerCase();
-    if (q) {
-      sourceModels = sourceModels.filter(m =>
-        [m.name, m.modelId, m.routeId, m.billing, m.account].some(s => String(s || '').toLowerCase().includes(q)),
-      );
-    }
-
-    for (const m of sourceModels) {
-      const selected = state.selection.modelId === m.modelId && state.selection.routeId === m.routeId;
-      list.appendChild(el('button', {
-        type: 'button',
-        className: `picker-item${selected ? ' selected' : ''}`,
-        onClick: () => {
-          chooseModel({ ...m, group: activePool ? activePool.id : (m.category || m.categories?.[0] || '') });
-          renderModelPicker();
-          if (!m.efforts?.length) $('model-dialog').close();
-        },
-      }, [
-        el('div', { className: 'picker-item-main' }, [
-          el('div', { className: 'picker-item-title', text: m.name || m.modelId }),
-          el('div', { className: 'picker-item-sub', text: [m.routeId, m.efforts?.length ? `efor: ${m.efforts.join('/')}` : '', m.billing].filter(Boolean).join(' · ') }),
-        ]),
-        quotaBadge(m.quota),
-      ]));
+    if (!totalRendered && !state.pools.length) {
+      body.appendChild(el('p', { className: 'muted', text: 'Havuz modeli bulunamadı veya servis kapalı.' }));
     }
   }
 
-  // --- Folder Browser Dialog ---
-  async function loadFolderBrowser(targetPath = '') {
+  // --- Folder Browser Dialog & Native Windows Picker ---
+  async function loadFolderBrowser(targetPath = '', browseAll = false) {
     try {
-      const data = await api(`/r/dirs?path=${encodeURIComponent(targetPath)}`);
+      const qs = new URLSearchParams();
+      if (targetPath) qs.set('path', targetPath);
+      if (browseAll) qs.set('browseAll', '1');
+      const data = await api(`/r/dirs?${qs.toString()}`);
       state.folderBrowser = data;
       renderFolderBrowser();
     } catch (err) {
@@ -824,25 +1005,32 @@
 
   function renderFolderBrowser() {
     const fb = state.folderBrowser;
+    const isSharedMode = state.folderDialogPurpose === 'shared';
+    $('folder-dialog-title').textContent = isSharedMode ? 'Paylaşılan Proje Klasörü Ekle' : 'Proje Klasörü Seç';
+    $('folder-no-project-btn').hidden = isSharedMode;
+    $('folder-dialog-native-pick-btn').hidden = !state.canPickNativeFolder;
+    $('folder-browse-all-btn').hidden = !fb.canBrowseAll;
     $('folder-browser-path').textContent = fb.current || 'Kök klasörler';
     $('folder-up-btn').disabled = !fb.parent && !fb.current;
     $('folder-select-current-btn').disabled = !fb.current;
+    $('folder-select-current-btn').textContent = isSharedMode ? 'Bu Klasörü Paylaşılanlara Ekle' : 'Bu Proje Klasörünü Seç';
     const isFav = fb.current && state.favoriteFolders.includes(fb.current);
     $('folder-star-btn').textContent = isFav ? '★' : '☆';
     $('folder-star-btn').disabled = !fb.current;
 
+    const quickDirs = [...new Set([...state.sharedFolders, ...state.favoriteFolders])];
     const favSec = $('folder-favorites-section');
-    favSec.hidden = !state.favoriteFolders.length;
+    favSec.hidden = isSharedMode || !quickDirs.length;
     const favList = $('folder-favorites-list');
     favList.replaceChildren();
-    for (const dir of state.favoriteFolders) {
+    for (const dir of quickDirs) {
       favList.appendChild(el('button', {
         type: 'button',
         className: 'picker-item',
         onClick: () => void selectWorkspace(dir, true),
       }, [
         el('div', { className: 'picker-item-main' }, [
-          el('div', { className: 'picker-item-title', text: `★ ${folderName(dir)}` }),
+          el('div', { className: 'picker-item-title', text: `📁 ${folderName(dir)}` }),
           el('div', { className: 'picker-item-sub mono', text: dir }),
         ]),
       ]));
@@ -867,21 +1055,43 @@
         el('button', {
           type: 'button',
           className: 'btn btn-secondary btn-sm',
-          text: 'Seç',
-          onClick: () => void selectWorkspace(entry.path, true),
+          text: isSharedMode ? 'Ekle' : 'Seç',
+          onClick: () => isSharedMode ? void addSharedFolder(entry.path, true) : void selectWorkspace(entry.path, true),
         }),
       ]));
     }
   }
 
-  async function selectWorkspace(dir, closeDialog = false) {
+  async function addSharedFolder(dir, closeDialog = false) {
     if (!dir) return;
-    if (!state.activeChatId) await createNewChat(dir);
+    try {
+      const res = await api('/r/folders/shared', { method: 'POST', body: { action: 'add', path: dir } });
+      state.sharedFolders = res.sharedFolders || [];
+      renderSettingsView();
+      renderWorkspaceStrip();
+      renderChatList();
+      if (closeDialog && $('folder-dialog').open) $('folder-dialog').close();
+      toast(`Paylaşılan klasör eklendi: ${folderName(dir)}`);
+    } catch (err) { toast(err.message, true); }
+  }
+
+  async function pickNativeFolder(forShared = false) {
+    try {
+      const res = await api('/r/folders/pick', { method: 'POST', body: { initialPath: state.activeChat?.workspace || '' } });
+      if (res.cancelled || !res.path) return;
+      if (forShared) await addSharedFolder(res.path, true);
+      else await selectWorkspace(res.path, true);
+    } catch (err) { toast(err.message, true); }
+  }
+
+  async function selectWorkspace(dir, closeDialog = false) {
+    const clean = String(dir || '').trim();
+    if (!state.activeChatId) await createNewChat(clean);
     else {
       try {
         const res = await api(`/r/chats/${encodeURIComponent(state.activeChatId)}`, {
           method: 'PATCH',
-          body: { workspace: dir },
+          body: { workspace: clean },
         });
         state.activeChat = res.chat;
       } catch (err) {
@@ -889,10 +1099,16 @@
         return;
       }
     }
-    if (!state.recentFolders.includes(dir)) state.recentFolders = [dir, ...state.recentFolders].slice(0, 12);
-    renderWorkspaceBar();
-    if (closeDialog) $('folder-dialog').close();
-    toast(`Klasör: ${folderName(dir)}`);
+    if (clean && !state.recentFolders.includes(clean)) {
+      state.recentFolders = [clean, ...state.recentFolders].slice(0, 12);
+    }
+    const listed = state.chats.find(c => c.id === state.activeChatId);
+    if (listed) listed.workspace = clean;
+    renderTopbarAndStatus();
+    renderWorkspaceStrip();
+    renderChatList();
+    if (closeDialog && $('folder-dialog').open) $('folder-dialog').close();
+    toast(clean ? `Proje: ${folderName(clean)}` : 'Projesiz sohbet modu');
   }
 
   // --- Pairing Dialog (QR) ---
@@ -933,6 +1149,7 @@
     try {
       const { task } = await api(`/r/tasks/${encodeURIComponent(taskId)}`);
       const [label, cls] = STATE_LABELS[task.state] || [task.state || '?', 'badge'];
+      const eventLines = (task.events || []).map(formatEventLine).filter(Boolean);
       body.replaceChildren(
         el('div', { className: 'card-row' }, [
           el('strong', { text: task.reportedModel || task.modelId || task.routeId || 'Görev' }),
@@ -940,11 +1157,11 @@
         ]),
         el('div', { className: 'muted mono', text: `ID: ${task.id}` }),
         task.workspace ? el('div', { className: 'muted mono', text: `Klasör: ${task.workspace}` }) : null,
-        task.error ? el('div', { className: 'error-box', text: task.errorDetail || task.error }) : null,
+        task.error ? el('div', { className: 'error-box', text: cleanErrorMessage(task.errorDetail || task.error) }) : null,
         task.result ? el('div', {}, [el('div', { className: 'sub-label', text: 'Yanıt' }), renderMarkdown(task.result)]) : null,
-        task.events?.length ? el('div', {}, [
-          el('div', { className: 'sub-label', text: `Olaylar (${task.events.length})` }),
-          el('pre', { className: 'code-block', text: task.events.map(e => typeof e === 'string' ? e : JSON.stringify(e)).join('\n') }),
+        eventLines.length ? el('div', {}, [
+          el('div', { className: 'sub-label', text: `Adımlar & olaylar (${eventLines.length})` }),
+          el('pre', { className: 'code-block', text: eventLines.join('\n') }),
         ]) : null,
       );
     } catch (err) {
@@ -1001,7 +1218,8 @@
     try {
       const { chat } = await api(`/r/chats/${encodeURIComponent(chatId)}`);
       state.activeChat = chat;
-      renderWorkspaceBar();
+      renderTopbarAndStatus();
+      renderWorkspaceStrip();
       renderMessages(true);
       for (const msg of chat.messages || []) {
         if (msg.role === 'assistant' && msg.taskId && !TERMINAL_STATES.has(msg.state)) {
@@ -1013,17 +1231,17 @@
     }
   }
 
-  async function createNewChat(preferredWorkspace = '') {
-    const ws = preferredWorkspace || state.activeChat?.workspace || state.favoriteFolders[0] || state.recentFolders[0] || '';
+  async function createNewChat(preferredWorkspace = undefined) {
+    const ws = preferredWorkspace !== undefined ? preferredWorkspace : (state.activeChat?.workspace || '');
     try {
       const { chat } = await api('/r/chats', { method: 'POST', body: { workspace: ws } });
       state.chats = [{ id: chat.id, title: chat.title, workspace: chat.workspace, updatedAt: chat.updatedAt, messageCount: 0 }, ...state.chats];
       state.activeChatId = chat.id;
       state.activeChat = chat;
+      renderTopbarAndStatus();
       renderChatList();
-      renderWorkspaceBar();
+      renderWorkspaceStrip();
       renderMessages(false);
-      setDrawer(false);
       $('prompt-input').focus();
     } catch (err) {
       toast(err.message, true);
@@ -1041,62 +1259,72 @@
       toast('CLI Agent Pool servisi kapalı. Önce servisi başlatın.', true);
       return;
     }
-    if (!state.activeChatId) await createNewChat();
-    const workspace = state.activeChat?.workspace || state.favoriteFolders[0] || state.recentFolders[0] || '';
-    if (!workspace) {
-      toast('Önce bir çalışma klasörü seçin.', true);
-      $('folder-dialog').showModal();
-      void loadFolderBrowser('');
-      return;
-    }
+    if (!state.activeChatId) await createNewChat('');
+    const workspace = state.activeChat?.workspace || '';
+    const modelObj = findModelObj(state.selection.routeId, state.selection.modelId);
+    const modelKinds = Array.isArray(modelObj?.kinds) ? modelObj.kinds : ['text', 'read', 'write'];
+    const kind = workspace
+      ? (modelKinds.includes('write') ? 'write' : modelKinds.includes('read') ? 'read' : 'text')
+      : 'text';
+    const mode = workspace && kind === 'write' ? 'execute' : 'response';
+    const cleanEffort = state.selection.effort && state.selection.effort !== 'default' ? state.selection.effort : '';
 
     state.sending = true;
-    $('send-btn').disabled = true;
+    updateSendButton();
     try {
       const res = await api(`/r/chats/${encodeURIComponent(state.activeChatId)}/send`, {
         method: 'POST',
         body: {
           prompt: text,
           workspace,
-          kind: state.selection.kind,
-          mode: state.selection.kind === 'write' ? 'execute' : 'response',
+          kind,
+          mode,
           includeContext: state.selection.includeContext,
           ...(state.selection.group ? { group: state.selection.group } : {}),
           ...(state.selection.routeId ? { routeId: state.selection.routeId } : {}),
           ...(state.selection.modelId ? { modelId: state.selection.modelId } : {}),
-          ...(state.selection.effort ? { effort: state.selection.effort } : {}),
+          ...(cleanEffort ? { effort: cleanEffort } : {}),
         },
       });
       input.value = '';
       state.activeChat = res.chat;
+      renderTopbarAndStatus();
       renderMessages(true);
       if (res.task?.id) watchTask(res.chat.id, res.task.id);
       void refreshState(false);
     } catch (err) {
-      toast(err.message, true);
+      toast(cleanErrorMessage(err.message), true);
     } finally {
       state.sending = false;
-      $('send-btn').disabled = false;
+      updateSendButton();
     }
   }
 
-  // --- Voice Dictation (Web Speech API) ---
+  // --- Mobile-Fixed Voice Dictation (Web Speech API) ---
   function toggleVoiceDictation() {
+    const input = $('prompt-input');
+    if (!window.isSecureContext) {
+      input.focus();
+      toast('HTTP bağlantıda tarayıcı mikrofonu kısıtlıdır. Telefon klavyesindeki mikrofonu kullanın veya "tailscale serve --bg 43128" ile HTTPS açın.', true);
+      return;
+    }
     const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRec) {
-      toast('Bu tarayıcı sesli yazmayı desteklemiyor. Mobil klavye mikrofonunu kullanabilirsiniz.', true);
+      input.focus();
+      toast('Bu tarayıcı Web Speech desteklemiyor. Telefon klavyenizdeki mikrofon tuşuna dokunun.', true);
       return;
     }
     if (state.recording && state.recognition) {
       state.recognition.stop();
       return;
     }
+    const isMobile = /android|iphone|ipad|ipod/i.test(navigator.userAgent);
     const rec = new SpeechRec();
     rec.lang = 'tr-TR';
-    rec.continuous = true;
+    rec.continuous = !isMobile;
     rec.interimResults = true;
-    const input = $('prompt-input');
-    const baseText = input.value ? `${input.value.trimEnd()} ` : '';
+    const prefix = input.value ? `${input.value.trimEnd()} ` : '';
+    let finalized = '';
 
     rec.onstart = () => {
       state.recording = true;
@@ -1105,20 +1333,29 @@
       $('mic-status').hidden = false;
     };
     rec.onresult = e => {
-      let transcript = '';
-      for (let i = 0; i < e.results.length; i++) {
-        transcript += e.results[i][0].transcript;
+      let interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const piece = e.results[i][0]?.transcript || '';
+        if (e.results[i].isFinal) finalized += `${piece} `;
+        else interim += piece;
       }
-      input.value = `${baseText}${transcript}`;
+      input.value = `${prefix}${finalized}${interim}`.trimStart();
+      updateSendButton();
     };
     rec.onerror = e => {
-      toast(e.error === 'not-allowed' ? 'Mikrofon izni reddedildi (telefonda HTTPS veya klavye mikrofonu gerekebilir).' : `Ses hatası: ${e.error}`, true);
+      const msg = e.error === 'not-allowed' || e.error === 'service-not-allowed'
+        ? 'Mikrofon izni kapalı. Telefon klavye mikrofonunu kullanabilir veya tarayıcı izinlerini açabilirsiniz.'
+        : e.error === 'no-speech'
+          ? 'Ses algılanmadı.'
+          : `Ses hatası: ${e.error}`;
+      toast(msg, true);
     };
     rec.onend = () => {
       state.recording = false;
       state.recognition = null;
       $('mic-btn').classList.remove('recording');
       $('mic-status').hidden = true;
+      updateSendButton();
     };
     try { rec.start(); } catch (err) { toast(err.message, true); }
   }
@@ -1136,9 +1373,11 @@
       state.connections = data.connections || [];
       state.tasks = data.tasks || [];
       state.chats = data.chats || [];
+      state.sharedFolders = data.sharedFolders || [];
       state.favoriteFolders = data.favoriteFolders || [];
       state.recentFolders = data.recentFolders || [];
       state.workspaceRoots = data.workspaceRoots || [];
+      state.canPickNativeFolder = Boolean(data.canPickNativeFolder);
       state.devices = data.devices || [];
       state.tailscaleIp = data.tailscaleIp || null;
       state.port = data.port || 43128;
@@ -1146,14 +1385,14 @@
 
       renderTopbarAndStatus();
       renderChatList();
-      renderWorkspaceBar();
+      renderWorkspaceStrip();
       if (state.view === 'calls') renderCallsView();
       if (state.view === 'pools') renderPoolsView();
       if (state.view === 'settings') renderSettingsView();
 
       if (openInitialChat) {
         if (state.chats.length) await openChat(state.chats[0].id);
-        else await createNewChat();
+        else await createNewChat('');
       }
     } catch (err) {
       toast(err.message, true);
@@ -1162,22 +1401,30 @@
 
   // --- Wire Events ---
   function bindEvents() {
-    $('open-drawer-btn').addEventListener('click', () => setDrawer(true));
-    $('close-drawer-btn').addEventListener('click', () => setDrawer(false));
-    $('drawer-backdrop').addEventListener('click', () => setDrawer(false));
-
     document.querySelectorAll('[data-view]').forEach(btn => {
       btn.addEventListener('click', () => switchView(btn.dataset.view));
     });
 
-    $('new-chat-btn').addEventListener('click', () => void createNewChat());
+    $('topbar-settings-btn').addEventListener('click', () => switchView(state.view === 'settings' ? 'chat' : 'settings'));
+    $('quick-pool-btn').addEventListener('click', () => switchView('pools'));
+
+    $('new-chat-btn').addEventListener('click', () => {
+      switchView('chat');
+      void createNewChat();
+    });
+    $('mobile-new-chat-btn').addEventListener('click', () => {
+      switchView('chat');
+      void createNewChat();
+    });
     $('quick-new-chat-btn').addEventListener('click', () => {
       switchView('chat');
       void createNewChat();
     });
-    $('quick-pool-btn').addEventListener('click', () => switchView('settings'));
 
+    // Antigravity-style Model Picker
     $('model-pill-btn').addEventListener('click', () => {
+      state.pickerQuery = '';
+      $('model-search-input').value = '';
       renderModelPicker();
       $('model-dialog').showModal();
     });
@@ -1185,29 +1432,41 @@
       state.pickerQuery = e.target.value;
       renderModelPicker();
     });
+    $('picker-view-quotas-btn').addEventListener('click', () => {
+      $('model-dialog').close();
+      switchView('pools');
+    });
 
+    // Folder Picker & Shared Folders
     $('folder-picker-btn').addEventListener('click', () => {
+      state.folderDialogPurpose = 'workspace';
       $('folder-dialog').showModal();
       void loadFolderBrowser(state.activeChat?.workspace || '');
     });
+    $('clear-folder-btn').addEventListener('click', () => void selectWorkspace(''));
+    $('folder-no-project-btn').addEventListener('click', () => void selectWorkspace('', true));
+    $('folder-dialog-native-pick-btn').addEventListener('click', () => void pickNativeFolder(state.folderDialogPurpose === 'shared'));
+    $('folder-browse-all-btn').addEventListener('click', () => void loadFolderBrowser('', true));
     $('folder-up-btn').addEventListener('click', () => void loadFolderBrowser(state.folderBrowser.parent || ''));
-    $('folder-select-current-btn').addEventListener('click', () => void selectWorkspace(state.folderBrowser.current, true));
+    $('folder-select-current-btn').addEventListener('click', () => {
+      if (state.folderDialogPurpose === 'shared') void addSharedFolder(state.folderBrowser.current, true);
+      else void selectWorkspace(state.folderBrowser.current, true);
+    });
     $('folder-star-btn').addEventListener('click', async () => {
       if (!state.folderBrowser.current) return;
       try {
         const res = await api('/r/folders/favorite', { method: 'POST', body: { path: state.folderBrowser.current } });
         state.favoriteFolders = res.favoriteFolders || [];
         renderFolderBrowser();
-        renderWorkspaceBar();
+        renderWorkspaceStrip();
       } catch (err) { toast(err.message, true); }
     });
 
-    document.querySelectorAll('[data-kind]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        state.selection.kind = btn.dataset.kind;
-        saveSelection();
-        renderTopbarAndStatus();
-      });
+    $('pick-native-folder-btn').addEventListener('click', () => void pickNativeFolder(true));
+    $('browse-add-shared-btn').addEventListener('click', () => {
+      state.folderDialogPurpose = 'shared';
+      $('folder-dialog').showModal();
+      void loadFolderBrowser('', true);
     });
 
     $('context-toggle-btn').addEventListener('click', () => {
@@ -1219,18 +1478,21 @@
     document.querySelectorAll('.quick-prompt-chip').forEach(btn => {
       btn.addEventListener('click', () => {
         $('prompt-input').value = btn.dataset.prompt || '';
+        updateSendButton();
         $('prompt-input').focus();
       });
     });
 
-    // IME-safe Enter submit (ime-safe-enter-submit)
+    // IME-safe Enter submit (ime-safe-enter-submit) + live send button state
     const composerForm = $('composer-form');
+    const promptInput = $('prompt-input');
     composerForm.addEventListener('submit', sendPrompt);
-    $('prompt-input').addEventListener('keydown', event => {
+    promptInput.addEventListener('input', updateSendButton);
+    promptInput.addEventListener('keydown', event => {
       if (event.key !== 'Enter' || event.shiftKey) return;
       event.preventDefault();
       if (event.isComposing || event.keyCode === 229) return;
-      composerForm.requestSubmit();
+      if (!state.sending && promptInput.value.trim()) composerForm.requestSubmit();
     });
 
     $('mic-btn').addEventListener('click', toggleVoiceDictation);
@@ -1288,7 +1550,7 @@
       } catch (err) { toast(err.message, true); }
     });
 
-    $('open-pair-sidebar-btn').addEventListener('click', () => { setDrawer(false); void openPairingDialog(); });
+    $('open-pair-sidebar-btn').addEventListener('click', () => void openPairingDialog());
     $('open-pair-settings-btn').addEventListener('click', () => void openPairingDialog());
     $('regen-pair-btn').addEventListener('click', () => void openPairingDialog());
     $('copy-pair-url-btn').addEventListener('click', async () => {
@@ -1310,6 +1572,7 @@
   loadSelection();
   initDialogLightDismiss();
   bindEvents();
+  updateSendButton();
   void refreshState(true);
   setInterval(() => {
     if (!document.hidden) void refreshState(false);
