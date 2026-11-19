@@ -706,6 +706,15 @@ test('v2.23.0: pool membership add/remove, call delete/clear, document attachmen
     assert.equal(sendData.assistantMessage.email, 'dev@example.com');
     assert.equal(sendData.userMessage.attachments[0].name, 'spec.md');
 
+    // Adding a new shared folder outside existing workspaceRoots succeeds and syncs Pool workspaceRoots
+    const addRootRes = await fetch(`${base}/r/folders/shared`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'add', path: outside }),
+    });
+    assert.equal(addRootRes.status, 200);
+    assert.ok(savedConfig.workspaceRoots.includes(outside));
+
     // Safe workspace file read succeeds inside workspace and blocks outside traversal
     const fileOk = await fetch(`${base}/r/file?workspace=${encodeURIComponent(ws)}&file=report.md`, { headers: { Cookie: cookie } });
     assert.equal(fileOk.status, 200);

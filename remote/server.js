@@ -655,6 +655,7 @@ export function createRemoteServer({
           });
         }
         const cfg = pool.getConfig();
+        const mergedShared = [...new Set([...(cfg.workspaceRoots || []), ...remoteStore.state.sharedFolders])];
         return sendJson(res, 200, {
           remoteVersion: version,
           device,
@@ -665,7 +666,7 @@ export function createRemoteServer({
           connections,
           tasks,
           chats: remoteStore.listChats(),
-          sharedFolders: remoteStore.state.sharedFolders,
+          sharedFolders: mergedShared,
           favoriteFolders: remoteStore.state.favoriteFolders,
           recentFolders: remoteStore.state.recentFolders,
           workspaceRoots: cfg.workspaceRoots || [],
@@ -682,13 +683,12 @@ export function createRemoteServer({
         const cfg = pool.getConfig();
         const requested = url.searchParams.get('path') || '';
         const browseAll = url.searchParams.get('browseAll') === '1';
-        const effectiveRoots = cfg.workspaceRoots?.length
-          ? cfg.workspaceRoots
-          : (!browseAll && remoteStore.state.sharedFolders.length ? remoteStore.state.sharedFolders : []);
+        const mergedRoots = [...new Set([...(cfg.workspaceRoots || []), ...remoteStore.state.sharedFolders])];
+        const effectiveRoots = browseAll ? [] : mergedRoots;
         const result = listDirectoriesSafe(requested, effectiveRoots);
         return sendJson(res, 200, {
           ...result,
-          canBrowseAll: !cfg.workspaceRoots?.length && remoteStore.state.sharedFolders.length > 0 && !browseAll,
+          canBrowseAll: mergedRoots.length > 0 && !browseAll,
         });
       }
 
@@ -701,17 +701,46 @@ export function createRemoteServer({
         return sendJson(res, 200, { favoriteFolders });
       }
 
-      // POST /r/folders/shared — add or remove shared project roots
+      // POST /r/folders/shared — add or remove shared drives/project roots (syncs with Pool workspaceRoots)
       if (req.method === 'POST' && pathname === '/r/folders/shared') {
         const body = await readJsonBody(req);
         const action = body.action === 'remove' ? 'remove' : 'add';
         if (action === 'remove') {
-          return sendJson(res, 200, { sharedFolders: remoteStore.removeSharedFolder(body.path || '') });
+          const target = String(body.path || '').trim();
+          remoteStore.removeSharedFolder(target);
+          let nextRoots = [];
+          try {
+            if (typeof pool.manageGet === 'function' && typeof pool.manageSave === 'function') {
+              const view = await pool.manageGet();
+              const roots = (view.config.workspaceRoots || []).filter(r => r !== target);
+              if (roots.length !== (view.config.workspaceRoots || []).length) {
+                await pool.manageSave({ ...view.config, workspaceRoots: roots }, view.revision);
+              }
+              nextRoots = roots;
+            }
+          } catch { /* keep remote store updated */ }
+          return sendJson(res, 200, { sharedFolders: [...new Set([...nextRoots, ...remoteStore.state.sharedFolders])] });
         }
-        const cfg = pool.getConfig();
-        const checked = listDirectoriesSafe(body.path || '', cfg.workspaceRoots || []);
-        const sharedFolders = remoteStore.addSharedFolder(checked.current);
-        return sendJson(res, 200, { sharedFolders, added: checked.current });
+        // Owner explicitly adding a new drive or folder root: validate directory exists on disk without workspaceRoots block
+        const checked = listDirectoriesSafe(body.path || '', []);
+        if (!checked.current) throw new PoolError('INVALID_WORKSPACE', 'Geçerli bir disk veya klasör yolu girin (örn. D:\\ veya D:\\repositories).');
+        remoteStore.addSharedFolder(checked.current);
+        let nextRoots = [];
+        try {
+          if (typeof pool.manageGet === 'function' && typeof pool.manageSave === 'function') {
+            const view = await pool.manageGet();
+            const existing = Array.isArray(view.config.workspaceRoots) ? view.config.workspaceRoots : [];
+            const roots = existing.includes(checked.current) ? existing : [...existing, checked.current];
+            if (roots.length !== existing.length) {
+              await pool.manageSave({ ...view.config, workspaceRoots: roots }, view.revision);
+            }
+            nextRoots = roots;
+          }
+        } catch { /* keep remote store updated */ }
+        return sendJson(res, 200, {
+          sharedFolders: [...new Set([...nextRoots, ...remoteStore.state.sharedFolders])],
+          added: checked.current,
+        });
       }
 
       // POST /r/folders/pick — native Windows folder dialog (loopback desktop only)

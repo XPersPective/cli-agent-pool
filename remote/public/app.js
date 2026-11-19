@@ -1451,7 +1451,7 @@
         el('button', {
           type: 'button',
           className: 'chat-item-main',
-          onClick: () => void loadFolderBrowser(entry.path),
+          onClick: () => void loadFolderBrowser(entry.path, isSharedMode || !fb.restricted),
         }, [
           el('div', { className: 'picker-item-title', text: `${entry.isGit ? '📦 ' : '📁 '}${entry.name}` }),
           el('div', { className: 'picker-item-sub mono', text: entry.path }),
@@ -1890,7 +1890,7 @@
     $('folder-no-project-btn').addEventListener('click', () => void selectWorkspace('', true));
     $('folder-dialog-native-pick-btn').addEventListener('click', () => void pickNativeFolder(state.folderDialogPurpose === 'shared'));
     $('folder-browse-all-btn').addEventListener('click', () => void loadFolderBrowser('', true));
-    $('folder-up-btn').addEventListener('click', () => void loadFolderBrowser(state.folderBrowser.parent || ''));
+    $('folder-up-btn').addEventListener('click', () => void loadFolderBrowser(state.folderBrowser.parent || '', state.folderDialogPurpose === 'shared' || !state.folderBrowser.restricted));
     $('folder-select-current-btn').addEventListener('click', () => {
       if (state.folderDialogPurpose === 'shared') void addSharedFolder(state.folderBrowser.current, true);
       else void selectWorkspace(state.folderBrowser.current, true);
