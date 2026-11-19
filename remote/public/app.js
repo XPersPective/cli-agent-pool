@@ -3,6 +3,7 @@
 
   const THEME_KEY = 'remote-color-scheme';
   const SELECTION_KEY = 'remote-selection';
+  const COLLAPSED_POOLS_KEY = 'remote-collapsed-pools';
   const TERMINAL_STATES = new Set(['succeeded', 'failed', 'timed_out', 'cancelled', 'needs_review']);
 
   const STATE_LABELS = {
@@ -56,9 +57,15 @@
       efforts: [],
       includeContext: true,
     },
+    collapsedPools: new Set(),
+    poolSubtab: 'pools', // 'pools' | 'catalog' | 'quotas'
+    poolsSearch: '',
+    poolsToolFilter: 'all',
     pickerQuery: '',
     folderBrowser: { current: '', parent: '', entries: [], restricted: false, canBrowseAll: false },
     folderDialogPurpose: 'workspace', // 'workspace' | 'shared'
+    pendingAttachments: [], // [{ name, size, content }]
+    activeDoc: { name: '', content: '' },
     sending: false,
     streams: new Map(), // taskId -> EventSource
     recognition: null,
@@ -110,6 +117,36 @@
       throw err;
     }
     return data;
+  }
+
+  function formatBytes(n) {
+    const size = Number(n || 0);
+    if (size < 1024) return `${size} B`;
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+
+  function folderName(p) {
+    if (!p || typeof p !== 'string' || p === '[object Object]') return 'Projesiz';
+    const trimmed = p.trim();
+    if (/^[a-zA-Z]:[\\/]?$/.test(trimmed)) return `${trimmed[0].toUpperCase()}:\\`;
+    const clean = trimmed.replace(/[\\/]+$/, '');
+    const parts = clean.split(/[\\/]/).filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : clean;
+  }
+
+  function formatTime(iso) {
+    if (!iso) return '';
+    try {
+      return new Date(iso).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+    } catch { return ''; }
+  }
+
+  function subscriptionText(item) {
+    if (!item) return '';
+    if (item.email) return item.email;
+    if (item.account && item.account !== 'default') return item.account;
+    if (item.routeId) return item.routeId;
+    return '';
   }
 
   // --- Clean Error & Event Formatters ---
@@ -197,8 +234,8 @@
     }
   }
 
-  // --- Selection Persistence ---
-  function loadSelection() {
+  // --- Persistence (Selection + Collapsed Pool Categories) ---
+  function loadPreferences() {
     try {
       const saved = JSON.parse(localStorage.getItem(SELECTION_KEY) || 'null');
       if (saved && typeof saved === 'object') {
@@ -213,24 +250,20 @@
         });
       }
     } catch { /* ignore */ }
+    try {
+      const collapsed = JSON.parse(localStorage.getItem(COLLAPSED_POOLS_KEY) || '[]');
+      if (Array.isArray(collapsed)) state.collapsedPools = new Set(collapsed.filter(x => typeof x === 'string'));
+    } catch { /* ignore */ }
   }
 
   function saveSelection() {
     try { localStorage.setItem(SELECTION_KEY, JSON.stringify(state.selection)); } catch { /* ignore */ }
   }
 
-  function folderName(p) {
-    if (!p) return 'Projesiz';
-    const clean = String(p).replace(/[\\/]+$/, '');
-    const parts = clean.split(/[\\/]/).filter(Boolean);
-    return parts.length ? parts[parts.length - 1] : clean;
-  }
-
-  function formatTime(iso) {
-    if (!iso) return '';
-    try {
-      return new Date(iso).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
-    } catch { return ''; }
+  function togglePoolCollapsed(poolId) {
+    if (state.collapsedPools.has(poolId)) state.collapsedPools.delete(poolId);
+    else state.collapsedPools.add(poolId);
+    try { localStorage.setItem(COLLAPSED_POOLS_KEY, JSON.stringify([...state.collapsedPools])); } catch { /* ignore */ }
   }
 
   function renderInlineQuotaTags(model) {
@@ -260,15 +293,116 @@
     return state.models.find(x => x.modelId === modelId && (!routeId || x.routeId === routeId)) || null;
   }
 
-  // --- Send Button Auto-Disable State ---
+  function findRouteMeta(routeId) {
+    if (!routeId) return null;
+    const q = (state.quotas || []).find(x => x.routeId === routeId);
+    const c = (state.connections || []).find(x => x.id === routeId);
+    if (!q && !c) return null;
+    return {
+      toolLabel: q?.toolLabel || c?.adapter || q?.adapter || '',
+      email: q?.email || c?.email || '',
+      account: c?.account || q?.account || '',
+      billing: c?.billing || q?.billing || '',
+    };
+  }
+
   function updateSendButton() {
     const btn = $('send-btn');
     const input = $('prompt-input');
     if (!btn || !input) return;
-    const hasText = input.value.trim().length > 0;
-    btn.disabled = state.sending || !hasText;
+    const hasContent = input.value.trim().length > 0 || state.pendingAttachments.length > 0;
+    btn.disabled = state.sending || !hasContent;
     btn.classList.toggle('sending', state.sending);
     btn.setAttribute('aria-busy', String(state.sending));
+  }
+
+  // --- Document Viewer & Downloader ---
+  function downloadTextFile(filename, content) {
+    const blob = new Blob([String(content || '')], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename || 'cikti.md';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function openDocumentViewer(name, content) {
+    state.activeDoc = { name: name || 'dokuman.md', content: String(content || '') };
+    $('doc-dialog-title').textContent = state.activeDoc.name;
+    const body = $('doc-dialog-body');
+    const isMd = /\.(?:md|markdown)$/i.test(state.activeDoc.name);
+    body.replaceChildren(isMd
+      ? renderMarkdown(state.activeDoc.content)
+      : el('pre', { className: 'code-block', text: state.activeDoc.content }));
+    const dlg = $('doc-dialog');
+    if (!dlg.open) dlg.showModal();
+  }
+
+  async function openWorkspaceFile(workspace, filePath) {
+    if (!workspace || !filePath) return;
+    try {
+      const res = await api(`/r/file?workspace=${encodeURIComponent(workspace)}&file=${encodeURIComponent(filePath)}`);
+      openDocumentViewer(res.name || filePath, res.content || '');
+    } catch (err) { toast(err.message, true); }
+  }
+
+  // --- Document Attachments in Composer ---
+  function renderAttachmentsStrip() {
+    const strip = $('attachments-strip');
+    strip.replaceChildren();
+    strip.hidden = !state.pendingAttachments.length;
+    state.pendingAttachments.forEach((att, idx) => {
+      strip.appendChild(el('div', { className: 'att-chip' }, [
+        el('button', {
+          type: 'button',
+          className: 'att-chip-name',
+          style: 'border:0;background:transparent;padding:0;text-align:left',
+          title: `${att.name} (${formatBytes(att.size)}) — Önizle`,
+          text: `📄 ${att.name} (${formatBytes(att.size)})`,
+          onClick: () => openDocumentViewer(att.name, att.content),
+        }),
+        el('button', {
+          type: 'button',
+          className: 'att-chip-rm',
+          'aria-label': 'Dokümanı kaldır',
+          text: '✕',
+          onClick: () => {
+            state.pendingAttachments.splice(idx, 1);
+            renderAttachmentsStrip();
+            updateSendButton();
+          },
+        }),
+      ]));
+    });
+    updateSendButton();
+  }
+
+  async function addFilesAsAttachments(fileList) {
+    const files = Array.from(fileList || []);
+    for (const file of files) {
+      if (state.pendingAttachments.length >= 5) {
+        toast('Tek mesajda en fazla 5 doküman eklenebilir.', true);
+        break;
+      }
+      if (file.size > 204_800) {
+        toast(`"${file.name}" çok büyük (en fazla 200 KB).`, true);
+        continue;
+      }
+      try {
+        const text = await file.text();
+        if (text.includes('\u0000')) {
+          toast(`"${file.name}" metin tabanlı bir doküman değil.`, true);
+          continue;
+        }
+        state.pendingAttachments.push({ name: file.name, size: file.size, content: text });
+      } catch {
+        toast(`"${file.name}" okunamadı.`, true);
+      }
+    }
+    renderAttachmentsStrip();
   }
 
   // --- Safe Markdown DOM Renderer (zero innerHTML) ---
@@ -298,6 +432,7 @@
         const firstNl = inner.indexOf('\n');
         const lang = firstNl >= 0 ? inner.slice(0, firstNl).trim() : '';
         const code = firstNl >= 0 ? inner.slice(firstNl + 1) : inner;
+        const ext = lang && /^[a-z0-9]+$/i.test(lang) ? lang : 'txt';
         const copyBtn = el('button', {
           type: 'button',
           className: 'code-copy-btn',
@@ -310,10 +445,16 @@
             } catch { toast('Kopyalanamadı', true); }
           },
         });
+        const dlBtn = el('button', {
+          type: 'button',
+          className: 'code-copy-btn',
+          text: '⬇ İndir',
+          onClick: () => downloadTextFile(`cikti.${ext}`, code),
+        });
         root.appendChild(el('div', { className: 'code-card' }, [
           el('div', { className: 'code-card-head' }, [
             el('span', { text: lang || 'kod' }),
-            copyBtn,
+            el('span', { className: 'inline-btn-group' }, [copyBtn, dlBtn]),
           ]),
           el('pre', {}, el('code', { text: code })),
         ]));
@@ -369,6 +510,9 @@
     state.view = view;
     document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === `view-${view}`));
     document.querySelectorAll('[data-view]').forEach(btn => btn.classList.toggle('active', btn.dataset.view === view));
+    const isChat = view === 'chat';
+    $('topbar-back-btn').hidden = isChat;
+    $('topbar-brand-icon').hidden = !isChat;
     if (view === 'chats') renderChatGroups($('mobile-chat-list'), true);
     if (view === 'calls' || view === 'pools' || view === 'settings') void refreshState(false);
   }
@@ -389,7 +533,6 @@
     navBadge.textContent = String(active);
     $('bnav-active-badge').hidden = active <= 0;
 
-    // Topbar chat title & project subtitle
     const ws = state.activeChat?.workspace || '';
     $('topbar-chat-title').textContent = state.activeChat?.title || 'Yeni sohbet';
     $('topbar-chat-sub').textContent = ws ? `📁 ${folderName(ws)}` : '💬 Projesiz sohbet';
@@ -407,6 +550,7 @@
       title = found?.name || sel.modelName || sel.modelId;
       const parts = [];
       if (sel.effort && sel.effort !== 'default') parts.push(sel.effort);
+      if (found?.toolLabel) parts.push(found.toolLabel);
       if (found?.quotaWindows?.length) {
         parts.push(found.quotaWindows.slice(0, 2).map(w => `${w.label} %${w.remainingPercent}`).join(' '));
       } else if (found?.quota?.remainingPercent != null) {
@@ -440,7 +584,7 @@
     const chips = $('folder-chips');
     chips.replaceChildren();
     const combined = [...new Set([...state.sharedFolders, ...state.favoriteFolders, ...state.recentFolders])]
-      .filter(dir => dir && dir !== ws)
+      .filter(dir => typeof dir === 'string' && dir && dir !== '[object Object]' && dir !== ws)
       .slice(0, 5);
     for (const dir of combined) {
       chips.appendChild(el('button', {
@@ -453,26 +597,23 @@
     }
   }
 
-  // --- Grouped Chats by Project Folder (Sidebar + Mobile Chats View) ---
+  // --- Grouped Chats by Project Folder ---
   function renderChatGroups(container, isMobileView = false) {
     if (!container) return;
     container.replaceChildren();
 
     const groups = new Map();
-    groups.set('', []); // Projesiz sohbetler always first
+    groups.set('', []);
     for (const dir of [...state.sharedFolders, ...state.favoriteFolders]) {
-      if (dir && !groups.has(dir)) groups.set(dir, []);
+      if (typeof dir === 'string' && dir && dir !== '[object Object]' && !groups.has(dir)) groups.set(dir, []);
     }
     for (const chat of state.chats) {
-      const key = chat.workspace || '';
+      const key = (typeof chat.workspace === 'string' && chat.workspace !== '[object Object]') ? chat.workspace : '';
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(chat);
     }
 
     for (const [folderPath, chats] of groups.entries()) {
-      if (!chats.length && folderPath === '' && groups.size > 1) {
-        // Keep Projesiz header visible so user can 1-tap start a projectless chat
-      }
       const groupWrap = el('div', { className: isMobileView ? 'panel-card chat-folder-group' : 'chat-folder-group' });
       const head = el('div', { className: 'chat-folder-head' }, [
         el('div', { className: 'chat-folder-name', title: folderPath || 'Proje klasörü olmadan sohbetler' }, [
@@ -541,9 +682,13 @@
     if (state.view === 'chats') renderChatGroups($('mobile-chat-list'), true);
   }
 
+  // --- Messages Rendering (with Tool + Subscription + Document Preview/Download) ---
   function renderAssistantBubble(msg) {
     const [stateLabel, stateCls] = STATE_LABELS[msg.state] || [msg.state || 'Bekliyor', 'badge'];
     const isActive = msg.taskId && !TERMINAL_STATES.has(msg.state);
+    const liveMeta = findRouteMeta(msg.routeId);
+    const toolName = msg.toolLabel || liveMeta?.toolLabel || '';
+    const subName = subscriptionText({ email: msg.email || liveMeta?.email, account: msg.account || liveMeta?.account, routeId: msg.routeId });
 
     const statusBadge = el('span', { className: `badge ${stateCls}` }, [
       isActive ? el('span', { className: 'pulse-dot' }) : null,
@@ -578,17 +723,17 @@
 
     const bodyNodes = [
       el('div', { className: 'msg-head' }, [
-        el('div', { className: 'msg-model-tag' }, [
-          el('span', { text: modelText }),
-          msg.kind === 'text' ? el('span', { className: 'badge', text: 'Sohbet' }) : el('span', { className: 'badge', text: 'Proje' }),
+        el('div', { className: 'msg-model-stack' }, [
+          el('span', { className: 'msg-model-tag', text: modelText }),
+          toolName ? el('span', { className: 'tool-pill', text: toolName }) : null,
+          subName ? el('span', { className: 'sub-pill', title: subName, text: subName }) : null,
         ]),
         headRight,
       ]),
     ];
 
     if (msg.error) {
-      const cleanErr = cleanErrorMessage(msg.errorDetail || msg.error);
-      bodyNodes.push(el('div', { className: 'error-box', text: cleanErr }));
+      bodyNodes.push(el('div', { className: 'error-box', text: cleanErrorMessage(msg.errorDetail || msg.error) }));
     }
 
     const outputText = msg.result || msg.text || '';
@@ -598,15 +743,26 @@
       bodyNodes.push(el('p', { className: 'muted', text: 'Ajan çalışıyor, adımlar canlı olarak izleniyor…' }));
     }
 
+    const msgWorkspace = msg.workspace || state.activeChat?.workspace || '';
     if (msg.report && (msg.report.summary || msg.report.files?.length)) {
       const reportChildren = [];
       if (msg.report.summary && msg.report.summary !== outputText) {
         reportChildren.push(el('div', { text: msg.report.summary }));
       }
       if (Array.isArray(msg.report.files) && msg.report.files.length) {
-        reportChildren.push(el('div', { className: 'report-files' }, msg.report.files.slice(0, 16).map(f =>
-          el('span', { className: 'file-pill', text: `${f.status ? `${f.status} ` : ''}${f.path || f}` }),
-        )));
+        reportChildren.push(el('div', { className: 'report-files' }, msg.report.files.slice(0, 20).map(f => {
+          const fPath = typeof f === 'string' ? f : (f.path || '');
+          const label = `${f.status ? `${f.status} ` : ''}📄 ${fPath}`;
+          return msgWorkspace && fPath
+            ? el('button', {
+                type: 'button',
+                className: 'file-pill-btn',
+                title: 'Dosyayı önizle / indir',
+                text: label,
+                onClick: () => void openWorkspaceFile(msgWorkspace, fPath),
+              })
+            : el('span', { className: 'file-pill', text: label });
+        })));
       }
       if (reportChildren.length) bodyNodes.push(el('div', { className: 'report-box' }, reportChildren));
     }
@@ -621,9 +777,35 @@
       }
     }
 
+    if (outputText) {
+      bodyNodes.push(el('div', { className: 'msg-doc-actions' }, [
+        el('button', {
+          type: 'button',
+          className: 'mini-action-btn',
+          text: '📋 Kopyala',
+          onClick: async () => {
+            try { await navigator.clipboard.writeText(outputText); toast('Yanıt kopyalandı.'); }
+            catch { toast('Kopyalanamadı.', true); }
+          },
+        }),
+        el('button', {
+          type: 'button',
+          className: 'mini-action-btn',
+          text: '👁️ Doküman Gör',
+          onClick: () => openDocumentViewer(`${(msg.reportedModel || msg.modelId || 'yanit').replace(/[^a-z0-9._-]/gi, '_')}.md`, outputText),
+        }),
+        el('button', {
+          type: 'button',
+          className: 'mini-action-btn',
+          text: '⬇ .md İndir',
+          onClick: () => downloadTextFile(`${(msg.reportedModel || msg.modelId || 'yanit').replace(/[^a-z0-9._-]/gi, '_')}.md`, outputText),
+        }),
+      ]));
+    }
+
     return el('article', { className: 'msg msg-assistant' }, [
       el('div', { className: 'msg-bubble' }, bodyNodes),
-      el('div', { className: 'msg-meta', text: [msg.routeId, formatTime(msg.at)].filter(Boolean).join(' · ') }),
+      el('div', { className: 'msg-meta', text: [toolName, subName, formatTime(msg.at)].filter(Boolean).join(' · ') }),
     ]);
   }
 
@@ -635,8 +817,20 @@
 
     for (const msg of messages) {
       if (msg.role === 'user') {
+        const bubbleChildren = [];
+        if (msg.text) bubbleChildren.push(el('div', { text: msg.text }));
+        if (Array.isArray(msg.attachments) && msg.attachments.length) {
+          bubbleChildren.push(el('div', { className: 'report-files', style: 'margin-top:6px' }, msg.attachments.map(att =>
+            el('button', {
+              type: 'button',
+              className: 'file-pill-btn',
+              text: `📄 ${att.name} (${formatBytes(att.size)})`,
+              onClick: () => openDocumentViewer(att.name, att.content || '(Önizleme yok)'),
+            }),
+          )));
+        }
         list.appendChild(el('article', { className: 'msg msg-user' }, [
-          el('div', { className: 'msg-bubble', text: msg.text || '' }),
+          el('div', { className: 'msg-bubble' }, bubbleChildren),
           el('div', { className: 'msg-meta', text: [
             msg.workspace ? `📁 ${folderName(msg.workspace)}` : '💬 Sohbet',
             msg.includeContext === false ? 'Sıfır bağlam' : '',
@@ -654,6 +848,7 @@
     }
   }
 
+  // --- Calls View (with Clear History + Delete Individual Call + Tool/Subscription Pills) ---
   function renderCallsView() {
     const container = $('calls-list');
     container.replaceChildren();
@@ -666,16 +861,21 @@
     for (const task of state.tasks) {
       const [label, cls] = STATE_LABELS[task.state] || [task.state || '?', 'badge'];
       const active = !TERMINAL_STATES.has(task.state);
+      const subName = subscriptionText(task);
       container.appendChild(el('div', { className: 'panel-card' }, [
         el('div', { className: 'card-row' }, [
-          el('div', {}, [
-            el('h3', { text: task.reportedModel || task.modelId || task.routeId || 'Görev' }),
+          el('div', { style: 'min-width:0' }, [
+            el('div', { className: 'msg-model-stack' }, [
+              el('strong', { text: task.reportedModel || task.modelId || task.routeId || 'Görev' }),
+              task.toolLabel ? el('span', { className: 'tool-pill', text: task.toolLabel }) : null,
+              subName ? el('span', { className: 'sub-pill', text: subName }) : null,
+            ]),
             el('p', { className: 'muted', text: `${task.workspace ? folderName(task.workspace) : 'Sohbet'}${task.clientLabel ? ` · ${task.clientLabel}` : ''}` }),
           ]),
           el('span', { className: `badge ${cls}` }, [active ? el('span', { className: 'pulse-dot' }) : null, label]),
         ]),
-        task.result ? el('p', { className: 'muted', text: String(task.result).slice(0, 180) }) : null,
-        task.error ? el('div', { className: 'error-box', text: cleanErrorMessage(task.errorDetail || task.error) }) : null,
+        task.result ? el('p', { className: 'muted', style: 'margin-top:6px', text: String(task.result).slice(0, 180) }) : null,
+        task.error ? el('div', { className: 'error-box', style: 'margin-top:6px', text: cleanErrorMessage(task.errorDetail || task.error) }) : null,
         el('div', { className: 'btn-row' }, [
           el('button', { type: 'button', className: 'btn btn-secondary btn-sm', text: 'İncele', onClick: () => void openTaskInspector(task.id) }),
           active ? el('button', {
@@ -689,93 +889,262 @@
                 await refreshState(false);
               } catch (err) { toast(err.message, true); }
             },
-          }) : null,
+          }) : el('button', {
+            type: 'button',
+            className: 'btn btn-ghost btn-sm',
+            text: 'Sil',
+            onClick: async () => {
+              try {
+                await api(`/r/tasks/${encodeURIComponent(task.id)}`, { method: 'DELETE' });
+                toast('Çağrı kaydı silindi.');
+                await refreshState(false);
+              } catch (err) { toast(err.message, true); }
+            },
+          }),
         ]),
       ]));
     }
   }
 
-  function renderPoolsView() {
-    const qStrip = $('quotas-summary');
-    qStrip.replaceChildren();
-    for (const q of state.quotas || []) {
+  // --- Shared Quotas Card Builder (Used in BOTH #quotas-dialog overlay AND #view-pools) ---
+  function renderQuotaCardsInto(container) {
+    container.replaceChildren();
+    if (!state.quotas.length) {
+      container.appendChild(el('p', { className: 'muted', text: 'Kota kaydı yok veya CLI Agent Pool servisi kapalı.' }));
+      return;
+    }
+    for (const q of state.quotas) {
       const pct = Number.isFinite(q.remainingPercent) ? Math.round(q.remainingPercent) : null;
       const fillCls = pct == null ? '' : pct <= 10 ? ' danger' : pct <= 30 ? ' warn' : '';
       const winsRow = Array.isArray(q.windows) && q.windows.length
-        ? el('div', { className: 'quota-win-row' }, q.windows.slice(0, 4).map(w => {
+        ? el('div', { className: 'quota-win-row' }, q.windows.slice(0, 6).map(w => {
             const wp = Math.round(w.remainingPercent);
             const cls = wp <= 10 ? 'q-tag danger' : wp <= 30 ? 'q-tag warn' : 'q-tag';
             return el('span', { className: cls }, [`${w.name.split(':').pop() || w.name} `, el('strong', { text: `%${wp}` })]);
           }))
         : null;
-      qStrip.appendChild(el('div', { className: 'quota-card' }, [
+      container.appendChild(el('div', { className: 'quota-card' }, [
         el('div', { className: 'card-row' }, [
-          el('strong', { text: q.routeId || q.adapter || 'Bağlantı' }),
+          el('div', { className: 'msg-model-stack' }, [
+            el('strong', { text: q.toolLabel || q.adapter || q.routeId || 'Bağlantı' }),
+            q.email ? el('span', { className: 'sub-pill', text: q.email }) : el('span', { className: 'sub-pill', text: q.routeId }),
+          ]),
           pct != null ? el('span', { className: 'badge', text: `%${pct}` }) : el('span', { className: 'badge', text: q.status || '?' }),
         ]),
-        el('div', { className: 'muted', text: `${q.adapter || ''} · ${q.billing || ''} · ${q.models || 0} model` }),
+        el('div', { className: 'muted', text: `${q.billing || ''} · ${q.models || 0} model` }),
         pct != null ? el('div', { className: 'quota-bar' }, el('div', { className: `quota-fill${fillCls}`, style: `width:${Math.max(0, Math.min(100, pct))}%` })) : null,
         winsRow,
       ]));
     }
+  }
 
+  function openQuotasOverlay() {
+    renderQuotaCardsInto($('quotas-dialog-body'));
+    const dlg = $('quotas-dialog');
+    if (!dlg.open) dlg.showModal();
+  }
+
+  // --- Full CLI Agent Pool Management Inside #view-pools (Havuzlarım | Model Kataloğu | Kotalar) ---
+  async function mutatePoolMembership(routeId, modelId, group, action) {
+    try {
+      await api('/r/pool/membership', { method: 'POST', body: { routeId, modelId, group, action } });
+      toast(action === 'add' ? `Model "${group}" havuzuna eklendi.` : `Model "${group}" havuzundan çıkarıldı.`);
+      await refreshState(false);
+    } catch (err) { toast(err.message, true); }
+  }
+
+  function renderPoolsView() {
+    document.querySelectorAll('[data-pool-subtab]').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.poolSubtab === state.poolSubtab);
+    });
+
+    // Tool filter chips
+    const toolBar = $('pools-tool-chips');
+    toolBar.replaceChildren();
+    const tools = [...new Set(state.models.map(m => m.toolLabel || m.adapter).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'tr'));
+    if (state.poolSubtab !== 'quotas' && tools.length) {
+      toolBar.hidden = false;
+      for (const t of ['all', ...tools]) {
+        toolBar.appendChild(el('button', {
+          type: 'button',
+          className: `chip-btn${state.poolsToolFilter === t ? ' active' : ''}`,
+          text: t === 'all' ? 'Tümü' : t,
+          onClick: () => {
+            state.poolsToolFilter = t;
+            renderPoolsView();
+          },
+        }));
+      }
+    } else {
+      toolBar.hidden = true;
+    }
+
+    const qStrip = $('quotas-summary');
     const grid = $('pools-grid');
     grid.replaceChildren();
-    if (!state.pools.length) {
-      grid.appendChild(el('div', { className: 'panel-card' }, el('p', { className: 'muted', text: 'Havuz bulunamadı veya servis kapalı.' })));
+
+    if (state.poolSubtab === 'quotas') {
+      qStrip.hidden = false;
+      renderQuotaCardsInto(qStrip);
+      return;
+    }
+    qStrip.hidden = true;
+
+    const q = state.poolsSearch.trim().toLowerCase();
+    const matchesFilter = m => {
+      if (state.poolsToolFilter !== 'all' && (m.toolLabel || m.adapter) !== state.poolsToolFilter) return false;
+      if (!q) return true;
+      return [m.name, m.modelId, m.routeId, m.toolLabel, m.email, m.account, m.billing].some(s => String(s || '').toLowerCase().includes(q));
+    };
+
+    if (state.poolSubtab === 'pools') {
+      if (!state.pools.length) {
+        grid.appendChild(el('div', { className: 'panel-card' }, el('p', { className: 'muted', text: 'Havuz bulunamadı veya servis kapalı.' })));
+        return;
+      }
+      for (const pool of state.pools) {
+        const models = (pool.models || []).filter(matchesFilter);
+        if (q && !models.length) continue;
+        const isCollapsed = !q && state.collapsedPools.has(pool.id);
+
+        const card = el('div', { className: 'panel-card' }, [
+          el('div', { className: 'card-row' }, [
+            el('button', {
+              type: 'button',
+              className: 'picker-cat-toggle',
+              'aria-expanded': String(!isCollapsed),
+              onClick: () => { togglePoolCollapsed(pool.id); renderPoolsView(); },
+            }, [
+              el('span', { className: 'picker-cat-chevron', text: isCollapsed ? '▸' : '▾' }),
+              el('span', { text: `${pool.label || pool.id} (${models.length})` }),
+            ]),
+            el('button', {
+              type: 'button',
+              className: 'btn btn-secondary btn-sm',
+              text: 'Havuzu Seç',
+              onClick: () => {
+                choosePoolAuto(pool.id);
+                switchView('chat');
+                toast(`${pool.label || pool.id} havuzu seçildi.`);
+              },
+            }),
+          ]),
+        ]);
+
+        if (!isCollapsed) {
+          const listWrap = el('div', { className: 'picker-list', style: 'margin-top:8px' });
+          if (!models.length) {
+            listWrap.appendChild(el('p', { className: 'muted', text: 'Bu havuzda eşleşen model yok.' }));
+          } else {
+            for (const m of models) {
+              const selected = state.selection.modelId === m.modelId && state.selection.routeId === m.routeId;
+              listWrap.appendChild(el('div', { className: `pool-mgmt-row${selected ? ' selected' : ''}` }, [
+                el('div', { className: 'model-row-text', style: 'flex:1;min-width:160px' }, [
+                  el('div', { className: 'msg-model-stack' }, [
+                    el('strong', { className: 'model-row-name', text: m.name || m.modelId }),
+                    m.toolLabel ? el('span', { className: 'tool-pill', text: m.toolLabel }) : null,
+                    subscriptionText(m) ? el('span', { className: 'sub-pill', text: subscriptionText(m) }) : null,
+                  ]),
+                  m.efforts?.length ? el('div', { className: 'model-row-sub', text: `efor: ${m.efforts.join(' · ')}` }) : null,
+                ]),
+                el('div', { className: 'pool-mgmt-actions' }, [
+                  renderInlineQuotaTags(m),
+                  el('button', {
+                    type: 'button',
+                    className: 'mini-action-btn',
+                    text: selected ? '✓ Seçili' : 'Seç',
+                    onClick: () => {
+                      chooseModel({ ...m, group: pool.id });
+                      switchView('chat');
+                      toast(`${m.name || m.modelId} seçildi.`);
+                    },
+                  }),
+                  el('button', {
+                    type: 'button',
+                    className: 'mini-action-btn',
+                    style: 'color:var(--danger)',
+                    text: 'Çıkar',
+                    onClick: () => void mutatePoolMembership(m.routeId, m.modelId, pool.id, 'remove'),
+                  }),
+                ]),
+              ]));
+            }
+          }
+          card.appendChild(listWrap);
+        }
+        grid.appendChild(card);
+      }
       return;
     }
 
-    for (const pool of state.pools) {
-      const models = pool.models || [];
-      const items = models.map(m => el('button', {
-        type: 'button',
-        className: `model-row${state.selection.modelId === m.modelId && state.selection.routeId === m.routeId ? ' selected' : ''}`,
-        onClick: () => {
-          chooseModel({ ...m, group: pool.id });
-          switchView('chat');
-          toast(`${m.name || m.modelId} seçildi.`);
-        },
-      }, [
-        el('div', { className: 'model-row-left' }, [
-          el('span', { className: 'model-check', text: (state.selection.modelId === m.modelId && state.selection.routeId === m.routeId) ? '✓' : '' }),
-          el('div', { className: 'model-row-text' }, [
-            el('div', { className: 'model-row-name', text: m.name || m.modelId }),
-            el('div', { className: 'model-row-sub', text: [m.routeId, m.effort ? `efor: ${m.effort}` : ''].filter(Boolean).join(' · ') }),
-          ]),
-        ]),
-        renderInlineQuotaTags(m),
-      ]));
+    // Catalog sub-tab: browse ALL models and add to any pool category
+    const catModels = state.models.filter(matchesFilter);
+    if (!catModels.length) {
+      grid.appendChild(el('div', { className: 'panel-card' }, el('p', { className: 'muted', text: 'Katalogda eşleşen model bulunamadı.' })));
+      return;
+    }
+    const catCard = el('div', { className: 'panel-card' }, [
+      el('div', { className: 'card-row' }, [
+        el('h3', { text: `Model Kataloğu (${catModels.length})` }),
+      ]),
+    ]);
+    const listWrap = el('div', { className: 'picker-list', style: 'margin-top:8px' });
+    for (const m of catModels) {
+      const selected = state.selection.modelId === m.modelId && state.selection.routeId === m.routeId;
+      const memberGroups = new Set(Array.isArray(m.categories) ? m.categories : (m.category ? [m.category] : []));
+      const addablePools = state.pools.filter(p => !memberGroups.has(p.id));
+      const addSelect = addablePools.length
+        ? el('select', {
+            className: 'pool-add-select',
+            'aria-label': `${m.name || m.modelId} havuza ekle`,
+            onChange: e => {
+              const targetGroup = e.target.value;
+              e.target.value = '';
+              if (targetGroup) void mutatePoolMembership(m.routeId, m.modelId, targetGroup, 'add');
+            },
+          }, [
+            el('option', { value: '', text: '+ Havuza ekle' }),
+            ...addablePools.map(p => el('option', { value: p.id, text: p.label || p.id })),
+          ])
+        : null;
 
-      grid.appendChild(el('div', { className: 'panel-card' }, [
-        el('div', { className: 'card-row' }, [
-          el('div', {}, [
-            el('h3', { text: pool.label || pool.id }),
-            el('p', { className: 'muted', text: `${models.length} model (A→Z)` }),
+      listWrap.appendChild(el('div', { className: `pool-mgmt-row${selected ? ' selected' : ''}` }, [
+        el('div', { className: 'model-row-text', style: 'flex:1;min-width:160px' }, [
+          el('div', { className: 'msg-model-stack' }, [
+            el('strong', { className: 'model-row-name', text: m.name || m.modelId }),
+            m.toolLabel ? el('span', { className: 'tool-pill', text: m.toolLabel }) : null,
+            subscriptionText(m) ? el('span', { className: 'sub-pill', text: subscriptionText(m) }) : null,
+            ...[...memberGroups].map(g => el('span', { className: 'badge', text: state.pools.find(p => p.id === g)?.label || g })),
           ]),
+          m.efforts?.length ? el('div', { className: 'model-row-sub', text: `efor: ${m.efforts.join(' · ')}` }) : null,
+        ]),
+        el('div', { className: 'pool-mgmt-actions' }, [
+          renderInlineQuotaTags(m),
+          addSelect,
           el('button', {
             type: 'button',
-            className: 'btn btn-secondary btn-sm',
-            text: 'Havuzu Seç',
+            className: 'mini-action-btn',
+            text: selected ? '✓ Seçili' : 'Seç',
             onClick: () => {
-              choosePoolAuto(pool.id);
+              chooseModel({ ...m, group: [...memberGroups][0] || '' });
               switchView('chat');
-              toast(`${pool.label || pool.id} havuzu seçildi.`);
+              toast(`${m.name || m.modelId} seçildi.`);
             },
           }),
         ]),
-        el('div', { className: 'picker-list', style: 'margin-top:8px' }, items.length ? items : [el('p', { className: 'muted', text: 'Bu havuzda aktif model yok.' })]),
       ]));
     }
+    catCard.appendChild(listWrap);
+    grid.appendChild(catCard);
   }
 
+  // --- Settings View ---
   function renderSettingsView() {
-    // Shared project folders
     const sharedList = $('shared-folders-list');
     sharedList.replaceChildren();
     $('pick-native-folder-btn').hidden = !state.canPickNativeFolder;
     if (!state.sharedFolders.length) {
-      sharedList.appendChild(el('p', { className: 'muted', text: 'Henüz özel paylaşılan proje klasörü eklenmemiş (tüm sürücülere gözatabilirsiniz).' }));
+      sharedList.appendChild(el('p', { className: 'muted', text: 'Henüz paylaşılan kök eklenmemiş (tüm sürücüler ve klasörler gezilebilir).' }));
     } else {
       for (const dir of state.sharedFolders) {
         sharedList.appendChild(el('div', { className: 'device-row' }, [
@@ -838,19 +1207,11 @@
       ? `Tailscale IP algılandı: ${state.tailscaleIp} (Port: ${state.port}). Yalnızca Tailscale arayüzünüzden ve eşleşmiş cihazlardan erişilebilir.`
       : 'Bu makinede aktif bir Tailscale IP (100.64.0.0/10) algılanmadı. Telefondan bağlanmak için bilgisayara ve telefona Tailscale kurun.';
 
-    const acl = {
-      acls: [
-        {
-          action: 'accept',
-          src: ['tag:phone'],
-          dst: [`tag:dev-pc:${state.port}`],
-        },
-      ],
-    };
+    const acl = { acls: [{ action: 'accept', src: ['tag:phone'], dst: [`tag:dev-pc:${state.port}`] }] };
     $('tailscale-acl-code').textContent = JSON.stringify(acl, null, 2);
   }
 
-  // --- Antigravity-Style Model & Effort Picker Dialog ---
+  // --- Antigravity-Style Model Picker (Selected Summary + Collapsible Categories + Inline Quotas) ---
   function choosePoolAuto(groupId) {
     state.selection.group = groupId || '';
     state.selection.routeId = '';
@@ -875,17 +1236,37 @@
     renderTopbarAndStatus();
   }
 
+  function renderSelectedSummaryInPicker() {
+    const box = $('picker-selected-summary');
+    box.replaceChildren();
+    const sel = state.selection;
+    const poolLabel = state.pools.find(p => p.id === sel.group)?.label || sel.group || 'Otomatik';
+    const found = findModelObj(sel.routeId, sel.modelId);
+    const left = el('div', { className: 'picker-selected-left' }, [
+      el('strong', { text: '✓ Seçili:' }),
+      el('span', { className: 'badge', text: poolLabel }),
+      el('strong', { text: found?.name || sel.modelName || 'Havuzdan otomatik' }),
+      sel.effort ? el('span', { className: 'badge', text: sel.effort }) : null,
+      found?.toolLabel ? el('span', { className: 'tool-pill', text: found.toolLabel }) : null,
+      found && subscriptionText(found) ? el('span', { className: 'sub-pill', text: subscriptionText(found) }) : null,
+    ]);
+    box.appendChild(left);
+    if (found) box.appendChild(renderInlineQuotaTags(found));
+  }
+
   function renderModelPicker() {
+    renderSelectedSummaryInPicker();
     const body = $('picker-groups-list');
     body.replaceChildren();
     const q = state.pickerQuery.trim().toLowerCase();
 
-    const matchesSearch = m => !q || [m.name, m.modelId, m.routeId, m.billing, m.account].some(s => String(s || '').toLowerCase().includes(q));
+    const matchesSearch = m => !q || [m.name, m.modelId, m.routeId, m.toolLabel, m.email, m.account, m.billing].some(s => String(s || '').toLowerCase().includes(q));
 
     const buildModelRow = (m, poolId) => {
       const isSelected = state.selection.modelId === m.modelId && state.selection.routeId === m.routeId;
       const efforts = (Array.isArray(m.efforts) ? m.efforts : []).filter(e => e && e !== 'default');
       const wrap = el('div', { className: 'model-row-wrap' });
+      const subParts = [m.toolLabel, subscriptionText(m)].filter(Boolean).join(' · ');
 
       wrap.appendChild(el('button', {
         type: 'button',
@@ -900,7 +1281,7 @@
           el('span', { className: 'model-check', text: isSelected ? '✓' : '' }),
           el('div', { className: 'model-row-text' }, [
             el('div', { className: 'model-row-name', text: m.name || m.modelId }),
-            el('div', { className: 'model-row-sub', text: m.routeId }),
+            el('div', { className: 'model-row-sub', text: subParts || m.routeId }),
           ]),
         ]),
         renderInlineQuotaTags(m),
@@ -937,16 +1318,28 @@
       return wrap;
     };
 
-    // Vertical stacked categories (High, Medium, Low, custom...) — A→Z inside each
+    // Collapsible categories (remembered in localStorage)
     let totalRendered = 0;
     for (const pool of state.pools) {
       const filtered = (pool.models || []).filter(matchesSearch);
       if (q && !filtered.length) continue;
       const isPoolAutoSelected = !state.selection.modelId && state.selection.group === pool.id;
+      const isCollapsed = !q && state.collapsedPools.has(pool.id);
 
       const block = el('div', { className: 'picker-cat-block' }, [
         el('div', { className: 'picker-cat-head' }, [
-          el('span', { className: 'picker-cat-title', text: `${pool.label || pool.id} (${filtered.length})` }),
+          el('button', {
+            type: 'button',
+            className: 'picker-cat-toggle',
+            'aria-expanded': String(!isCollapsed),
+            onClick: () => {
+              togglePoolCollapsed(pool.id);
+              renderModelPicker();
+            },
+          }, [
+            el('span', { className: 'picker-cat-chevron', text: isCollapsed ? '▸' : '▾' }),
+            el('span', { text: `${pool.label || pool.id} (${filtered.length})` }),
+          ]),
           el('button', {
             type: 'button',
             className: `picker-cat-auto${isPoolAutoSelected ? ' selected' : ''}`,
@@ -959,14 +1352,15 @@
         ]),
       ]);
 
-      for (const m of filtered) {
-        block.appendChild(buildModelRow(m, pool.id));
-        totalRendered++;
+      if (!isCollapsed) {
+        for (const m of filtered) {
+          block.appendChild(buildModelRow(m, pool.id));
+          totalRendered++;
+        }
       }
       body.appendChild(block);
     }
 
-    // If user is searching and there are catalog models outside pools, show them below
     if (q) {
       const seen = new Set(state.pools.flatMap(p => (p.models || []).map(m => `${m.routeId}::${m.modelId}`)));
       const extras = state.models.filter(m => !seen.has(`${m.routeId}::${m.modelId}`) && matchesSearch(m));
@@ -1006,33 +1400,43 @@
   function renderFolderBrowser() {
     const fb = state.folderBrowser;
     const isSharedMode = state.folderDialogPurpose === 'shared';
-    $('folder-dialog-title').textContent = isSharedMode ? 'Paylaşılan Proje Klasörü Ekle' : 'Proje Klasörü Seç';
+    $('folder-dialog-title').textContent = isSharedMode ? 'Paylaşılan Disk / Klasör Ekle' : 'Proje Klasörü Seç';
     $('folder-no-project-btn').hidden = isSharedMode;
     $('folder-dialog-native-pick-btn').hidden = !state.canPickNativeFolder;
     $('folder-browse-all-btn').hidden = !fb.canBrowseAll;
-    $('folder-browser-path').textContent = fb.current || 'Kök klasörler';
+    $('folder-browser-path').textContent = fb.current || 'Sürücüler & Kök klasörler';
     $('folder-up-btn').disabled = !fb.parent && !fb.current;
     $('folder-select-current-btn').disabled = !fb.current;
-    $('folder-select-current-btn').textContent = isSharedMode ? 'Bu Klasörü Paylaşılanlara Ekle' : 'Bu Proje Klasörünü Seç';
+    $('folder-select-current-btn').textContent = isSharedMode
+      ? `Paylaşılanlara Ekle: ${folderName(fb.current)}`
+      : `Bu Projeyi Kullan: ${folderName(fb.current)}`;
     const isFav = fb.current && state.favoriteFolders.includes(fb.current);
     $('folder-star-btn').textContent = isFav ? '★' : '☆';
     $('folder-star-btn').disabled = !fb.current;
 
-    const quickDirs = [...new Set([...state.sharedFolders, ...state.favoriteFolders])];
+    const quickDirs = [...new Set([...state.sharedFolders, ...state.favoriteFolders])]
+      .filter(d => typeof d === 'string' && d && d !== '[object Object]');
     const favSec = $('folder-favorites-section');
     favSec.hidden = isSharedMode || !quickDirs.length;
     const favList = $('folder-favorites-list');
     favList.replaceChildren();
     for (const dir of quickDirs) {
-      favList.appendChild(el('button', {
-        type: 'button',
-        className: 'picker-item',
-        onClick: () => void selectWorkspace(dir, true),
-      }, [
-        el('div', { className: 'picker-item-main' }, [
+      favList.appendChild(el('div', { className: 'picker-item' }, [
+        el('button', {
+          type: 'button',
+          className: 'chat-item-main',
+          title: 'Alt klasörlere girmek için tıklayın',
+          onClick: () => void loadFolderBrowser(dir),
+        }, [
           el('div', { className: 'picker-item-title', text: `📁 ${folderName(dir)}` }),
           el('div', { className: 'picker-item-sub mono', text: dir }),
         ]),
+        el('button', {
+          type: 'button',
+          className: 'btn btn-secondary btn-sm',
+          text: 'Seç',
+          onClick: () => void selectWorkspace(dir, true),
+        }),
       ]));
     }
 
@@ -1063,29 +1467,31 @@
   }
 
   async function addSharedFolder(dir, closeDialog = false) {
-    if (!dir) return;
+    const clean = typeof dir === 'string' ? dir.trim() : '';
+    if (!clean) return;
     try {
-      const res = await api('/r/folders/shared', { method: 'POST', body: { action: 'add', path: dir } });
+      const res = await api('/r/folders/shared', { method: 'POST', body: { action: 'add', path: clean } });
       state.sharedFolders = res.sharedFolders || [];
       renderSettingsView();
       renderWorkspaceStrip();
       renderChatList();
       if (closeDialog && $('folder-dialog').open) $('folder-dialog').close();
-      toast(`Paylaşılan klasör eklendi: ${folderName(dir)}`);
+      toast(`Paylaşılan kök eklendi: ${folderName(res.added || clean)}`);
     } catch (err) { toast(err.message, true); }
   }
 
   async function pickNativeFolder(forShared = false) {
     try {
       const res = await api('/r/folders/pick', { method: 'POST', body: { initialPath: state.activeChat?.workspace || '' } });
-      if (res.cancelled || !res.path) return;
-      if (forShared) await addSharedFolder(res.path, true);
-      else await selectWorkspace(res.path, true);
+      const pickedPath = typeof res?.path === 'string' ? res.path.trim() : '';
+      if (res.cancelled || !pickedPath) return;
+      if (forShared) await addSharedFolder(pickedPath, true);
+      else await selectWorkspace(pickedPath, true);
     } catch (err) { toast(err.message, true); }
   }
 
   async function selectWorkspace(dir, closeDialog = false) {
-    const clean = String(dir || '').trim();
+    const clean = (typeof dir === 'string' && dir.trim() !== '[object Object]') ? dir.trim() : '';
     if (!state.activeChatId) await createNewChat(clean);
     else {
       try {
@@ -1149,10 +1555,15 @@
     try {
       const { task } = await api(`/r/tasks/${encodeURIComponent(taskId)}`);
       const [label, cls] = STATE_LABELS[task.state] || [task.state || '?', 'badge'];
+      const meta = findRouteMeta(task.routeId);
       const eventLines = (task.events || []).map(formatEventLine).filter(Boolean);
       body.replaceChildren(
         el('div', { className: 'card-row' }, [
-          el('strong', { text: task.reportedModel || task.modelId || task.routeId || 'Görev' }),
+          el('div', { className: 'msg-model-stack' }, [
+            el('strong', { text: task.reportedModel || task.modelId || task.routeId || 'Görev' }),
+            meta?.toolLabel ? el('span', { className: 'tool-pill', text: meta.toolLabel }) : null,
+            meta && subscriptionText({ ...meta, routeId: task.routeId }) ? el('span', { className: 'sub-pill', text: subscriptionText({ ...meta, routeId: task.routeId }) }) : null,
+          ]),
           el('span', { className: `badge ${cls}`, text: label }),
         ]),
         el('div', { className: 'muted mono', text: `ID: ${task.id}` }),
@@ -1253,7 +1664,8 @@
     if (state.sending) return;
     const input = $('prompt-input');
     const text = input.value.trim();
-    if (!text) return;
+    const attachments = [...state.pendingAttachments];
+    if (!text && !attachments.length) return;
 
     if (state.poolHealth?.status !== 'ok') {
       toast('CLI Agent Pool servisi kapalı. Önce servisi başlatın.', true);
@@ -1276,6 +1688,7 @@
         method: 'POST',
         body: {
           prompt: text,
+          attachments,
           workspace,
           kind,
           mode,
@@ -1287,6 +1700,8 @@
         },
       });
       input.value = '';
+      state.pendingAttachments = [];
+      renderAttachmentsStrip();
       state.activeChat = res.chat;
       renderTopbarAndStatus();
       renderMessages(true);
@@ -1300,7 +1715,7 @@
     }
   }
 
-  // --- Mobile-Fixed Voice Dictation (Web Speech API) ---
+  // --- Mobile-Fixed Voice Dictation ---
   function toggleVoiceDictation() {
     const input = $('prompt-input');
     if (!window.isSecureContext) {
@@ -1345,9 +1760,7 @@
     rec.onerror = e => {
       const msg = e.error === 'not-allowed' || e.error === 'service-not-allowed'
         ? 'Mikrofon izni kapalı. Telefon klavye mikrofonunu kullanabilir veya tarayıcı izinlerini açabilirsiniz.'
-        : e.error === 'no-speech'
-          ? 'Ses algılanmadı.'
-          : `Ses hatası: ${e.error}`;
+        : e.error === 'no-speech' ? 'Ses algılanmadı.' : `Ses hatası: ${e.error}`;
       toast(msg, true);
     };
     rec.onend = () => {
@@ -1389,6 +1802,7 @@
       if (state.view === 'calls') renderCallsView();
       if (state.view === 'pools') renderPoolsView();
       if (state.view === 'settings') renderSettingsView();
+      if ($('quotas-dialog').open) renderQuotaCardsInto($('quotas-dialog-body'));
 
       if (openInitialChat) {
         if (state.chats.length) await openChat(state.chats[0].id);
@@ -1405,23 +1819,15 @@
       btn.addEventListener('click', () => switchView(btn.dataset.view));
     });
 
+    $('topbar-back-btn').addEventListener('click', () => switchView('chat'));
     $('topbar-settings-btn').addEventListener('click', () => switchView(state.view === 'settings' ? 'chat' : 'settings'));
-    $('quick-pool-btn').addEventListener('click', () => switchView('pools'));
+    $('quick-pool-btn').addEventListener('click', () => openQuotasOverlay());
 
-    $('new-chat-btn').addEventListener('click', () => {
-      switchView('chat');
-      void createNewChat();
-    });
-    $('mobile-new-chat-btn').addEventListener('click', () => {
-      switchView('chat');
-      void createNewChat();
-    });
-    $('quick-new-chat-btn').addEventListener('click', () => {
-      switchView('chat');
-      void createNewChat();
-    });
+    $('new-chat-btn').addEventListener('click', () => { switchView('chat'); void createNewChat(); });
+    $('mobile-new-chat-btn').addEventListener('click', () => { switchView('chat'); void createNewChat(); });
+    $('quick-new-chat-btn').addEventListener('click', () => { switchView('chat'); void createNewChat(); });
 
-    // Antigravity-style Model Picker
+    // Antigravity-style Model Picker + In-Chat Quotas Overlay
     $('model-pill-btn').addEventListener('click', () => {
       state.pickerQuery = '';
       $('model-search-input').value = '';
@@ -1434,10 +1840,47 @@
     });
     $('picker-view-quotas-btn').addEventListener('click', () => {
       $('model-dialog').close();
-      switchView('pools');
+      openQuotasOverlay();
+    });
+    $('quotas-dialog-refresh-btn').addEventListener('click', async () => {
+      toast('Canlı kotalar sorgulanıyor…');
+      try {
+        await api('/r/quotas/refresh', { method: 'POST', body: {} });
+        await refreshState(false);
+        toast('Kotalar güncellendi.');
+      } catch (err) { toast(err.message, true); }
     });
 
-    // Folder Picker & Shared Folders
+    // Document Attachment, Drag/Drop & Paste
+    $('attach-doc-btn').addEventListener('click', () => $('doc-file-input').click());
+    $('doc-file-input').addEventListener('change', e => {
+      void addFilesAsAttachments(e.target.files);
+      e.target.value = '';
+    });
+    const composerCard = $('composer-card');
+    composerCard.addEventListener('dragover', e => { e.preventDefault(); composerCard.classList.add('drag-over'); });
+    composerCard.addEventListener('dragleave', () => composerCard.classList.remove('drag-over'));
+    composerCard.addEventListener('drop', e => {
+      e.preventDefault();
+      composerCard.classList.remove('drag-over');
+      if (e.dataTransfer?.files?.length) void addFilesAsAttachments(e.dataTransfer.files);
+    });
+    $('prompt-input').addEventListener('paste', e => {
+      const files = e.clipboardData?.files;
+      if (files && files.length) {
+        e.preventDefault();
+        void addFilesAsAttachments(files);
+      }
+    });
+
+    // Document Viewer Dialog actions
+    $('doc-copy-btn').addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(state.activeDoc.content); toast('Doküman kopyalandı.'); }
+      catch { toast('Kopyalanamadı.', true); }
+    });
+    $('doc-download-btn').addEventListener('click', () => downloadTextFile(state.activeDoc.name, state.activeDoc.content));
+
+    // Folder Picker & Shared Folders (drives + folders + subfolders)
     $('folder-picker-btn').addEventListener('click', () => {
       state.folderDialogPurpose = 'workspace';
       $('folder-dialog').showModal();
@@ -1468,6 +1911,13 @@
       $('folder-dialog').showModal();
       void loadFolderBrowser('', true);
     });
+    $('add-manual-shared-btn').addEventListener('click', async () => {
+      const inp = $('manual-shared-input');
+      const val = inp.value.trim();
+      if (!val) return;
+      await addSharedFolder(val, false);
+      inp.value = '';
+    });
 
     $('context-toggle-btn').addEventListener('click', () => {
       state.selection.includeContext = !state.selection.includeContext;
@@ -1483,7 +1933,7 @@
       });
     });
 
-    // IME-safe Enter submit (ime-safe-enter-submit) + live send button state
+    // IME-safe Enter submit (ime-safe-enter-submit)
     const composerForm = $('composer-form');
     const promptInput = $('prompt-input');
     composerForm.addEventListener('submit', sendPrompt);
@@ -1492,13 +1942,33 @@
       if (event.key !== 'Enter' || event.shiftKey) return;
       event.preventDefault();
       if (event.isComposing || event.keyCode === 229) return;
-      if (!state.sending && promptInput.value.trim()) composerForm.requestSubmit();
+      if (!state.sending && (promptInput.value.trim() || state.pendingAttachments.length)) composerForm.requestSubmit();
     });
 
     $('mic-btn').addEventListener('click', toggleVoiceDictation);
 
-    // Calls / Pools / Settings actions
+    // Calls actions
     $('refresh-calls-btn').addEventListener('click', () => void refreshState(false));
+    $('clear-calls-btn').addEventListener('click', async () => {
+      if (!window.confirm('Tamamlanmış çağrı geçmişi temizlensin mi?')) return;
+      try {
+        await api('/r/tasks/clear', { method: 'POST', body: {} });
+        toast('Çağrı geçmişi temizlendi.');
+        await refreshState(false);
+      } catch (err) { toast(err.message, true); }
+    });
+
+    // Pools / Catalog / Quotas sub-tabs & search
+    document.querySelectorAll('[data-pool-subtab]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        state.poolSubtab = btn.dataset.poolSubtab;
+        renderPoolsView();
+      });
+    });
+    $('pools-search-input').addEventListener('input', e => {
+      state.poolsSearch = e.target.value;
+      renderPoolsView();
+    });
     $('refresh-quotas-btn').addEventListener('click', async () => {
       toast('Canlı kotalar sorgulanıyor…');
       try {
@@ -1526,9 +1996,8 @@
     $('pool-restart-btn').addEventListener('click', async () => {
       try {
         const res = await api('/r/pool/restart', { method: 'POST', body: {} });
-        if (res.confirmRequired) {
-          toast(res.message || 'Aktif görev var, yeniden başlatma ertelendi.', true);
-        } else {
+        if (res.confirmRequired) toast(res.message || 'Aktif görev var, yeniden başlatma ertelendi.', true);
+        else {
           toast('Servis yeniden başlatılıyor…');
           setTimeout(() => void refreshState(false), 2500);
         }
@@ -1554,22 +2023,18 @@
     $('open-pair-settings-btn').addEventListener('click', () => void openPairingDialog());
     $('regen-pair-btn').addEventListener('click', () => void openPairingDialog());
     $('copy-pair-url-btn').addEventListener('click', async () => {
-      try {
-        await navigator.clipboard.writeText($('pair-url-input').value);
-        toast('Eşleştirme bağlantısı kopyalandı.');
-      } catch { toast('Kopyalanamadı', true); }
+      try { await navigator.clipboard.writeText($('pair-url-input').value); toast('Eşleştirme bağlantısı kopyalandı.'); }
+      catch { toast('Kopyalanamadı', true); }
     });
     $('copy-acl-btn').addEventListener('click', async () => {
-      try {
-        await navigator.clipboard.writeText($('tailscale-acl-code').textContent);
-        toast('Tailscale ACL kopyalandı.');
-      } catch { toast('Kopyalanamadı', true); }
+      try { await navigator.clipboard.writeText($('tailscale-acl-code').textContent); toast('Tailscale ACL kopyalandı.'); }
+      catch { toast('Kopyalanamadı', true); }
     });
   }
 
   // --- Boot ---
   applyTheme(readSavedTheme(), false);
-  loadSelection();
+  loadPreferences();
   initDialogLightDismiss();
   bindEvents();
   updateSendButton();

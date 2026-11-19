@@ -141,6 +141,27 @@ export function listDirectoriesSafe(requestedPath = '', workspaceRoots = []) {
   return { current: real, parent, restricted: allowedRoots.length > 0, entries };
 }
 
+const TOOL_LABELS = {
+  codex: 'Codex',
+  claude: 'Claude',
+  agy: 'Antigravity',
+  opencode: 'OpenCode',
+  qwen: 'Qwen',
+  zcode: 'ZCode',
+  mcode: 'MiniMax',
+  mmx: 'MiniMax',
+  kimi: 'Kimi',
+  mimo: 'MiMo',
+  qoder: 'Qoder',
+  ollama: 'Ollama',
+  lmstudio: 'LM Studio',
+  omniroute: 'OmniRoute',
+};
+
+function toolLabelFor(adapter = '') {
+  return TOOL_LABELS[String(adapter || '').toLowerCase()] || (adapter ? String(adapter) : '');
+}
+
 function shortWindowLabel(name = '') {
   const lower = String(name || '').toLowerCase();
   if (/5\s*h|5\s*s|300m|session|five.?hour/.test(lower)) return '5s';
@@ -151,7 +172,7 @@ function shortWindowLabel(name = '') {
   return tail.slice(0, 8) || 'kota';
 }
 
-function enrichModel(model, routeWindowsByRoute) {
+function enrichModel(model, routeWindowsByRoute, routeMetaByRoute = new Map()) {
   const cleanEfforts = (Array.isArray(model.efforts) ? model.efforts : []).filter(e => e && e !== 'default');
   const cleanEffort = model.effort && model.effort !== 'default' ? model.effort : '';
   const routeWins = routeWindowsByRoute.get(model.routeId) || [];
@@ -166,8 +187,15 @@ function enrichModel(model, routeWindowsByRoute) {
   }
   const order = { '5s': 0, '24s': 1, '7g': 2, '30g': 3 };
   const quotaWindows = [...byLabel.values()].sort((a, b) => (order[a.label] ?? 9) - (order[b.label] ?? 9));
+  const meta = routeMetaByRoute.get(model.routeId) || {};
+  const adapter = model.adapter || meta.adapter || '';
   return {
     ...model,
+    adapter,
+    toolLabel: toolLabelFor(adapter),
+    email: model.email || meta.email || '',
+    account: model.account || meta.account || '',
+    billing: model.billing || meta.billing || '',
     effort: cleanEffort,
     efforts: cleanEfforts,
     quotaWindows,
@@ -246,6 +274,10 @@ function createPoolBridge(directory, customFetch = fetch) {
     task: (id, compact = false) => requestPool(`/api/tasks/${encodeURIComponent(id)}?compact=${compact ? '1' : '0'}`, { auth: true }),
     submit: payload => requestPool('/api/tasks', { method: 'POST', body: payload, auth: true, timeoutMs: 30_000 }),
     cancel: id => requestPool(`/api/tasks/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: {}, auth: true }),
+    manageGet: () => managementRequest(directory, getConfig(), { operation: 'get' }),
+    manageSave: (config, revision) => managementRequest(directory, getConfig(), { operation: 'save', config, revision }),
+    clearHistory: () => managementRequest(directory, getConfig(), { operation: 'clear_history' }),
+    deleteTask: taskId => managementRequest(directory, getConfig(), { operation: 'delete_task', taskId }),
     startPool: async () => {
       const cfg = ensureInitialized(directory, true);
       const info = await ensureDaemon(directory, cfg);
@@ -577,6 +609,21 @@ export function createRemoteServer({
           if (cRes.status === 'fulfilled') connections = Array.isArray(cRes.value) ? cRes.value : [];
           if (tRes.status === 'fulfilled') tasks = Array.isArray(tRes.value) ? tRes.value : (tRes.value?.tasks || []);
 
+          // Build route metadata map (toolLabel, email, account, billing)
+          const routeMetaByRoute = new Map();
+          for (const c of connections) {
+            routeMetaByRoute.set(c.id, { adapter: c.adapter || '', email: c.email || '', account: c.account || '', billing: c.billing || '' });
+          }
+          for (const q of quotas) {
+            const prev = routeMetaByRoute.get(q.routeId) || {};
+            routeMetaByRoute.set(q.routeId, {
+              adapter: prev.adapter || q.adapter || '',
+              email: prev.email || q.email || '',
+              account: prev.account || q.account || '',
+              billing: prev.billing || q.billing || '',
+            });
+          }
+
           // Fetch cached per-route quota windows so every model displays 5s / 7g inline badges
           const routeWindowsByRoute = new Map();
           if (quotas.length && typeof pool.routeQuota === 'function') {
@@ -586,21 +633,26 @@ export function createRemoteServer({
                 ? (detailRes[idx].value?.connections?.[0]?.windows || detailRes[idx].value?.windows || [])
                 : [];
               if (wins.length) routeWindowsByRoute.set(q.routeId, wins);
-              return { ...q, windows: wins };
+              const meta = routeMetaByRoute.get(q.routeId) || {};
+              return { ...q, toolLabel: toolLabelFor(q.adapter || meta.adapter), email: q.email || meta.email || '', windows: wins };
             });
           }
 
-          models = sortModelsAlpha(models.map(m => enrichModel(m, routeWindowsByRoute)));
+          models = sortModelsAlpha(models.map(m => enrichModel(m, routeWindowsByRoute, routeMetaByRoute)));
           if (pools.length && typeof pool.poolModels === 'function') {
             const perPool = await Promise.allSettled(pools.map(p => pool.poolModels(p.id)));
             pools = pools.map((p, idx) => ({
               ...p,
               models: sortModelsAlpha(
                 (perPool[idx]?.status === 'fulfilled' ? (perPool[idx].value?.models || []) : [])
-                  .map(m => enrichModel(m, routeWindowsByRoute)),
+                  .map(m => enrichModel(m, routeWindowsByRoute, routeMetaByRoute)),
               ),
             }));
           }
+          tasks = tasks.map(t => {
+            const meta = routeMetaByRoute.get(t.routeId) || {};
+            return { ...t, toolLabel: toolLabelFor(meta.adapter), email: meta.email || '', account: meta.account || '' };
+          });
         }
         const cfg = pool.getConfig();
         return sendJson(res, 200, {
@@ -671,7 +723,67 @@ export function createRemoteServer({
         }
         const body = await readJsonBody(req);
         const picked = await pickWindowsFolder(body.initialPath || '', { directory });
-        return sendJson(res, 200, { path: picked || '', cancelled: !picked });
+        const pickedPath = typeof picked === 'string' ? picked : (picked?.path || '');
+        return sendJson(res, 200, { path: pickedPath, cancelled: !pickedPath });
+      }
+
+      // GET /r/file?workspace=...&file=... — safely read a workspace output document (<= 512 KB)
+      if (req.method === 'GET' && pathname === '/r/file') {
+        const ws = url.searchParams.get('workspace') || '';
+        const rel = url.searchParams.get('file') || '';
+        if (!ws || !rel) throw new PoolError('INVALID_REQUEST', 'workspace ve file parametreleri gerekli.');
+        const cfg = pool.getConfig();
+        const checkedWs = listDirectoriesSafe(ws, cfg.workspaceRoots || []);
+        const candidate = path.isAbsolute(rel) ? rel : path.resolve(checkedWs.current, rel);
+        let realFile;
+        try { realFile = realpathSync(candidate); } catch { throw new PoolError('NOT_FOUND', 'Dosya bulunamadı.'); }
+        if (!pathWithinRoot(realFile, checkedWs.current)) {
+          throw new PoolError('WORKSPACE_DENIED', 'Dosya seçili proje klasörünün dışında.');
+        }
+        const st = statSync(realFile);
+        if (!st.isFile()) throw new PoolError('INVALID_REQUEST', 'Seçilen yol bir dosya değil.');
+        if (st.size > 524_288) throw new PoolError('REQUEST_TOO_LARGE', 'Dosya önizleme için çok büyük (en fazla 512 KB).');
+        const content = readFileSync(realFile, 'utf8');
+        return sendJson(res, 200, { name: path.basename(realFile), path: realFile, size: st.size, content });
+      }
+
+      // POST /r/pool/membership — add or remove a model from a pool category
+      if (req.method === 'POST' && pathname === '/r/pool/membership') {
+        const body = await readJsonBody(req);
+        const { routeId, modelId, group, action = 'add', effort } = body;
+        if (!routeId || !modelId || !group) throw new PoolError('INVALID_REQUEST', 'routeId, modelId ve group gerekli.');
+        const view = await pool.manageGet();
+        const nextConfig = structuredClone(view.config);
+        const route = nextConfig.routes.find(r => r.id === routeId);
+        const model = route?.models?.find(m => m.id === modelId);
+        if (!model) throw new PoolError('NOT_FOUND', 'Model bulunamadı.');
+        const memberships = Array.isArray(model.memberships)
+          ? [...model.memberships]
+          : (model.group && model.group !== 'unassigned' ? [{ group: model.group, ...(model.defaultEffort ? { effort: model.defaultEffort } : {}) }] : []);
+        const filtered = memberships.filter(m => m.group !== group);
+        if (action === 'add') {
+          const cleanEff = effort && effort !== 'default' ? effort : undefined;
+          filtered.push({ group, ...(cleanEff ? { effort: cleanEff } : {}) });
+        }
+        model.memberships = filtered;
+        model.group = filtered[0]?.group || 'unassigned';
+        await pool.manageSave(nextConfig, view.revision);
+        return sendJson(res, 200, { updated: true, memberships: model.memberships });
+      }
+
+      // POST /r/pool/model-toggle — enable or disable a model in a route
+      if (req.method === 'POST' && pathname === '/r/pool/model-toggle') {
+        const body = await readJsonBody(req);
+        const { routeId, modelId, enabled } = body;
+        if (!routeId || !modelId || typeof enabled !== 'boolean') throw new PoolError('INVALID_REQUEST', 'routeId, modelId ve enabled gerekli.');
+        const view = await pool.manageGet();
+        const nextConfig = structuredClone(view.config);
+        const route = nextConfig.routes.find(r => r.id === routeId);
+        const model = route?.models?.find(m => m.id === modelId);
+        if (!model) throw new PoolError('NOT_FOUND', 'Model bulunamadı.');
+        model.enabled = enabled;
+        await pool.manageSave(nextConfig, view.revision);
+        return sendJson(res, 200, { updated: true, enabled });
       }
 
       // Chats CRUD
@@ -721,9 +833,22 @@ export function createRemoteServer({
         if (req.method === 'POST' && sub === 'send') {
           const chat = remoteStore.getChat(chatId);
           if (!chat) throw new PoolError('NOT_FOUND', 'Sohbet bulunamadı.');
-          const body = await readJsonBody(req);
+          const body = await readJsonBody(req, 1_500_000);
           const rawPrompt = String(body.prompt || '').trim();
-          if (!rawPrompt) throw new PoolError('INVALID_REQUEST', 'Gönderilecek mesaj boş olamaz.');
+          const rawAttachments = Array.isArray(body.attachments) ? body.attachments.slice(0, 5) : [];
+          const cleanAttachments = [];
+          for (const att of rawAttachments) {
+            const name = String(att?.name || 'dokuman.txt').replace(/[\u0000-\u001f\u007f\\/]/g, '_').trim().slice(0, 120) || 'dokuman.txt';
+            const content = String(att?.content || '');
+            if (!content.trim()) continue;
+            if (Buffer.byteLength(content, 'utf8') > 220_000) {
+              throw new PoolError('REQUEST_TOO_LARGE', `"${name}" dosyası çok büyük (dosya başına en fazla 200 KB).`);
+            }
+            cleanAttachments.push({ name, size: Buffer.byteLength(content, 'utf8'), content });
+          }
+          if (!rawPrompt && !cleanAttachments.length) {
+            throw new PoolError('INVALID_REQUEST', 'Gönderilecek mesaj veya doküman boş olamaz.');
+          }
 
           const requestedWorkspace = body.workspace !== undefined ? String(body.workspace || '').trim() : String(chat.workspace || '').trim();
           const cfg = pool.getConfig();
@@ -751,7 +876,9 @@ export function createRemoteServer({
             : 'response';
           const cleanEffort = body.effort && body.effort !== 'default' ? String(body.effort) : '';
           const includeContext = body.includeContext !== false;
-          const finalPrompt = buildCompactPrompt(chat, rawPrompt, includeContext);
+          const docBlocks = cleanAttachments.map(a => `[Eklenen Doküman: ${a.name}]\n${a.content}\n[/Eklenen Doküman]`).join('\n\n');
+          const combinedUserPrompt = [rawPrompt, docBlocks].filter(Boolean).join('\n\n');
+          const finalPrompt = buildCompactPrompt(chat, combinedUserPrompt, includeContext);
 
           const taskReq = {
             prompt: finalPrompt,
@@ -768,13 +895,30 @@ export function createRemoteServer({
           };
 
           const submitted = await pool.submit(taskReq);
+          // Resolve toolLabel & subscription/email metadata for the assistant bubble
+          let routeMeta = { adapter: '', toolLabel: '', email: '', account: '', billing: '' };
+          try {
+            const conns = await pool.connections();
+            const found = (Array.isArray(conns) ? conns : []).find(c => c.id === submitted.routeId);
+            if (found) {
+              routeMeta = {
+                adapter: found.adapter || '',
+                toolLabel: toolLabelFor(found.adapter),
+                email: found.email || '',
+                account: found.account || '',
+                billing: found.billing || '',
+              };
+            }
+          } catch { /* best-effort */ }
+
           const userMsg = remoteStore.appendMessage(chatId, {
             role: 'user',
-            text: rawPrompt,
+            text: rawPrompt || `📎 ${cleanAttachments.map(a => a.name).join(', ')}`,
             workspace: hasProject ? canonicalWorkspace : '',
             kind,
             mode,
             includeContext,
+            attachments: cleanAttachments.map(a => ({ name: a.name, size: a.size, content: a.content.slice(0, 60_000) })),
           });
           const assistantMsg = remoteStore.appendMessage(chatId, {
             role: 'assistant',
@@ -782,6 +926,12 @@ export function createRemoteServer({
             taskId: submitted.id,
             routeId: submitted.routeId,
             modelId: submitted.modelId,
+            adapter: routeMeta.adapter,
+            toolLabel: routeMeta.toolLabel,
+            email: routeMeta.email,
+            account: routeMeta.account,
+            billing: routeMeta.billing,
+            workspace: hasProject ? canonicalWorkspace : '',
             group: submitted.group || body.group || null,
             effort: (submitted.effort && submitted.effort !== 'default') ? submitted.effort : (cleanEffort || null),
             kind,
@@ -802,12 +952,20 @@ export function createRemoteServer({
         }
       }
 
-      // Tasks direct inspect & cancel
+      // Clear completed call history
+      if (req.method === 'POST' && pathname === '/r/tasks/clear') {
+        return sendJson(res, 200, await pool.clearHistory());
+      }
+
+      // Tasks direct inspect, delete & cancel
       const taskMatch = /^\/r\/tasks\/([a-zA-Z0-9-]+)(?:\/(cancel))?$/.exec(pathname);
       if (taskMatch) {
         const [, taskId, sub] = taskMatch;
         if (req.method === 'GET' && !sub) {
           return sendJson(res, 200, { task: await pool.task(taskId, false) });
+        }
+        if (req.method === 'DELETE' && !sub) {
+          return sendJson(res, 200, await pool.deleteTask(taskId));
         }
         if (req.method === 'POST' && sub === 'cancel') {
           return sendJson(res, 200, { task: await pool.cancel(taskId) });

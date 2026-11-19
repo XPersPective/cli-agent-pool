@@ -91,6 +91,11 @@ const ownerDirectorOperations = {
 export function managementOperation(pool, management, body) {
   if (ownerDirectorOperations[body.operation]) return ownerDirectorOperations[body.operation](pool, body);
   if (body.operation === 'clear_history') return pool.store.clearHistory();
+  if (body.operation === 'delete_task') {
+    const hook = pool.store.hook?.(body.taskId);
+    if (hook && hook.state !== 'done') return { removed: 0 };
+    return pool.store.deleteTask(body.taskId);
+  }
   if (body.operation === 'resolve') return pool.resolveInspected({ taskId: body.taskId, reviewed: body.reviewed, note: body.note });
   if (body.operation === 'shutdown') {
     const activeCount = pool.active?.size || 0;

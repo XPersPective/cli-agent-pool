@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { encodeQrMatrix, qrSvg } from '../remote/qr.js';
@@ -599,5 +599,137 @@ test('effort "default" is never passed to Codex CLI or forwarded by Remote, and 
     await remote.close();
     rmSync(dir, { recursive: true, force: true });
     rmSync(sharedDir, { recursive: true, force: true });
+  }
+});
+
+test('v2.23.0: pool membership add/remove, call delete/clear, document attachments, safe /r/file, tool/email metadata & UI contracts', async () => {
+  const dir = makeTempDir('pool-remote-v223-');
+  const ws = makeTempDir('pool-remote-docws-');
+  const outside = makeTempDir('pool-remote-outside-');
+  writeFileSync(path.join(ws, 'report.md'), '# Rapor\nHer şey yolunda.', 'utf8');
+  writeFileSync(path.join(outside, 'secret.txt'), 'nope', 'utf8');
+
+  let savedConfig = null;
+  let cleared = false;
+  let deletedTaskId = null;
+  const submitted = [];
+
+  const mockConfig = {
+    port: 43127,
+    workspaceRoots: [],
+    categories: [{ id: 'high', label: 'Yüksek' }, { id: 'low', label: 'Hafif' }],
+    routes: [{
+      id: 'codex-acc2',
+      adapter: 'codex',
+      enabled: true,
+      models: [{ id: 'gpt-6', alias: 'GPT-6', group: 'high', memberships: [{ group: 'high' }], enabled: true }],
+    }],
+  };
+
+  const remote = createRemoteServer({
+    directory: dir,
+    port: 0,
+    host: '127.0.0.1',
+    poolBridge: {
+      getConfig: () => mockConfig,
+      health: async () => ({ status: 'ok', version: '2.23.0', connections: 1, models: 1, active: 0 }),
+      pools: async () => ({ categories: mockConfig.categories }),
+      poolModels: async () => ({ models: [{ routeId: 'codex-acc2', modelId: 'gpt-6', name: 'GPT-6', efforts: ['low', 'high'], kinds: ['text', 'read', 'write'], billing: 'subscription', quota: { status: 'ok', remainingPercent: 88 } }] }),
+      catalogModels: async () => [{ routeId: 'codex-acc2', modelId: 'gpt-6', name: 'GPT-6', categories: ['high'], efforts: ['low', 'high'], kinds: ['text', 'read', 'write'], billing: 'subscription', quota: { status: 'ok', remainingPercent: 88 } }],
+      quotas: async () => ({ connections: [{ routeId: 'codex-acc2', adapter: 'codex', email: 'dev@example.com', billing: 'subscription', models: 1, status: 'ok', remainingPercent: 88 }] }),
+      routeQuota: async () => ({ connections: [{ routeId: 'codex-acc2', windows: [{ name: '5h', remainingPercent: 95 }, { name: 'weekly', remainingPercent: 88 }] }] }),
+      connections: async () => [{ id: 'codex-acc2', adapter: 'codex', email: 'dev@example.com', account: 'acc2', billing: 'subscription' }],
+      tasks: async () => ({ tasks: [{ id: '33333333-3333-4333-8333-333333333333', routeId: 'codex-acc2', modelId: 'gpt-6', state: 'succeeded' }] }),
+      submit: async payload => {
+        submitted.push(payload);
+        return { id: '44444444-4444-4444-8444-444444444444', state: 'queued', routeId: 'codex-acc2', modelId: 'gpt-6' };
+      },
+      manageGet: async () => ({ config: mockConfig, revision: 1 }),
+      manageSave: async cfg => { savedConfig = cfg; return { config: cfg, revision: 2 }; },
+      clearHistory: async () => { cleared = true; return { removed: 1 }; },
+      deleteTask: async id => { deletedTaskId = id; return { removed: 1 }; },
+    },
+  });
+
+  try {
+    const info = await remote.listen();
+    const base = `http://127.0.0.1:${info.port}`;
+    const code = new URL(info.localUrl).searchParams.get('pair');
+    const redeem = await fetch(`${base}/r/redeem`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+    const cookie = (redeem.headers.get('set-cookie') || '').split(';')[0];
+
+    // State carries toolLabel & email on models and tasks
+    const st = await (await fetch(`${base}/r/state`, { headers: { Cookie: cookie } })).json();
+    assert.equal(st.models[0].toolLabel, 'Codex');
+    assert.equal(st.models[0].email, 'dev@example.com');
+    assert.equal(st.tasks[0].toolLabel, 'Codex');
+    assert.equal(st.tasks[0].email, 'dev@example.com');
+
+    // Pool membership add & remove
+    const addMem = await fetch(`${base}/r/pool/membership`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ routeId: 'codex-acc2', modelId: 'gpt-6', group: 'low', action: 'add' }),
+    });
+    assert.equal(addMem.status, 200);
+    assert.ok(savedConfig.routes[0].models[0].memberships.some(m => m.group === 'low'));
+
+    // Clear & delete calls
+    assert.equal((await fetch(`${base}/r/tasks/33333333-3333-4333-8333-333333333333`, { method: 'DELETE', headers: { Cookie: cookie } })).status, 200);
+    assert.equal(deletedTaskId, '33333333-3333-4333-8333-333333333333');
+    assert.equal((await fetch(`${base}/r/tasks/clear`, { method: 'POST', headers: { Cookie: cookie } })).status, 200);
+    assert.equal(cleared, true);
+
+    // Document attachment in chat send + toolLabel/email persisted on assistant message
+    const { chat } = await (await fetch(`${base}/r/chats`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspace: ws }),
+    })).json();
+    const sendRes = await fetch(`${base}/r/chats/${chat.id}/send`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: 'Bu belgeyi özetle',
+        workspace: ws,
+        attachments: [{ name: 'spec.md', content: '# Mimari\nÖrnek içerik.' }],
+      }),
+    });
+    assert.equal(sendRes.status, 200);
+    const sendData = await sendRes.json();
+    assert.match(submitted[0].prompt, /\[Eklenen Doküman: spec\.md\]/);
+    assert.equal(sendData.assistantMessage.toolLabel, 'Codex');
+    assert.equal(sendData.assistantMessage.email, 'dev@example.com');
+    assert.equal(sendData.userMessage.attachments[0].name, 'spec.md');
+
+    // Safe workspace file read succeeds inside workspace and blocks outside traversal
+    const fileOk = await fetch(`${base}/r/file?workspace=${encodeURIComponent(ws)}&file=report.md`, { headers: { Cookie: cookie } });
+    assert.equal(fileOk.status, 200);
+    assert.match((await fileOk.json()).content, /Her şey yolunda/);
+
+    const fileEscape = await fetch(`${base}/r/file?workspace=${encodeURIComponent(ws)}&file=${encodeURIComponent(path.join(outside, 'secret.txt'))}`, { headers: { Cookie: cookie } });
+    assert.equal(fileEscape.status, 403);
+
+    // UI contract checks for v2.23.0
+    const html = readFileSync(path.resolve('remote/public/index.html'), 'utf8');
+    const js = readFileSync(path.resolve('remote/public/app.js'), 'utf8');
+    assert.match(html, /id="picker-selected-summary"/);
+    assert.match(html, /id="quotas-dialog"/);
+    assert.match(html, /id="doc-dialog"/);
+    assert.match(html, /id="topbar-back-btn"/);
+    assert.match(html, /id="attach-doc-btn"/);
+    assert.match(html, /id="clear-calls-btn"/);
+    assert.match(html, /data-pool-subtab="catalog"/);
+    assert.match(js, /remote-collapsed-pools/);
+    assert.doesNotMatch(js, /\.innerHTML\s*=/);
+  } finally {
+    await remote.close();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(ws, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
   }
 });

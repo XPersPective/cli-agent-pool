@@ -1146,6 +1146,188 @@
   }
   .acl-details { margin-top: 8px; }
   .acl-details summary { cursor: pointer; font-weight: 600; font-size: 12.5px; color: var(--accent); }
+
+  /* Back chip & inline groups */
+  .back-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-height: 30px;
+    padding: 0 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--bg-surface);
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 600;
+    flex: 0 0 auto;
+  }
+  .back-chip:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+  .inline-btn-group { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+
+  /* Composer left tools & document attachments */
+  .composer-left-tools { display: flex; align-items: center; gap: 2px; min-width: 0; flex: 1; }
+  .composer-card.drag-over { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
+  .attachments-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 6px 10px 2px;
+  }
+  .att-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 240px;
+    padding: 3px 8px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-surface);
+    font-size: 11.5px;
+    color: var(--text);
+  }
+  .att-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .att-chip-rm {
+    border: 0;
+    background: transparent;
+    color: var(--text-subtle);
+    padding: 0 2px;
+    font-size: 12px;
+  }
+  .att-chip-rm:hover { color: var(--danger); }
+
+  /* Message tool/subscription pills & document actions */
+  .msg-model-stack { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; min-width: 0; }
+  .tool-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 7px;
+    border-radius: 6px;
+    font-size: 10.5px;
+    font-weight: 600;
+    background: var(--accent-bg);
+    color: var(--accent);
+  }
+  .sub-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 7px;
+    border-radius: 6px;
+    font-size: 10.5px;
+    color: var(--text-muted);
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    max-width: 190px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .msg-doc-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+    padding-top: 7px;
+    border-top: 1px solid var(--border);
+  }
+  .mini-action-btn {
+    min-height: 26px;
+    padding: 0 9px;
+    border-radius: 7px;
+    border: 1px solid var(--border);
+    background: var(--bg-surface);
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .mini-action-btn:hover { color: var(--text); background: var(--bg-hover); border-color: var(--border-strong); }
+  .file-pill-btn {
+    padding: 3px 8px;
+    border-radius: 7px;
+    background: var(--bg-code);
+    border: 1px solid var(--border);
+    color: var(--accent);
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 11px;
+  }
+  .file-pill-btn:hover { background: var(--accent-bg); border-color: var(--accent); }
+
+  /* Model Picker: Selected Summary + Collapsible Category Headers */
+  .picker-selected-summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 8px 12px;
+    background: var(--accent-bg);
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .picker-selected-left { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; min-width: 0; }
+  .picker-cat-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 0;
+    background: transparent;
+    padding: 3px 4px;
+    border-radius: 6px;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .picker-cat-toggle:hover { background: var(--bg-hover); color: var(--text); }
+  .picker-cat-chevron { display: inline-block; width: 12px; text-align: center; font-size: 10px; }
+
+  /* Pools & Catalog Management */
+  .pools-subbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .pools-search-box { flex: 1 1 200px; min-width: 180px; }
+  .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip-btn {
+    min-height: 28px;
+    padding: 0 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--bg-surface);
+    color: var(--text-muted);
+    font-size: 11.5px;
+    font-weight: 600;
+  }
+  .chip-btn.active { background: var(--accent-bg); border-color: var(--accent); color: var(--accent); }
+  .pool-mgmt-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 9px;
+    border: 1px solid var(--border);
+    background: var(--bg-surface);
+  }
+  .pool-mgmt-row.selected { border-color: var(--accent); background: var(--accent-bg); }
+  .pool-mgmt-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+  .pool-add-select {
+    min-height: 28px;
+    padding: 0 8px;
+    border-radius: 7px;
+    border: 1px solid var(--border-strong);
+    background: var(--bg-elevated);
+    color: var(--text);
+    font-size: 11.5px;
+  }
+  .manual-path-row { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+  .doc-dialog { width: min(96vw, 720px); }
 }
 
 @layer utilities {

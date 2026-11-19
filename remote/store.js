@@ -81,14 +81,19 @@ export class RemoteStore {
     try {
       const parsed = JSON.parse(readFileSync(this.file, 'utf8'));
       const base = emptyState();
+      const cleanPaths = list => (Array.isArray(list) ? list : []).filter(p => typeof p === 'string' && p.trim() && p.trim() !== '[object Object]');
+      const cleanChats = (Array.isArray(parsed.chats) ? parsed.chats : []).map(c => ({
+        ...c,
+        workspace: (typeof c?.workspace === 'string' && c.workspace.trim() !== '[object Object]') ? c.workspace.trim() : '',
+      }));
       return {
         version: 1,
         cookieKey: typeof parsed.cookieKey === 'string' && parsed.cookieKey.length >= 32 ? parsed.cookieKey : base.cookieKey,
         devices: Array.isArray(parsed.devices) ? parsed.devices : [],
-        sharedFolders: Array.isArray(parsed.sharedFolders) ? parsed.sharedFolders : [],
-        favoriteFolders: Array.isArray(parsed.favoriteFolders) ? parsed.favoriteFolders : [],
-        recentFolders: Array.isArray(parsed.recentFolders) ? parsed.recentFolders : [],
-        chats: Array.isArray(parsed.chats) ? parsed.chats : [],
+        sharedFolders: cleanPaths(parsed.sharedFolders),
+        favoriteFolders: cleanPaths(parsed.favoriteFolders),
+        recentFolders: cleanPaths(parsed.recentFolders),
+        chats: cleanChats,
       };
     } catch {
       const fallback = emptyState();
