@@ -829,6 +829,10 @@ test('v2.25.0: project chat runs write without forced execute JSON protocol, no 
     assert.doesNotMatch(css, /\.send-btn\.sending\s+svg/);
     assert.match(js, /isRawReportJson/);
     assert.match(readFileSync(path.resolve('src/folder-picker.cs'), 'utf8'), /CenterScreen/);
+    assert.match(readFileSync(path.resolve('src/folder-picker.cs'), 'utf8'), /AttachThreadInput/);
+    const dashCs = readFileSync(path.resolve('src/dashboard.cs'), 'utf8');
+    assert.match(dashCs, /AttachThreadInput/);
+    assert.match(dashCs, /GetWindowTextLength/);
   } finally {
     await remote.close();
     rmSync(dir, { recursive: true, force: true });

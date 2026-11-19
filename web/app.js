@@ -731,8 +731,8 @@ async function triggerSafeExit() {
 }
 
 $('open-remote')?.addEventListener('click', () => void action(async () => {
-  await call('open_remote');
-  notice('CLI Agent Remote penceresi açıldı.');
+  const res = await call('open_remote');
+  notice(res?.port ? `CLI Agent Remote penceresi açıldı (http://127.0.0.1:${res.port}).` : 'CLI Agent Remote penceresi açıldı.');
 }));
 $('apply-console-fix')?.addEventListener('click', () => void action(async () => {
   await call('fix_console');

@@ -479,7 +479,7 @@ export function browserUI(pool, management, { openLogin = openCliLogin } = {}) {
       if (operation === 'open_remote') {
         const info = await ensureRemoteDaemon(management.directory, { python: pool.config.python });
         const win = await openRemoteWindow(info.localUrl);
-        return { opened: true, port: info.port, tailscaleIp: info.tailscaleIp, ...win };
+        return { opened: true, port: info.port, localUrl: info.localUrl, tailscaleIp: info.tailscaleIp, ...win };
       }
       if (operation === 'console_status') {
         return windowsConsoleHostStatus(pool.config.python);

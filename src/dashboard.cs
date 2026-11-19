@@ -14,11 +14,23 @@ internal static class Dashboard {
     delegate bool EnumCallback(IntPtr window, IntPtr data);
     [DllImport("user32.dll")] static extern bool EnumWindows(EnumCallback callback, IntPtr data);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")] static extern bool IsIconic(IntPtr window);
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
-    [DllImport("user32.dll")] static extern bool ShowWindowAsync(IntPtr window, int command);
+    [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr window, int command);
+    [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr window);
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr window);
+    [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
     [DllImport("user32.dll")] static extern bool PostMessage(IntPtr window, uint message, IntPtr w, IntPtr l);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr window, StringBuilder name, int length);
+    [DllImport("user32.dll")] static extern int GetWindowTextLength(IntPtr window);
+    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window, out RECT rect);
+    [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
+    static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+    static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
+    const uint SWP_NOMOVE = 0x0002, SWP_NOSIZE = 0x0001, SWP_SHOWWINDOW = 0x0040;
 
     static string Quote(string value) {
         // Windows paths and these fixed browser arguments cannot contain embedded quotes.
@@ -44,7 +56,11 @@ internal static class Dashboard {
             uint pid; GetWindowThreadProcessId(window, out pid);
             if (ids.Contains(pid) && IsWindowVisible(window)) {
                 var name = new StringBuilder(256); GetClassName(window, name, name.Capacity);
-                if (name.ToString() == "Chrome_WidgetWin_1") windows.Add(window);
+                if (name.ToString() == "Chrome_WidgetWin_1" && GetWindowTextLength(window) > 0) {
+                    RECT rect;
+                    if (IsIconic(window) || (GetWindowRect(window, out rect) && (rect.Right - rect.Left) >= 120 && (rect.Bottom - rect.Top) >= 120))
+                        windows.Add(window);
+                }
             }
             return true;
         }, IntPtr.Zero);
@@ -62,8 +78,21 @@ internal static class Dashboard {
     static void Activate(List<IntPtr> windows) {
         // Retire duplicate Pool windows only; workers and personal browser profiles are unrelated.
         for (int i=1; i<windows.Count; i++) PostMessage(windows[i], 0x0010, IntPtr.Zero, IntPtr.Zero);
-        ShowWindowAsync(windows[0], 9);
-        SetForegroundWindow(windows[0]);
+        IntPtr target = windows[0];
+        IntPtr fg = GetForegroundWindow();
+        uint unused;
+        uint fgThread = fg != IntPtr.Zero ? GetWindowThreadProcessId(fg, out unused) : 0;
+        uint curThread = GetCurrentThreadId();
+        bool attached = fgThread != 0 && fgThread != curThread && AttachThreadInput(curThread, fgThread, true);
+        try {
+            ShowWindow(target, IsIconic(target) ? 9 : 5);
+            SetWindowPos(target, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+            SetWindowPos(target, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+            BringWindowToTop(target);
+            SetForegroundWindow(target);
+        } finally {
+            if (attached) AttachThreadInput(curThread, fgThread, false);
+        }
     }
     static string EnsureUrl(string directory, string node, string pool, string ensureCommand) {
         var start = new ProcessStartInfo(node, Quote(pool) + " " + ensureCommand) { UseShellExecute=false, CreateNoWindow=true, RedirectStandardOutput=true, RedirectStandardError=true, WorkingDirectory=directory };

@@ -152,6 +152,14 @@
 - [x] **Doğrulama kanıtı (2.20.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate`, `npm test` (`218/218`, yeni `test/remote.test.js` dahil) ve canlı `cli-agent-pool` servisi üzerinden `/r/state` uçtan uca entegrasyon testi doğrulandı.
 
 ## 2.19.0 — Onay/Ekleme Kilidi Düzeltmesi, Windows Pythonw İzolasyonu, 300 Model Sınırı, Neon/Ağ Hata Düzeltmeleri ve Otomatik Güncelleme Bildirimi
+## 2.25.1 — Windows 11 Pencere / Klasör Seçici Ön Plana Getirme ve Hayalet Pencere Filtresi
+- [x] **Windows 11 ön plana getirme ve hayalet `Chrome_WidgetWin_1` filtresi (`src/dashboard.cs`, `src/folder-picker.cs`, `src/web.js`, `web/app.js`)**:
+  - `src/dashboard.cs`: `Windows(profile)` artık başlıksız veya `0x0` boyutlu hayalet Edge yardımcı pencerelerini yok sayar (`GetWindowTextLength > 0`, en az `120x120` veya simge durumunda); `Activate()` `AttachThreadInput` + `IsIconic` + `SetWindowPos(HWND_TOPMOST/NOTOPMOST)` + `BringWindowToTop` + `SetForegroundWindow` ile mevcut pencereyi Windows 11'de gerçek ön plana getirir.
+  - `src/folder-picker.cs`: `AttachThreadInput` + `SetWindowPos(HWND_TOPMOST)` + `Opacity = 0.01` + `CenterScreen` ile yerel Windows klasör seçicisinin tarayıcı arkasında kalması giderildi.
+  - `open_remote` yanıtına `localUrl` eklendi ve `#open-remote` bildiriminde adres de gösterilir.
+- [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.25.1`.
+- [x] **Doğrulama kanıtı (2.25.1)**: `csc.exe` ile `dashboard.cs` ve `folder-picker.cs` sıfır uyarıyla derlendi; `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate`, `npm test` (`223/223`) geçti.
+
 ## 2.25.0 — Sıfır Proje Kilidi / Tam Paralel Çalışma, Remote Doğrudan Proje Modu, Klasör Seçici & Oturum Düzeltmeleri
 - [x] **Çekirdekte proje kilidi, karantina (`needs_review`) ve yönetici çakışma engeli tamamen kaldırıldı (`src/pool.js`, `src/store.js`, `src/task-protocol.js`, `src/director.js`, `src/web.js`)**:
   - `Pool.schedule()` artık aynı proje klasöründeki tüm `write`/`read`/`text`/yönetici görevlerini birbirini sıraya almadan **tamamen paralel** başlatır (`workspaceConflict()` her zaman `false`).

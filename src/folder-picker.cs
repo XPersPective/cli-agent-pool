@@ -44,7 +44,19 @@ internal static class FolderPicker
     [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
     private static extern void SHCreateItemFromParsingName(string path, IntPtr bind, ref Guid iid, out IShellItem item);
     [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")]
+    private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+    [DllImport("user32.dll")]
+    private static extern bool BringWindowToTop(IntPtr hWnd);
+    [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 
     [STAThread]
     private static void Main()
@@ -52,12 +64,26 @@ internal static class FolderPicker
         try
         {
             var dialog = (IFileDialog)new NativeFolderDialog();
-            using (var owner = new Form { TopMost = true, Opacity = 0, ShowInTaskbar = true, StartPosition = FormStartPosition.CenterScreen, Width = 1, Height = 1, FormBorderStyle = FormBorderStyle.None, Text = "Klasör Seç" })
+            using (var owner = new Form { TopMost = true, Opacity = 0.01, ShowInTaskbar = true, StartPosition = FormStartPosition.CenterScreen, Width = 1, Height = 1, FormBorderStyle = FormBorderStyle.None, Text = "Klasör Seç" })
             try
             {
                 owner.Show();
-                owner.Activate();
-                SetForegroundWindow(owner.Handle);
+                IntPtr fg = GetForegroundWindow();
+                uint unused;
+                uint fgTid = fg != IntPtr.Zero ? GetWindowThreadProcessId(fg, out unused) : 0;
+                uint curTid = GetCurrentThreadId();
+                bool attached = fgTid != 0 && fgTid != curTid && AttachThreadInput(curTid, fgTid, true);
+                try
+                {
+                    SetWindowPos(owner.Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040);
+                    BringWindowToTop(owner.Handle);
+                    owner.Activate();
+                    SetForegroundWindow(owner.Handle);
+                }
+                finally
+                {
+                    if (attached) AttachThreadInput(curTid, fgTid, false);
+                }
                 uint options;
                 dialog.GetOptions(out options);
                 dialog.SetOptions(options | 0x20 | 0x40 | 0x800 | 0x02000000); // Pick folders, filesystem, existing path, no recent-history write.
