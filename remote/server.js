@@ -320,7 +320,7 @@ function createPoolBridge(directory, customFetch = fetch) {
     routeQuota: routeId => requestPool(`/api/quotas/${encodeURIComponent(routeId)}`, { auth: true }),
     liveQuota: routeId => requestPool(`/api/quotas/${encodeURIComponent(routeId)}?live=1`, { auth: true, timeoutMs: 45_000 }),
     connections: () => requestPool('/api/connections', { auth: true }),
-    tasks: (limit = 50) => requestPool(`/api/tasks?limit=${limit}`, { auth: true }),
+    tasks: (limit = 50) => requestPool(`/api/tasks?limit=${limit}&activeFirst=1`, { auth: true }),
     task: (id, compact = false) => requestPool(`/api/tasks/${encodeURIComponent(id)}?compact=${compact ? '1' : '0'}`, { auth: true }),
     submit: payload => requestPool('/api/tasks', { method: 'POST', body: payload, auth: true, timeoutMs: 30_000 }),
     cancel: id => requestPool(`/api/tasks/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: {}, auth: true }),
@@ -440,6 +440,33 @@ export function createRemoteServer({
 
   const unauthHtml = `<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CLI Agent Remote</title><style>body{margin:0;min-height:100dvh;display:grid;place-items:center;padding:24px;background:#0b0d12;color:#edf1f7;font:15px/1.6 system-ui,sans-serif}.box{max-width:440px;padding:24px;border:1px solid #262d3d;border-radius:16px;background:#141821}h1{margin:0 0 10px;font-size:19px}p{margin:0 0 10px;color:#9aa6bd;font-size:14px}strong{color:#edf1f7}</style></head><body><div class="box"><h1>Yetkilendirme Gerekli</h1><p>Bu cihaz henüz eşleştirilmemiş veya tek kullanımlık bağlantı daha önce kullanılmış.</p><p><strong>Bilgisayarda açmak için:</strong> Masaüstündeki <strong>CLI Agent Remote</strong> kısayoluna çift tıklayın veya CLI Agent Pool üst çubuğundaki <strong>Remote Sohbet</strong> düğmesine basın.</p><p><strong>Telefonda açmak için:</strong> Bilgisayarda açılan CLI Agent Remote ekranından <strong>Telefon Bağla (QR)</strong> kodunu telefon kamerasıyla okutun.</p></div></body></html>`;
 
+  const syncTaskIntoChat = (chatId, taskId, task) => {
+    if (!chatId || !taskId || !task) return;
+    const evs = Array.isArray(task.events) ? task.events : [];
+    const updatedMsg = remoteStore.updateTaskMessage(chatId, taskId, {
+      state: task.state,
+      queueReason: task.queueReason || null,
+      blockedBy: task.blockedBy || null,
+      result: task.result || '',
+      error: task.error || null,
+      errorDetail: task.errorDetail || '',
+      report: task.report || null,
+      reportedModel: task.reportedModel || null,
+      ...(task.sessionId ? { sessionId: task.sessionId } : {}),
+      events: evs.slice(-30),
+    });
+    if (task.sessionId) {
+      remoteStore.recordTaskSession(chatId, taskId, task.sessionId);
+    }
+    if (
+      task.state === 'failed' &&
+      updatedMsg?.resumedSessionId &&
+      ['CLI_FAILED', 'INVALID_RESULT', 'PROTOCOL_ERROR'].includes(task.error)
+    ) {
+      remoteStore.clearChatNativeSession(chatId, updatedMsg.resumedSessionId);
+    }
+  };
+
   const handler = async (req, res) => {
     const actualPort = req.socket?.localPort || port;
     if (!hostAllowed(req.headers.host, actualPort)) {
@@ -498,7 +525,7 @@ export function createRemoteServer({
     // Public PWA manifest & icon (no sensitive data)
     if (req.method === 'GET' && (pathname === '/manifest.webmanifest' || pathname === '/icon.svg')) {
       const [type, read] = staticFiles.get(pathname);
-      res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'public, max-age=3600', 'X-Content-Type-Options': 'nosniff' });
+      res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
       return res.end(read());
     }
 
@@ -591,6 +618,7 @@ export function createRemoteServer({
         'Cache-Control': 'no-store',
         'X-Content-Type-Options': 'nosniff',
         'Referrer-Policy': 'no-referrer',
+        'Permissions-Policy': 'microphone=(self)',
         'Content-Security-Policy': "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; manifest-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
       });
       return res.end(read());
@@ -601,50 +629,59 @@ export function createRemoteServer({
       const taskId = url.searchParams.get('taskId') || '';
       const chatId = url.searchParams.get('chatId') || '';
       if (!taskId) return sendJson(res, 400, { error: { code: 'INVALID_REQUEST', message: 'taskId gerekli.' } });
+      req.setTimeout?.(0);
+      res.setTimeout?.(0);
       res.writeHead(200, {
         'Content-Type': 'text/event-stream; charset=utf-8',
         'Cache-Control': 'no-store',
         Connection: 'keep-alive',
         'X-Accel-Buffering': 'no',
       });
+      res.write('retry: 2000\n\n');
       let closed = false;
       req.once('close', () => { closed = true; });
       let lastStamp = '';
+      let lastWriteAt = Date.now();
       const push = (event, data) => {
         if (closed || res.writableEnded) return;
         res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        lastWriteAt = Date.now();
       };
       const loop = async () => {
-        for (let tick = 0; tick < 3600 && !closed; tick++) {
+        let consecutiveErrors = 0;
+        let tick = 0;
+        while (!closed) {
+          tick++;
           try {
             const task = await pool.task(taskId, false);
-            const stamp = `${task.state}:${task.updated}:${task.queueReason || ''}:${task.blockedBy || ''}:${(task.events || []).length}:${(task.result || '').length}:${task.error || ''}`;
+            consecutiveErrors = 0;
+            const evs = Array.isArray(task.events) ? task.events : [];
+            const lastSeq = evs.length ? (evs[evs.length - 1]?.seq ?? evs.length) : 0;
+            const stamp = `${task.state}:${task.updated}:${task.queueReason || ''}:${task.blockedBy || ''}:${task.sessionId || ''}:${evs.length}:${lastSeq}:${(task.result || '').length}:${task.error || ''}:${(task.errorDetail || '').length}`;
             if (stamp !== lastStamp) {
               lastStamp = stamp;
-              if (chatId) {
-                remoteStore.updateTaskMessage(chatId, taskId, {
-                  state: task.state,
-                  queueReason: task.queueReason || null,
-                  blockedBy: task.blockedBy || null,
-                  result: task.result || '',
-                  error: task.error || null,
-                  errorDetail: task.errorDetail || '',
-                  report: task.report || null,
-                  reportedModel: task.reportedModel || null,
-                  events: (task.events || []).slice(-30),
-                });
-              }
+              if (chatId) syncTaskIntoChat(chatId, taskId, task);
               push('update', { task });
+            } else if (Date.now() - lastWriteAt >= 15_000 && !closed && !res.writableEnded) {
+              // Keep Tailscale HTTPS proxy & mobile carrier NAT alive during long silent tool steps.
+              res.write(': keepalive\n\n');
+              lastWriteAt = Date.now();
             }
             if (TERMINAL_STATES.has(task.state)) {
               push('done', { task });
               break;
             }
           } catch (err) {
-            push('error', { message: err instanceof PoolError ? err.message : 'Görev durumu okunamadı.' });
-            break;
+            consecutiveErrors++;
+            if (consecutiveErrors >= 6 || (err instanceof PoolError && err.code === 'NOT_FOUND')) {
+              push('error', { message: err instanceof PoolError ? err.message : 'Görev durumu okunamadı.' });
+              break;
+            }
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            continue;
           }
-          await new Promise(resolve => setTimeout(resolve, 250));
+          const delayMs = tick < 60 ? 250 : 500;
+          await new Promise(resolve => setTimeout(resolve, delayMs));
         }
         if (!res.writableEnded) res.end();
       };
@@ -718,29 +755,32 @@ export function createRemoteServer({
               ),
             }));
           }
-          // Enrich queued tasks with live queueReason & blockedBy so UI explains exactly why they are queued
-          const queuedIds = tasks.filter(t => t.state === 'queued' && !t.queueReason).slice(0, 10);
-          const queuedDetails = new Map();
-          if (queuedIds.length && typeof pool.task === 'function') {
-            const qDetailRes = await Promise.allSettled(queuedIds.map(t => pool.task(t.id, false)));
-            queuedIds.forEach((t, idx) => {
-              if (qDetailRes[idx]?.status === 'fulfilled' && qDetailRes[idx].value) {
-                queuedDetails.set(t.id, qDetailRes[idx].value);
+          // Enrich active tasks (queued/starting/running/cancelling) with live progress events, queueReason & blockedBy
+          const activeTaskIds = tasks.filter(t => !TERMINAL_STATES.has(t.state)).slice(0, 10);
+          const activeDetails = new Map();
+          if (activeTaskIds.length && typeof pool.task === 'function') {
+            const detailRes = await Promise.allSettled(activeTaskIds.map(t => pool.task(t.id, false)));
+            activeTaskIds.forEach((t, idx) => {
+              if (detailRes[idx]?.status === 'fulfilled' && detailRes[idx].value) {
+                activeDetails.set(t.id, detailRes[idx].value);
               }
             });
           }
           tasks = tasks.map(t => {
             const meta = routeMetaByRoute.get(t.routeId) || {};
-            const extra = queuedDetails.get(t.id);
+            const extra = activeDetails.get(t.id);
             return {
               ...t,
               queueReason: extra?.queueReason ?? t.queueReason ?? null,
               blockedBy: extra?.blockedBy ?? t.blockedBy ?? null,
+              events: extra?.events ? extra.events.slice(-15) : (t.events || []),
+              errorDetail: extra?.errorDetail ?? t.errorDetail ?? '',
               toolLabel: toolLabelFor(meta.adapter),
               email: meta.email || '',
               account: meta.account || '',
             };
           });
+          tasks.sort((a, b) => Number(!TERMINAL_STATES.has(b.state)) - Number(!TERMINAL_STATES.has(a.state)));
         }
         const cfg = pool.getConfig();
         const mergedShared = [...new Set([...(cfg.workspaceRoots || []), ...remoteStore.state.sharedFolders])];
@@ -947,17 +987,7 @@ export function createRemoteServer({
             if (msg.role === 'assistant' && msg.taskId && !TERMINAL_STATES.has(msg.state)) {
               try {
                 const live = await pool.task(msg.taskId, false);
-                remoteStore.updateTaskMessage(chatId, msg.taskId, {
-                  state: live.state,
-                  queueReason: live.queueReason || null,
-                  blockedBy: live.blockedBy || null,
-                  result: live.result || '',
-                  error: live.error || null,
-                  errorDetail: live.errorDetail || '',
-                  report: live.report || null,
-                  reportedModel: live.reportedModel || null,
-                  events: (live.events || []).slice(-30),
-                });
+                syncTaskIntoChat(chatId, msg.taskId, live);
               } catch { /* keep cached */ }
             }
           }
@@ -1027,21 +1057,65 @@ export function createRemoteServer({
           const includeContext = body.includeContext !== false;
           const docBlocks = cleanAttachments.map(a => `[Eklenen Doküman: ${a.name}]\n${a.content}\n[/Eklenen Doküman]`).join('\n\n');
           const combinedUserPrompt = [rawPrompt, docBlocks].filter(Boolean).join('\n\n');
-          const builtPrompt = buildCompactPrompt(chat, combinedUserPrompt, includeContext);
-          const finalPrompt = hasProject
-            ? builtPrompt
-            : `[Genel sohbet modu: Şu an bir proje klasörüne veya git deposuna bağlı değilsin. Dosya/repo arama veya repo uyarısı yapma; doğrudan kullanıcının mesajına doğal yanıt ver.]\n\n${builtPrompt}`;
 
+          // Native CLI session continuity:
+          // If the user continues chatting in the same chat with the same route+model+workspace,
+          // resume the existing native CLI session directly instead of opening a fresh session.
+          // If the user switches model/route/workspace (or no prior session exists), start a new
+          // persistent CLI session and pass the compact conversation summary as context handoff.
+          const chatWsKey = hasProject ? canonicalWorkspace : '';
+          const reqRouteId = body.routeId ? String(body.routeId) : '';
+          const reqModelId = body.modelId ? String(body.modelId) : '';
+          const reqGroup = body.group ? String(body.group) : '';
+          const lastAssistantWithSession = [...(chat.messages || [])].reverse().find(m => m.role === 'assistant' && m.sessionId);
+          const candidateSession = chat.nativeSession?.sessionId
+            ? chat.nativeSession
+            : (lastAssistantWithSession
+                ? {
+                    sessionId: lastAssistantWithSession.sessionId,
+                    routeId: lastAssistantWithSession.routeId || '',
+                    modelId: lastAssistantWithSession.modelId || '',
+                    group: lastAssistantWithSession.group || '',
+                    workspace: lastAssistantWithSession.workspace || '',
+                  }
+                : null);
+
+          let resumeSession = null;
+          if (includeContext && candidateSession?.sessionId && (candidateSession.workspace || '') === chatWsKey) {
+            const explicitTarget = Boolean(reqRouteId || reqModelId);
+            const sameTarget = explicitTarget
+              ? ((!reqRouteId || reqRouteId === candidateSession.routeId) && (!reqModelId || reqModelId === candidateSession.modelId))
+              : (!reqGroup || !candidateSession.group || reqGroup === candidateSession.group);
+            if (sameTarget && candidateSession.routeId && candidateSession.modelId) {
+              resumeSession = candidateSession;
+            }
+          }
+
+          const finalPrompt = resumeSession
+            ? combinedUserPrompt
+            : (() => {
+                const builtPrompt = buildCompactPrompt(chat, combinedUserPrompt, includeContext);
+                return hasProject
+                  ? builtPrompt
+                  : `[Genel sohbet modu: Şu an bir proje klasörüne veya git deposuna bağlı değilsin. Dosya/repo arama veya repo uyarısı yapma; doğrudan kullanıcının mesajına doğal yanıt ver.]\n\n${builtPrompt}`;
+              })();
+
+          // Sessions run until completion or explicit cancellation (0 = no timeout).
+          const timeoutSeconds = 0;
           const taskReq = {
             prompt: finalPrompt,
             workspace: canonicalWorkspace,
             kind,
             ...(mode ? { mode } : {}),
-            ...(body.group ? { group: String(body.group) } : {}),
-            ...(body.routeId ? { routeId: String(body.routeId) } : {}),
-            ...(body.modelId ? { modelId: String(body.modelId) } : {}),
+            ...(reqGroup ? { group: reqGroup } : {}),
+            ...(resumeSession ? { routeId: resumeSession.routeId, modelId: resumeSession.modelId } : {
+              ...(reqRouteId ? { routeId: reqRouteId } : {}),
+              ...(reqModelId ? { modelId: reqModelId } : {}),
+            }),
             ...(cleanEffort ? { effort: cleanEffort } : {}),
-            timeoutSeconds: Number.isInteger(body.timeoutSeconds) ? body.timeoutSeconds : 600,
+            persistSession: true,
+            ...(resumeSession ? { sessionId: resumeSession.sessionId } : {}),
+            timeoutSeconds,
             clientLabel: `Remote (${device.label})`,
             idempotencyKey: `remote-${randomUUID()}`,
           };
@@ -1087,10 +1161,13 @@ export function createRemoteServer({
             account: routeMeta.account,
             billing: routeMeta.billing,
             workspace: hasProject ? canonicalWorkspace : '',
-            group: submitted.group || body.group || null,
+            group: submitted.group || reqGroup || null,
             effort: (submitted.effort && submitted.effort !== 'default') ? submitted.effort : (cleanEffort || null),
             kind,
             mode,
+            sessionId: submitted.sessionId || (resumeSession ? resumeSession.sessionId : null),
+            resumedSessionId: resumeSession ? resumeSession.sessionId : null,
+            resumedSession: Boolean(resumeSession),
             state: submitted.state || 'queued',
             queueReason: submitted.queueReason || null,
             blockedBy: submitted.blockedBy || null,
@@ -1100,6 +1177,12 @@ export function createRemoteServer({
             report: submitted.report || null,
             events: [],
           });
+          if (submitted.sessionId) {
+            remoteStore.recordTaskSession(chatId, submitted.id, submitted.sessionId);
+          } else if (!resumeSession) {
+            // Switched model/route/workspace: clear old nativeSession until the new CLI emits its own sessionId
+            remoteStore.clearChatNativeSession(chatId);
+          }
           return sendJson(res, 200, {
             chat: remoteStore.getChat(chatId),
             userMessage: userMsg,
@@ -1231,6 +1314,7 @@ export function createRemoteServer({
   const bindHostServer = async bindHost => {
     if (servers.has(bindHost) || closed) return;
     const srv = http.createServer((req, res) => { void handler(req, res); });
+    srv.keepAliveTimeout = 65_000;
     await new Promise((resolve, reject) => {
       srv.once('error', reject);
       srv.listen(activePort, bindHost, () => {
@@ -1308,6 +1392,10 @@ export function createRemoteServer({
       if (host === 'tailscale' && !tsPollTimer) {
         tsPollTimer = setInterval(() => { void syncTailscaleListener(); }, 15_000);
         tsPollTimer.unref();
+      }
+      if (tailscaleIp) {
+        lastHttpsCheckAt = Date.now();
+        void Promise.resolve(detectTailscaleHttps(activePort)).then(u => { tailscaleHttpsUrl = u || null; }).catch(() => {});
       }
       const localUrl = `http://127.0.0.1:${activePort}/?pair=${initialPairing.code}`;
       const tailscaleUrl = tailscaleIp && servers.has(tailscaleIp)

@@ -242,7 +242,25 @@ export async function main(args = process.argv.slice(2)) {
       env: { ...process.env, CLI_AGENT_POOL_HOME: directory },
       python: config.python,
     });
-    print({ restarted: true, endpoint: `http://127.0.0.1:${config.port}/mcp` });
+    // Also restart Remote daemon cleanly so remote/server.js & PWA stay on the same version (preserves paired devices & chats).
+    let remoteRestarted = false;
+    try {
+      const stopRes = await stopRemoteDaemon(directory);
+      if (stopRes && !stopRes.alreadyStopped) {
+        for (let attempt = 0; attempt < 40; attempt++) {
+          await delay(100);
+          try {
+            const check = await fetch('http://127.0.0.1:43128/manifest.webmanifest', { signal: AbortSignal.timeout(400) });
+            if (!check.ok) break;
+          } catch {
+            break;
+          }
+        }
+        await ensureRemoteDaemon(directory, { python: config.python });
+        remoteRestarted = true;
+      }
+    } catch { /* Remote restart is best-effort */ }
+    print({ restarted: true, remoteRestarted, endpoint: `http://127.0.0.1:${config.port}/mcp` });
     return;
   }
   const apiOrMcp = async (routePath, mcpTool, mcpArgs) => {

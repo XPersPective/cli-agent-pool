@@ -635,22 +635,27 @@ export function buildArguments(route, model, task, context = null) {
   const effort = rawEffort && rawEffort !== 'default'
     ? rawEffort
     : (route.adapter === 'agy' && model.variants?.[rawEffort] ? rawEffort : undefined);
+  const keepSession = Boolean(task.persistSession || task.sessionId);
+  const sessionId = typeof task.sessionId === 'string' && task.sessionId.trim() ? task.sessionId.trim() : '';
   if (Array.isArray(route.argsTemplate) && route.argsTemplate.length > 0) {
     const values = { model: model.id, effort: effort || 'default', workspace: task.workspace, prompt: task.prompt, kind: task.kind };
     const built = route.argsTemplate.map(token => token.replace(/\{(model|effort|workspace|prompt|kind)\}/g, (_, k) => String(values[k] ?? '')));
     return [...argv, ...built];
   }
-  if (route.adapter === 'codex') return [...argv, '-a', 'never', ...(task.mode === 'execute' ? ['--search'] : []), 'exec', '--ignore-user-config', '--ephemeral', '--skip-git-repo-check', '--json', '--sandbox', task.kind === 'write' ? 'workspace-write' : 'read-only', '-C', task.workspace, ...(process.platform === 'win32' ? ['-c', 'windows.sandbox="elevated"'] : []), ...(route.profile ? ['-c', 'cli_auth_credentials_store="file"'] : []), '-c', 'model_provider="openai"', ...(directorRun ? codexDirectorArguments(route, context) : []), '-m', model.id, ...(effort ? ['-c', `model_reasoning_effort=${JSON.stringify(effort)}`] : []), '-'];
-  if (route.adapter === 'claude') return [...argv, '-p', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--permission-mode', task.kind === 'write' ? 'acceptEdits' : 'dontAsk', '--permission-prompts', 'none', '--strict-mcp-config', '--mcp-config', directorRun ? JSON.stringify({ mcpServers: { 'cli-agent-pool': poolMcpServer(context) } }) : '{"mcpServers":{}}', '--disable-slash-commands', ...claudeSettingSources(route), '--tools', task.kind === 'text' ? '' : task.kind === 'read' ? 'Read,Glob,Grep' : task.mode === 'execute' ? 'default' : 'Read,Glob,Grep,Edit,Write', ...(directorRun && context.readPaths?.length ? ['--allowedTools', ...context.readPaths.map(claudeReadRule)] : []), '--model', model.id, ...(effort ? ['--effort', effort] : [])];
-  if (route.adapter === 'opencode' || route.adapter === 'mimo') return [...argv, 'run', '--format', 'json', '--pure', '-m', opencodeModelId(route, model.id), '--agent', task.kind === 'write' ? 'build' : 'plan', ...(effort ? ['--variant', effort] : [])];
+  if (route.adapter === 'codex') {
+    if (sessionId) return [...argv, '-a', 'never', ...(task.mode === 'execute' ? ['--search'] : []), 'exec', 'resume', '--ignore-user-config', '--skip-git-repo-check', '--json', '-c', `sandbox_mode=${JSON.stringify(task.kind === 'write' ? 'workspace-write' : 'read-only')}`, ...(process.platform === 'win32' ? ['-c', 'windows.sandbox="elevated"'] : []), ...(route.profile ? ['-c', 'cli_auth_credentials_store="file"'] : []), '-c', 'model_provider="openai"', ...(directorRun ? codexDirectorArguments(route, context) : []), '-m', model.id, ...(effort ? ['-c', `model_reasoning_effort=${JSON.stringify(effort)}`] : []), sessionId, '-'];
+    return [...argv, '-a', 'never', ...(task.mode === 'execute' ? ['--search'] : []), 'exec', '--ignore-user-config', ...(keepSession ? [] : ['--ephemeral']), '--skip-git-repo-check', '--json', '--sandbox', task.kind === 'write' ? 'workspace-write' : 'read-only', '-C', task.workspace, ...(process.platform === 'win32' ? ['-c', 'windows.sandbox="elevated"'] : []), ...(route.profile ? ['-c', 'cli_auth_credentials_store="file"'] : []), '-c', 'model_provider="openai"', ...(directorRun ? codexDirectorArguments(route, context) : []), '-m', model.id, ...(effort ? ['-c', `model_reasoning_effort=${JSON.stringify(effort)}`] : []), '-'];
+  }
+  if (route.adapter === 'claude') return [...argv, '-p', '--output-format', 'stream-json', '--verbose', ...(keepSession ? [] : ['--no-session-persistence']), ...(sessionId ? ['--resume', sessionId] : []), '--permission-mode', task.kind === 'write' ? 'acceptEdits' : 'dontAsk', '--permission-prompts', 'none', '--strict-mcp-config', '--mcp-config', directorRun ? JSON.stringify({ mcpServers: { 'cli-agent-pool': poolMcpServer(context) } }) : '{"mcpServers":{}}', '--disable-slash-commands', ...claudeSettingSources(route), '--tools', task.kind === 'text' ? '' : task.kind === 'read' ? 'Read,Glob,Grep' : task.mode === 'execute' ? 'default' : 'Read,Glob,Grep,Edit,Write', ...(directorRun && context.readPaths?.length ? ['--allowedTools', ...context.readPaths.map(claudeReadRule)] : []), '--model', model.id, ...(effort ? ['--effort', effort] : [])];
+  if (route.adapter === 'opencode' || route.adapter === 'mimo') return [...argv, 'run', '--format', 'json', '--pure', ...(sessionId ? ['--session', sessionId] : []), '-m', opencodeModelId(route, model.id), '--agent', task.kind === 'write' ? 'build' : 'plan', ...(effort ? ['--variant', effort] : [])];
   // ZCode -p has no model flag: it runs the default model selected in ZCode itself.
   if (route.adapter === 'zcode') {
     if (model.id !== 'zcode-default') throw new PoolError('MODEL_UNAVAILABLE', 'ZCode headless yalnızca ZCode içinde seçilen varsayılan modeli çalıştırır. GLM/free sağlayıcısını ZCode içinde seçin; Pool modeli zcode-default olmalı.');
-    return [...argv, '--cwd', task.workspace, '--mode', task.kind === 'write' ? 'edit' : 'plan', ...(task.mode === 'execute' ? [] : ['--disallowed-tools', task.kind === 'write' ? 'Bash' : 'Bash,Edit,Write']), '--json', '--no-color', '-p', task.prompt];
+    return [...argv, '--cwd', task.workspace, '--mode', task.kind === 'write' ? 'edit' : 'plan', ...(sessionId ? ['--resume', sessionId] : []), ...(task.mode === 'execute' ? [] : ['--disallowed-tools', task.kind === 'write' ? 'Bash' : 'Bash,Edit,Write']), '--json', '--no-color', '-p', task.prompt];
   }
   if (route.adapter === 'mcode') {
     if (task.kind === 'read') throw new PoolError('UNSUPPORTED_TASK_KIND', 'MiniMax Code standard modu dosya araçları sunar; smart salt okunur sınırı sağlamaz. Dosya görevleri write, araçsız yanıtlar text kullanmalı.');
-    return [...argv, 'exec', '--input', '-', '--cwd', task.workspace, '--model', model.id, '--prompt-mode', 'coding', '--permission', task.kind === 'write' ? 'full' : 'smart', '--mode', task.kind === 'write' ? 'standard' : 'lightweight', '--output-format', 'stream-json', ...(effort ? ['--effort', effort] : [])];
+    return [...argv, 'exec', '--input', '-', '--cwd', task.workspace, ...(sessionId ? ['--session', sessionId] : []), '--model', model.id, '--prompt-mode', 'coding', '--permission', task.kind === 'write' ? 'full' : 'smart', '--mode', task.kind === 'write' ? 'standard' : 'lightweight', '--output-format', 'stream-json', ...(effort ? ['--effort', effort] : [])];
   }
   if (route.adapter === 'kimi') return [...argv, '-m', model.id, '--output-format', 'stream-json', ...(task.kind === 'write' ? ['--auto'] : []), '-p', task.prompt];
   if (route.adapter === 'agy') {
@@ -662,17 +667,17 @@ export function buildArguments(route, model, task, context = null) {
     const project = route.runtime === 'wsl'
       ? agyProjectArguments(task.workspace, wslWindowsPath(route, wslProfileHome(route)), wslUriToWindows)
       : (route.profile ? agyProjectArguments(task.workspace, profileHome(route, agyDir)) : agyProjectArguments(task.workspace));
-    return [...argv, ...project, '--output-format', 'stream-json', ...promptArg, ...modeArgs, ...(task.mode === 'execute' ? ['--json-schema', JSON.stringify(executionReportJsonSchema)] : []), '--model', model.variants?.[selectedEffort] || model.id, ...(selectedEffort ? ['--effort', selectedEffort] : [])];
+    return [...argv, ...project, ...(sessionId ? ['--conversation', sessionId] : []), '--output-format', 'stream-json', ...promptArg, ...modeArgs, ...(task.mode === 'execute' ? ['--json-schema', JSON.stringify(executionReportJsonSchema)] : []), '--model', model.variants?.[selectedEffort] || model.id, ...(selectedEffort ? ['--effort', selectedEffort] : [])];
   }
   if (route.adapter === 'omniroute') return [...argv, 'chat', '--stdin', '--no-history', '-m', model.id, ...(effort ? ['--reasoning-effort', effort] : [])];
   if (route.adapter === 'mmx') return [...argv, 'text', 'chat', '--model', model.id, '--messages-file', '-', '--output', 'json'];
   if (route.adapter === 'qwen') {
-    return [...argv, '--model', model.id, '--output-format', 'stream-json', '--approval-mode', task.kind === 'write' ? 'auto-edit' : 'plan', ...(task.kind === 'text' ? ['--max-tool-calls', '0'] : [])];
+    return [...argv, '--model', model.id, ...(sessionId ? ['--resume', sessionId] : []), '--output-format', 'stream-json', '--approval-mode', task.kind === 'write' ? 'auto-edit' : 'plan', ...(task.kind === 'text' ? ['--max-tool-calls', '0'] : [])];
   }
   if (route.adapter === 'qoder') {
     const tools = task.kind === 'text' ? '' : task.kind === 'read' ? 'Read,Glob,Grep' : task.mode === 'execute' ? 'default' : 'Read,Glob,Grep,Edit,Write';
     const grants = task.kind === 'text' ? [] : ['--allowed-tools', task.kind === 'read' ? 'Read,Glob,Grep' : task.mode === 'execute' ? 'Read,Glob,Grep,Edit,Write,Bash' : 'Read,Glob,Grep,Edit,Write'];
-    return [...argv, '--cwd', task.workspace, '--tools', tools, ...grants, '-p', '--model', model.id, '--output-format', 'stream-json', '--no-session-persistence', '--max-model-request-retries', '0', '--permission-mode', task.kind === 'write' ? 'accept_edits' : 'dont_ask', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', ...(effort ? ['--reasoning-effort', effort] : [])];
+    return [...argv, '--cwd', task.workspace, '--tools', tools, ...grants, '-p', '--model', model.id, '--output-format', 'stream-json', ...(keepSession ? [] : ['--no-session-persistence']), ...(sessionId ? ['--resume', sessionId] : []), '--max-model-request-retries', '0', '--permission-mode', task.kind === 'write' ? 'accept_edits' : 'dont_ask', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', ...(effort ? ['--reasoning-effort', effort] : [])];
   }
   if (route.adapter === 'ollama') return [...argv, 'run', model.id];
   if (route.adapter === 'aider') return [...argv, '--model', model.id, '--yes-always', '--no-auto-commits', '--message', task.prompt];
@@ -802,6 +807,134 @@ export function parseQoderModels(output) {
 const strictJsonlAdapters = new Set(['codex', 'claude', 'qoder', 'qwen', 'opencode', 'mimo', 'agy', 'mcode']);
 const promptArgAdapters = new Set(['zcode', 'kimi', 'aider']);
 
+function shortDurationLabel(seconds) {
+  const secs = Math.max(0, Math.round(Number(seconds) || 0));
+  if (secs >= 3600 && secs % 60 === 0) {
+    const hrs = Math.floor(secs / 3600);
+    const mins = Math.floor((secs % 3600) / 60);
+    return mins ? `${hrs} sa ${mins} dk` : `${hrs} saat`;
+  }
+  if (secs >= 60) {
+    const mins = Math.floor(secs / 60);
+    const rem = secs % 60;
+    return rem ? `${mins} dk ${rem} sn` : `${mins} dk`;
+  }
+  return `${secs} sn`;
+}
+
+export function summarizeToolTarget(params) {
+  if (!params || typeof params !== 'object') return '';
+  const pick = (...keys) => {
+    for (const key of keys) {
+      const value = params[key];
+      if (typeof value === 'string' && value.trim()) return value.trim();
+    }
+    return '';
+  };
+  const cmd = pick('CommandLine', 'command', 'cmd');
+  if (cmd) return cmd.replace(/\s+/g, ' ').slice(0, 96);
+  const filePath = pick('Path', 'path', 'file_path', 'TargetFile', 'AbsolutePath', 'SearchPath', 'DirectoryPath', 'cwd');
+  if (filePath) {
+    const parts = filePath.replace(/\\/g, '/').split('/').filter(Boolean);
+    return (parts.length > 2 ? parts.slice(-2).join('/') : filePath).slice(0, 96);
+  }
+  const query = pick('Query', 'query', 'Pattern', 'pattern', 'url', 'Url');
+  if (query) return query.replace(/\s+/g, ' ').slice(0, 80);
+  return '';
+}
+
+export function summarizeEventStep(adapter, event) {
+  if (!event || typeof event !== 'object') return null;
+  if (adapter === 'agy' && event.event === 'step_update') {
+    const step = event.step_update;
+    if (!step || typeof step !== 'object') return null;
+    const idx = Number.isInteger(step.step_index) ? `#${step.step_index} ` : '';
+    const toolName = step.tool_info?.name || step.tool_name || '';
+    const params = step.tool_info?.parameters || step.tool_info?.input || step.tool_info?.arguments || step.tool_input;
+    const target = summarizeToolTarget(params);
+    if (step.state === 'ERROR') {
+      const errMsg = String(step.tool_info?.error?.message || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+      const label = `${idx}${toolName || step.step_type || 'adım'} hatası${errMsg ? `: ${errMsg}` : ''}`;
+      return { summary: redact(label).slice(0, 180), key: `agy:${step.step_index ?? ''}:err:${toolName}`, emit: true };
+    }
+    if (toolName) {
+      const label = `${idx}${toolName}${target ? `: ${target}` : ''}`;
+      const isStart = step.state === 'ACTIVE' || step.state === 'RUNNING' || step.state === 'DONE';
+      return { summary: redact(label).slice(0, 180), key: `agy:${step.step_index ?? ''}:${toolName}`, emit: isStart };
+    }
+    if (step.step_type === 'thinking' || step.step_type === 'planner') {
+      return { summary: `${idx}düşünüyor…`, key: `agy:${step.step_index ?? ''}:think`, emit: false };
+    }
+    if (step.step_type === 'agent_response') {
+      return { summary: `${idx}yanıt hazırlanıyor…`, key: `agy:${step.step_index ?? ''}:resp`, emit: false };
+    }
+    return null;
+  }
+  if (adapter === 'codex' && (event.type === 'item.started' || event.type === 'item.completed') && event.item) {
+    const item = event.item;
+    if (item.type === 'command_execution' && item.command) {
+      const cmd = String(item.command).replace(/\s+/g, ' ').trim().slice(0, 96);
+      return { summary: redact(`Komut: ${cmd}`).slice(0, 180), key: `codex:${item.id || cmd}`, emit: event.type === 'item.started' };
+    }
+    if (item.type === 'file_change') {
+      const target = Array.isArray(item.changes) && item.changes[0]?.path ? summarizeToolTarget({ path: item.changes[0].path }) : '';
+      return { summary: redact(`Dosya düzenleme${target ? `: ${target}` : ''}`).slice(0, 180), key: `codex:${item.id || target}`, emit: true };
+    }
+    if (item.type === 'mcp_tool_call' && item.tool) {
+      return { summary: redact(`Araç: ${item.tool}`).slice(0, 180), key: `codex:${item.id || item.tool}`, emit: event.type === 'item.started' };
+    }
+    return null;
+  }
+  if ((adapter === 'claude' || adapter === 'qoder' || adapter === 'qwen') && event.type === 'assistant' && Array.isArray(event.message?.content)) {
+    const toolBlock = event.message.content.find(block => block?.type === 'tool_use' && block.name);
+    if (!toolBlock) return null;
+    const target = summarizeToolTarget(toolBlock.input);
+    const label = `${toolBlock.name}${target ? `: ${target}` : ''}`;
+    return { summary: redact(label).slice(0, 180), key: `${adapter}:${toolBlock.id || label}`, emit: true };
+  }
+  if ((adapter === 'opencode' || adapter === 'mimo') && event.part?.type === 'tool' && event.part.tool) {
+    const target = summarizeToolTarget(event.part.state?.input);
+    const label = `${event.part.tool}${target ? `: ${target}` : ''}`;
+    return { summary: redact(label).slice(0, 180), key: `${adapter}:${event.part.callID || label}`, emit: true };
+  }
+  return null;
+}
+
+export function formatStopReasonDetail(stopReason, { timeoutSeconds = 0, lastStepSummary = '', stderr = '' } = {}) {
+  const stepNote = lastStepSummary ? ` Son aktif adım: ${lastStepSummary}` : '';
+  if (stopReason === 'TIMEOUT') {
+    const dur = timeoutSeconds ? shortDurationLabel(timeoutSeconds) : 'belirlenen süre';
+    return redact(`Görev ${dur} zaman aşımına ulaştı.${stepNote}`).slice(0, 600);
+  }
+  if (stopReason === 'IDLE_TIMEOUT') {
+    return redact(`Ajan uzun süre çıktı üretmediği için durduruldu.${stepNote}`).slice(0, 600);
+  }
+  if (stopReason === 'OUTPUT_LIMIT') {
+    return redact(`CLI çıktı boyut sınırını aştı.${stepNote}`).slice(0, 600);
+  }
+  if (stopReason === 'CANCELLED') {
+    return redact(`Görev iptal edildi.${stepNote}`).slice(0, 600);
+  }
+  if (stopReason === 'SPAWN_FAILED') {
+    const err = String(stderr || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+    return redact(`CLI süreci başlatılamadı.${err ? ` ${err}` : ''}`).slice(0, 600);
+  }
+  return redact(`${stopReason}.${stepNote}`).slice(0, 600);
+}
+
+export function extractSessionId(adapter, event) {
+  if (!event || typeof event !== 'object') return '';
+  let raw = '';
+  if (adapter === 'agy') raw = event.init?.conversation_id || event.step_update?.conversation_id || event.result?.conversation_id || event.conversation_id || '';
+  else if (adapter === 'codex') raw = event.thread_id || event.session_id || '';
+  else if (adapter === 'opencode' || adapter === 'mimo') raw = event.sessionID || event.part?.sessionID || event.session_id || '';
+  else if (adapter === 'mcode') raw = event.sessionId || event.session_id || event.result?.sessionId || '';
+  else raw = event.session_id || event.sessionId || event.conversation_id || '';
+  if (typeof raw !== 'string') return '';
+  const trimmed = raw.trim();
+  return trimmed && trimmed.length <= 200 && !/[\u0000-\u001f]/.test(trimmed) ? trimmed : '';
+}
+
 export function execute(route, model, task, python, progress, directory = dataDirectory(), context = null) {
   task = { ...task, prompt: taskPrompt(task, context) };
   let answer = '';
@@ -809,6 +942,10 @@ export function execute(route, model, task, python, progress, directory = dataDi
   let rawLines = [];
   let productError = false;
   let sawResult = false;
+  let sawJsonEvent = false;
+  let lastStepSummary = '';
+  let lastProgressKey = '';
+  let reportedSessionId = '';
   let failureText = '';
   let permissionDenied = false;
   let permissionDetail = '';
@@ -816,7 +953,8 @@ export function execute(route, model, task, python, progress, directory = dataDi
   const extraEnv = { ...profileEnvironment(route, directory), ...routeEnvironment(route, directory, task.kind), ...(context ? directorEnvironment(context) : {}), CLI_AGENT_POOL_WORKER: '1' };
   const usesStdin = route.promptStdin ?? !promptArgAdapters.has(route.adapter);
   const input = !usesStdin ? '' : route.adapter === 'mmx' ? JSON.stringify([{ role: 'user', content: task.prompt }]) : route.adapter === 'agy' ? `${JSON.stringify({ event: 'user', message: { content: task.prompt } })}\n` : task.prompt;
-  const process = runProcess({ argv, cwd: task.workspace, input, extraEnv, python, timeoutMs: task.timeoutSeconds * 1000, maxBytes: 268_435_456, retainBytes: 2_097_152,
+  const timeoutMs = Number(task.timeoutSeconds) > 0 ? task.timeoutSeconds * 1000 : 0;
+  const process = runProcess({ argv, cwd: task.workspace, input, extraEnv, python, timeoutMs, maxBytes: Infinity, retainBytes: 2_097_152,
     onLine(line) {
       if (!line.trim()) return;
       context?.onActivity?.();
@@ -826,7 +964,21 @@ export function execute(route, model, task, python, progress, directory = dataDi
         rawLines.push(line.slice(0, 1000));
         return;
       }
+      sawJsonEvent = true;
+      const foundSessionId = extractSessionId(route.adapter, event);
+      if (foundSessionId && foundSessionId !== reportedSessionId) {
+        reportedSessionId = foundSessionId;
+        progress(`session:${foundSessionId}`);
+      }
       watchEvent(context, event);
+      const stepInfo = summarizeEventStep(route.adapter, event);
+      if (stepInfo) {
+        lastStepSummary = stepInfo.summary;
+        if (stepInfo.emit && stepInfo.key !== lastProgressKey) {
+          lastProgressKey = stepInfo.key;
+          progress(stepInfo.summary);
+        }
+      }
       if (route.adapter === 'agy' && event.event) {
         if (event.event === 'init') {
           progress('started');
@@ -839,6 +991,9 @@ export function execute(route, model, task, python, progress, directory = dataDi
             permissionDenied = true;
             permissionDetail = redact(`${step.tool_info?.name || step.tool_name || 'native tool'}: ${message}`).slice(0, 600);
           }
+        } else if (event.event === 'error') {
+          productError = true;
+          failureText = JSON.stringify(event.error || event.message || event);
         } else if (event.event === 'result') {
           const result = event.result;
           if (Array.isArray(result?.denied_actions) && result.denied_actions.length) {
@@ -852,7 +1007,7 @@ export function execute(route, model, task, python, progress, directory = dataDi
         }
         return;
       }
-      if(event.error || event.is_error)failureText=JSON.stringify(event.error || event.result || '');
+      if (event.error || event.is_error || event.type === 'error') failureText = JSON.stringify(event.error || event.message || event.result || '');
       if (route.adapter === 'codex') {
         if (event.type === 'item.completed' && event.item?.type === 'agent_message') answer = event.item.text || '';
         if (event.type === 'turn.completed') sawResult = true;
@@ -903,7 +1058,13 @@ export function execute(route, model, task, python, progress, directory = dataDi
   return {
     cancel: process.cancel,
     done: process.done.then(result => {
-      if (route.adapter === 'mmx' && result.code === 0 && !result.stopReason) {
+      if (result.stopReason) {
+        return {
+          error: result.stopReason,
+          detail: formatStopReasonDetail(result.stopReason, { timeoutSeconds: task.timeoutSeconds, lastStepSummary, stderr: result.stderr }),
+        };
+      }
+      if (route.adapter === 'mmx' && result.code === 0) {
         try {
           const json = JSON.parse(result.output);
           const body = json.data || json;
@@ -911,18 +1072,29 @@ export function execute(route, model, task, python, progress, directory = dataDi
           sawResult = Boolean(answer);
           productError = Boolean(json.error || body.base_resp?.status_code);
         } catch { productError = true; }
-      } else if (route.adapter === 'zcode' && result.code === 0 && !result.stopReason) {
-        try { const body = JSON.parse(result.output); answer = typeof body.response === 'string' ? body.response : ''; sawResult = Boolean(answer); } catch { productError = true; }
-      } else if (!sawResult && !strictJsonlAdapters.has(route.adapter) && result.code === 0 && !result.stopReason) {
+      } else if (route.adapter === 'zcode' && result.code === 0) {
+        try {
+          const body = JSON.parse(result.output);
+          const zSid = extractSessionId('zcode', body);
+          if (zSid && zSid !== reportedSessionId) { reportedSessionId = zSid; progress(`session:${zSid}`); }
+          answer = typeof body.response === 'string' ? body.response : '';
+          sawResult = Boolean(answer);
+        } catch { productError = true; }
+      } else if (!sawResult && !strictJsonlAdapters.has(route.adapter) && result.code === 0) {
         const fallback = answer.trim() || rawLines.join('\n').trim() || result.output.trim();
         if (fallback) { answer = fallback; sawResult = true; }
       }
       // Some CLIs emit a single JSON error on stdout even on a nonzero exit.
-      if (result.code !== 0 && !failureText) failureText = result.output;
+      // Never dump raw NDJSON step streams into failureText when structured JSONL events were already parsed.
+      if (result.code !== 0 && !failureText && (!strictJsonlAdapters.has(route.adapter) || !sawJsonEvent)) {
+        failureText = result.output;
+      }
       // Keep a short redacted vendor message so the calls screen can explain a failure.
-      const detail = redact(`${failureText} ${result.stderr} ${sawResult ? '' : rawLines.join('\n')}`.replace(/\s+/g, ' ').trim()).slice(-600);
+      let detail = redact(`${failureText} ${result.stderr} ${sawResult ? '' : rawLines.join('\n')}`.replace(/\s+/g, ' ').trim()).slice(-600);
+      if (!detail && result.code !== 0 && lastStepSummary) {
+        detail = redact(`CLI beklenmedik şekilde sonlandı (çıkış kodu ${result.code}). Son aktif adım: ${lastStepSummary}`).slice(0, 600);
+      }
       const failed = error => ({ error, ...(detail ? { detail } : {}) });
-      if (result.stopReason) return failed(result.stopReason);
       if (permissionDenied) return { error: 'PERMISSION_REQUIRED', detail: permissionDetail || 'Native tool permission denied.', ...(answer.trim() ? { result: redact(answer) } : {}) };
       if (result.code !== 0 || productError) return failed(classifyFailure(`${failureText} ${result.stderr} ${rawLines.join('\n')}`));
       if (!sawResult && strictJsonlAdapters.has(route.adapter) && rawLines.length) {

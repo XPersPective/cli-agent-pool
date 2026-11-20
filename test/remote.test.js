@@ -7,7 +7,8 @@ import { encodeQrMatrix, qrSvg } from '../remote/qr.js';
 import { buildCompactPrompt, RemoteStore } from '../remote/store.js';
 import { createRemoteServer, detectTailscaleHttpsUrl, detectTailscaleIp, listDirectoriesSafe } from '../remote/server.js';
 import { windowsConsoleHostStatus, applyWindowsConsoleHostFix } from '../src/daemon.js';
-import { buildArguments } from '../src/adapters.js';
+import { buildArguments, extractSessionId, formatStopReasonDetail, summarizeEventStep } from '../src/adapters.js';
+import { Store } from '../src/store.js';
 
 function makeTempDir(prefix = 'pool-remote-test-') {
   return mkdtempSync(path.join(tmpdir(), prefix));
@@ -936,5 +937,374 @@ test('v2.25.0: project chat runs write without forced execute JSON protocol, no 
     await remote.close();
     rmSync(dir, { recursive: true, force: true });
     rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test('v2.29.0: readable stop/step summaries, latest-100 events, activeFirst calls, no-timeout sessions, resilient SSE & mobile mic/HTTPS handoff', async () => {
+  // 1. Step & stop-reason formatters produce concise Turkish progress & error details (never raw NDJSON)
+  const agyStep = summarizeEventStep('agy', {
+    event: 'step_update',
+    step_update: {
+      step_index: 131,
+      state: 'ACTIVE',
+      step_type: 'tool',
+      tool_name: 'run_command',
+      tool_info: { name: 'run_command', parameters: { CommandLine: 'node --test tests/*.test.mjs' } },
+    },
+  });
+  assert.equal(agyStep.emit, true);
+  assert.match(agyStep.summary, /^#131 run_command: node --test/);
+
+  const codexStep = summarizeEventStep('codex', {
+    type: 'item.started',
+    item: { id: 'cmd1', type: 'command_execution', command: 'npm test' },
+  });
+  assert.equal(codexStep.emit, true);
+  assert.equal(codexStep.summary, 'Komut: npm test');
+
+  const claudeStep = summarizeEventStep('claude', {
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'tu1', name: 'Read', input: { file_path: 'D:\\repo\\src\\app.js' } }] },
+  });
+  assert.equal(claudeStep.summary, 'Read: src/app.js');
+
+  const timeoutMsg = formatStopReasonDetail('TIMEOUT', { timeoutSeconds: 3600, lastStepSummary: agyStep.summary });
+  assert.match(timeoutMsg, /1 saat zaman aşımına ulaştı/);
+  assert.match(timeoutMsg, /Son aktif adım: #131 run_command/);
+  assert.doesNotMatch(timeoutMsg, /"step_update"/);
+
+  const cancelMsg = formatStopReasonDetail('CANCELLED', { lastStepSummary: 'Komut: npm test' });
+  assert.match(cancelMsg, /Görev iptal edildi\. Son aktif adım: Komut: npm test/);
+
+  // 2. Store.events(id, 0) returns the latest 100 events in chronological order; Store.list(..., activeFirst=true) pins active tasks first
+  const store = new Store(':memory:');
+  try {
+    store.insert({ id: 't-old-active', key: 'k-act', fingerprint: 'f1', workspace: process.cwd(), request: { prompt: 'long', kind: 'write' } });
+    store.update('t-old-active', 'running');
+    for (let i = 1; i <= 150; i++) store.event('t-old-active', 'progress', `step-${i}`);
+    const tail = store.events('t-old-active', 0);
+    assert.equal(tail.length, 100);
+    assert.equal(tail[0].detail, 'step-51');
+    assert.equal(tail[99].detail, 'step-150');
+
+    store.insert({ id: 't-newer-done', key: 'k-done', fingerprint: 'f2', workspace: process.cwd(), request: { prompt: 'quick', kind: 'text' } });
+    store.update('t-newer-done', 'succeeded', 'ok', null);
+
+    const activeFirst = store.list(10, 0, true);
+    assert.equal(activeFirst[0].id, 't-old-active');
+    assert.equal(activeFirst[1].id, 't-newer-done');
+  } finally {
+    store.close();
+  }
+
+  // 3. Remote server: unlimited (0s) sessions for project & projectless chats, no-store static cache, active-first enriched Calls, Permissions-Policy & SSE retry
+  const dir = makeTempDir('pool-remote-v229-');
+  const ws = makeTempDir('pool-remote-ws229-');
+  const submitted = [];
+  const remote = createRemoteServer({
+    directory: dir,
+    port: 0,
+    host: '127.0.0.1',
+    poolBridge: {
+      getConfig: () => ({ port: 43127, workspaceRoots: [ws] }),
+      health: async () => ({ status: 'ok', version: '2.29.0', connections: 1, models: 1, active: 1 }),
+      pools: async () => ({ categories: [{ id: 'high', label: 'Yüksek' }] }),
+      poolModels: async () => ({ models: [{ routeId: 'agy-local', modelId: 'gemini-4-neon', name: 'Neon', efforts: ['high'], kinds: ['text', 'read', 'write'], billing: 'subscription' }] }),
+      catalogModels: async () => [],
+      quotas: async () => ({ connections: [] }),
+      routeQuota: async () => ({ connections: [] }),
+      connections: async () => [{ id: 'agy-local', adapter: 'agy', billing: 'subscription' }],
+      tasks: async () => ({
+        tasks: [
+          { id: 'done-1', state: 'succeeded', routeId: 'agy-local', modelId: 'gemini-4-neon' },
+          { id: 'run-1', state: 'running', routeId: 'agy-local', modelId: 'gemini-4-neon' },
+        ],
+      }),
+      task: async id => ({
+        id,
+        state: id === 'run-1' ? 'running' : 'succeeded',
+        updated: '2026-11-20T00:00:00Z',
+        events: [{ seq: 12, kind: 'progress', detail: '#12 read_file: remote/server.js' }],
+        result: id === 'run-1' ? '' : 'ok',
+      }),
+      submit: async payload => {
+        submitted.push(payload);
+        return { id: `task-${submitted.length}`, state: 'queued', routeId: 'agy-local', modelId: 'gemini-4-neon' };
+      },
+    },
+  });
+
+  try {
+    const info = await remote.listen();
+    const base = `http://127.0.0.1:${info.port}`;
+    const code = new URL(info.localUrl).searchParams.get('pair');
+    const redeem = await fetch(`${base}/r/redeem`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+    const cookie = (redeem.headers.get('set-cookie') || '').split(';')[0];
+
+    // Static page declares microphone=(self) Permissions-Policy
+    const pageRes = await fetch(`${base}/`, { headers: { Cookie: cookie } });
+    assert.equal(pageRes.status, 200);
+    assert.match(pageRes.headers.get('permissions-policy') || '', /microphone=\(self\)/);
+
+    // /r/state puts active task first and enriches it with live progress events
+    const st = await (await fetch(`${base}/r/state`, { headers: { Cookie: cookie } })).json();
+    assert.equal(st.tasks[0].id, 'run-1');
+    assert.equal(st.tasks[0].events[0].detail, '#12 read_file: remote/server.js');
+    assert.equal(st.tasks[1].id, 'done-1');
+
+    // Static assets disable stale caching so mobile clients pick up fixes immediately
+    const jsRes = await fetch(`${base}/app.js`, { headers: { Cookie: cookie } });
+    assert.equal(jsRes.status, 200);
+    assert.match(jsRes.headers.get('cache-control') || '', /no-store/);
+
+    // Remote sessions run without timeout (0) for both project and projectless chats, even if a stale client sends a finite timeout
+    const { chat: projChat } = await (await fetch(`${base}/r/chats`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspace: ws }),
+    })).json();
+    await fetch(`${base}/r/chats/${projChat.id}/send`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'uzun is', workspace: ws }),
+    });
+    await fetch(`${base}/r/chats/${projChat.id}/send`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'cok uzun is', workspace: ws, timeoutSeconds: 3600 }),
+    });
+    const { chat: freeChat } = await (await fetch(`${base}/r/chats`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspace: '' }),
+    })).json();
+    await fetch(`${base}/r/chats/${freeChat.id}/send`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'merhaba', workspace: '' }),
+    });
+    assert.equal(submitted[0].timeoutSeconds, 0);
+    assert.equal(submitted[1].timeoutSeconds, 0);
+    assert.equal(submitted[2].timeoutSeconds, 0);
+
+    // SSE stream emits retry: 2000
+    const sse = await (await fetch(`${base}/r/stream?taskId=done-1&chatId=${projChat.id}`, { headers: { Cookie: cookie } })).text();
+    assert.match(sse, /^retry: 2000\n\n/);
+
+    // UI contract checks for v2.29.0 (no timeout controls in Remote settings)
+    const html = readFileSync(path.resolve('remote/public/index.html'), 'utf8');
+    const js = readFileSync(path.resolve('remote/public/app.js'), 'utf8');
+    const css = readFileSync(path.resolve('remote/public/style.css'), 'utf8');
+    assert.doesNotMatch(html, /data-timeout=/);
+    assert.doesNotMatch(js, /remote-task-timeout-seconds/);
+    assert.match(html, /id="https-upgrade-banner"/);
+    assert.match(html, /id="switch-https-btn"/);
+    assert.match(js, /async function submitPromptPayload/);
+    assert.match(js, /async function syncActiveChat/);
+    assert.match(js, /async function switchToHttps/);
+    assert.match(js, /document\.addEventListener\('visibilitychange'/);
+    assert.match(js, /streamRetries/);
+    assert.match(js, /sessionFinal\.toLowerCase\(\)\.endsWith/);
+    assert.match(js, /remote-active-view/);
+    assert.match(js, /remote-pool-subtab/);
+    assert.match(js, /remote-active-chat-id/);
+    assert.match(js, /aria-current/);
+    assert.match(js, /Bağlam: Aynı Oturum/);
+    assert.match(css, /\.bnav-item\.active::before/);
+    assert.doesNotMatch(js, /\.innerHTML\s*=/);
+  } finally {
+    await remote.close();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test('v2.29.0: native CLI session continuity reuses same session on same model/route and hands off summary on model switch', async () => {
+  // 1. Adapter session extraction & resume argument building
+  assert.equal(extractSessionId('agy', { event: 'init', init: { conversation_id: 'conv-agy-42' } }), 'conv-agy-42');
+  assert.equal(extractSessionId('codex', { type: 'thread.started', thread_id: 'thr-codex-9' }), 'thr-codex-9');
+  assert.equal(extractSessionId('claude', { type: 'system', session_id: 'sess-claude-7' }), 'sess-claude-7');
+  assert.equal(extractSessionId('opencode', { sessionID: 'oc-sess-3' }), 'oc-sess-3');
+
+  const ws = makeTempDir('pool-remote-session-ws-');
+  const ws2 = makeTempDir('pool-remote-session-ws2-');
+  const dir = makeTempDir('pool-remote-session-');
+  try {
+    const agyResume = buildArguments(
+      { id: 'agy-local', adapter: 'agy', executable: process.execPath },
+      { id: 'gemini-4-neon', variants: { high: 'gemini-4-neon-high' } },
+      { workspace: ws, kind: 'write', prompt: 'devam', effort: 'high', sessionId: 'conv-agy-42', persistSession: true },
+    );
+    assert(agyResume.includes('--conversation'));
+    assert.equal(agyResume[agyResume.indexOf('--conversation') + 1], 'conv-agy-42');
+
+    const codexPersist = buildArguments(
+      { id: 'codex-local', adapter: 'codex', executable: process.execPath },
+      { id: 'gpt-6-astra' },
+      { workspace: ws, kind: 'write', prompt: 'ilk', persistSession: true },
+    );
+    assert(!codexPersist.includes('--ephemeral'));
+    const codexResume = buildArguments(
+      { id: 'codex-local', adapter: 'codex', executable: process.execPath },
+      { id: 'gpt-6-astra' },
+      { workspace: ws, kind: 'write', prompt: 'ikinci', sessionId: 'thr-codex-9', persistSession: true },
+    );
+    assert.equal(codexResume[codexResume.indexOf('exec') + 1], 'resume');
+    assert(codexResume.includes('thr-codex-9'));
+
+    const claudeResume = buildArguments(
+      { id: 'claude-local', adapter: 'claude', executable: process.execPath },
+      { id: 'claude-opus-5-5' },
+      { workspace: ws, kind: 'write', prompt: 'devam', sessionId: 'sess-claude-7', persistSession: true },
+    );
+    assert(!claudeResume.includes('--no-session-persistence'));
+    assert.equal(claudeResume[claudeResume.indexOf('--resume') + 1], 'sess-claude-7');
+
+    // 2. End-to-end Remote server session reuse vs model switch handoff vs failure reset
+    const submitted = [];
+    const taskResponses = new Map();
+    const remote = createRemoteServer({
+      directory: dir,
+      hostMode: '127.0.0.1',
+      port: 0,
+      poolBridge: {
+        getConfig: () => ({ workspaceRoots: [ws, ws2], routes: [] }),
+        health: async () => ({ status: 'ok', version: '2.29.0', connections: 2, models: 2, active: 0 }),
+        pools: async () => ({ categories: [{ id: 'high', name: 'Yüksek', count: 2 }] }),
+        poolModels: async () => ({ models: [] }),
+        catalogModels: async () => [],
+        quotas: async () => ({ connections: [] }),
+        routeQuota: async () => ({ connections: [] }),
+        connections: async () => [
+          { id: 'agy-local', adapter: 'agy', billing: 'subscription' },
+          { id: 'codex-local', adapter: 'codex', billing: 'subscription' },
+        ],
+        tasks: async () => ({ tasks: [] }),
+        task: async id => taskResponses.get(id),
+        submit: async payload => {
+          const id = `sess-task-${submitted.length + 1}`;
+          submitted.push(payload);
+          return {
+            id,
+            state: 'running',
+            routeId: payload.routeId || 'agy-local',
+            modelId: payload.modelId || 'gemini-4-neon',
+          };
+        },
+      },
+    });
+
+    try {
+      const info = await remote.listen();
+      const base = `http://127.0.0.1:${info.port}`;
+      const code = new URL(info.localUrl).searchParams.get('pair');
+      const redeem = await fetch(`${base}/r/redeem`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code }),
+      });
+      const cookie = (redeem.headers.get('set-cookie') || '').split(';')[0];
+
+      const { chat } = await (await fetch(`${base}/r/chats`, {
+        method: 'POST',
+        headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspace: ws }),
+      })).json();
+
+      // Turn 1: fresh session on agy-local / gemini-4-neon
+      const t1 = await (await fetch(`${base}/r/chats/${chat.id}/send`, {
+        method: 'POST',
+        headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'İlk görev', workspace: ws, routeId: 'agy-local', modelId: 'gemini-4-neon' }),
+      })).json();
+      assert.equal(submitted[0].persistSession, true);
+      assert.equal(submitted[0].sessionId, undefined);
+      assert.equal(t1.assistantMessage.resumedSession, false);
+
+      // Simulate CLI completing and reporting its native conversation_id
+      taskResponses.set(t1.task.id, {
+        id: t1.task.id,
+        state: 'succeeded',
+        updated: '2026-11-20T04:00:00Z',
+        sessionId: 'conv-agy-42',
+        result: 'İlk görev tamamlandı.',
+        events: [],
+      });
+      const afterT1 = await (await fetch(`${base}/r/chats/${chat.id}`, { headers: { Cookie: cookie } })).json();
+      assert.equal(afterT1.chat.nativeSession?.sessionId, 'conv-agy-42');
+
+      // Turn 2: SAME route + SAME model + SAME workspace => resumes exact native CLI session directly (no summary wrapper!)
+      const t2 = await (await fetch(`${base}/r/chats/${chat.id}/send`, {
+        method: 'POST',
+        headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'İkinci mesaj devam', workspace: ws, routeId: 'agy-local', modelId: 'gemini-4-neon' }),
+      })).json();
+      assert.equal(submitted[1].persistSession, true);
+      assert.equal(submitted[1].sessionId, 'conv-agy-42');
+      assert.equal(submitted[1].prompt, 'İkinci mesaj devam');
+      assert.equal(t2.assistantMessage.resumedSession, true);
+
+      taskResponses.set(t2.task.id, {
+        id: t2.task.id,
+        state: 'succeeded',
+        updated: '2026-11-20T04:01:00Z',
+        sessionId: 'conv-agy-42',
+        result: 'İkinci yanıt tamam.',
+        events: [],
+      });
+      await fetch(`${base}/r/chats/${chat.id}`, { headers: { Cookie: cookie } });
+
+      // Turn 3: Switch model/route to codex-local / gpt-6-astra => starts new session AND passes compact context summary!
+      const t3 = await (await fetch(`${base}/r/chats/${chat.id}/send`, {
+        method: 'POST',
+        headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'Şimdi sen incele', workspace: ws, routeId: 'codex-local', modelId: 'gpt-6-astra' }),
+      })).json();
+      assert.equal(submitted[2].persistSession, true);
+      assert.equal(submitted[2].sessionId, undefined);
+      assert.match(submitted[2].prompt, /\[Önceki konuşma özeti — kısa bağlam\]/);
+      assert.match(submitted[2].prompt, /Şimdi sen incele/);
+      assert.equal(t3.assistantMessage.resumedSession, false);
+
+      // Simulate codex completing with its own session id, then a failed resume clearing stale session
+      taskResponses.set(t3.task.id, {
+        id: t3.task.id,
+        state: 'succeeded',
+        updated: '2026-11-20T04:02:00Z',
+        sessionId: 'thr-codex-9',
+        result: 'Codex incelemesi bitti.',
+        events: [],
+      });
+      await fetch(`${base}/r/chats/${chat.id}`, { headers: { Cookie: cookie } });
+
+      const t4 = await (await fetch(`${base}/r/chats/${chat.id}/send`, {
+        method: 'POST',
+        headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'Bir soru daha', workspace: ws, routeId: 'codex-local', modelId: 'gpt-6-astra' }),
+      })).json();
+      assert.equal(submitted[3].sessionId, 'thr-codex-9');
+
+      // Resumed turn fails with CLI_FAILED => nativeSession is cleared so retry won't get stuck on dead session
+      taskResponses.set(t4.task.id, {
+        id: t4.task.id,
+        state: 'failed',
+        updated: '2026-11-20T04:03:00Z',
+        error: 'CLI_FAILED',
+        errorDetail: 'session expired',
+        events: [],
+      });
+      const afterFail = await (await fetch(`${base}/r/chats/${chat.id}`, { headers: { Cookie: cookie } })).json();
+      assert.equal(afterFail.chat.nativeSession, null);
+    } finally {
+      await remote.close();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(ws, { recursive: true, force: true });
+    rmSync(ws2, { recursive: true, force: true });
   }
 });

@@ -4,11 +4,18 @@
   const THEME_KEY = 'remote-color-scheme';
   const SELECTION_KEY = 'remote-selection';
   const COLLAPSED_POOLS_KEY = 'remote-collapsed-pools';
+  const ACTIVE_VIEW_KEY = 'remote-active-view';
+  const POOL_SUBTAB_KEY = 'remote-pool-subtab';
+  const POOLS_TOOL_KEY = 'remote-pools-tool-filter';
+  const ACTIVE_CHAT_KEY = 'remote-active-chat-id';
+  const VALID_VIEWS = new Set(['chat', 'chats', 'calls', 'pools', 'settings']);
   const TERMINAL_STATES = new Set(['succeeded', 'failed', 'timed_out', 'cancelled', 'needs_review']);
 
   const STATE_LABELS = {
     queued: ['Sırada', 'badge-warn'],
+    starting: ['Başlıyor', 'badge-live'],
     running: ['Çalışıyor', 'badge-live'],
+    cancelling: ['İptal ediliyor', 'badge-warn'],
     succeeded: ['Tamamlandı', 'badge-ok'],
     failed: ['Hata', 'badge-danger'],
     timed_out: ['Zaman aşımı', 'badge-danger'],
@@ -68,6 +75,9 @@
     activeDoc: { name: '', content: '' },
     sending: false,
     streams: new Map(), // taskId -> EventSource
+    streamTimers: new Map(), // taskId -> timeout id for reconnect
+    streamRetries: new Map(), // taskId -> consecutive reconnect count
+    syncingChat: false,
     recognition: null,
     recording: false,
     toastTimer: null,
@@ -150,9 +160,52 @@
   }
 
   // --- Clean Error & Event Formatters ---
-  function cleanErrorMessage(raw) {
+  const ERROR_CODE_LABELS = {
+    TIMEOUT: 'Görev zaman aşımına ulaştı.',
+    IDLE_TIMEOUT: 'Ajan uzun süre çıktı üretmediği için durduruldu.',
+    PERMISSION_REQUIRED: 'CLI bu işlem için yerel izin engeline takıldı.',
+    AUTH_REQUIRED: 'Bu bağlantının CLI oturumu süresi dolmuş veya çıkış yapılmış. Yeniden giriş yapın.',
+    QUOTA_EXHAUSTED: 'Bu hesabın/modelin kullanım kotası tükendi.',
+    NETWORK_UNAVAILABLE: 'Sağlayıcı sunucusuna ağ bağlantısı kurulamadı.',
+    PROVIDER_OVERLOADED: 'Sağlayıcı sunucusu geçici olarak aşırı yüklü.',
+    INTERRUPTED: 'Görev servis yeniden başlatıldığı için kesildi.',
+    OUTPUT_LIMIT: 'CLI çıktı boyut sınırını aştı.',
+    INVALID_RESULT: 'Model geçerli bir nihai yanıt döndürmedi.',
+    CLI_FAILED: 'CLI aracı beklenmedik bir hata ile sonlandı.',
+  };
+
+  function summarizeRawEventTail(text, errorCode = '') {
+    if (!/"(?:step_update|tool_info|conversation_id|tool_name)"/.test(text)) return '';
+    const idxMatches = [...text.matchAll(/"step_index"\s*:\s*(\d+)/g)];
+    const toolMatches = [...text.matchAll(/"(?:tool_name|name)"\s*:\s*"([^"]+)"/g)];
+    const cmdMatches = [...text.matchAll(/"(?:CommandLine|command)"\s*:\s*"((?:\\.|[^"\\]){1,140})"/g)];
+    const pathMatches = [...text.matchAll(/"(?:Path|path|file_path|TargetFile)"\s*:\s*"((?:\\.|[^"\\]){1,140})"/g)];
+    const lastIdx = idxMatches.at(-1)?.[1];
+    const lastTool = toolMatches.at(-1)?.[1];
+    const unescapeStr = value => {
+      if (!value) return '';
+      try { return JSON.parse(`"${value}"`); } catch { return value.replace(/\\\\/g, '\\').replace(/\\"/g, '"'); }
+    };
+    const lastCmd = unescapeStr(cmdMatches.at(-1)?.[1] || '').replace(/\s+/g, ' ').trim().slice(0, 96);
+    const lastPathRaw = unescapeStr(pathMatches.at(-1)?.[1] || '');
+    const lastPath = lastPathRaw ? lastPathRaw.replace(/\\/g, '/').split('/').filter(Boolean).slice(-2).join('/') : '';
+    const stepParts = [
+      lastIdx ? `#${lastIdx}` : '',
+      lastTool || '',
+      lastCmd ? `: ${lastCmd}` : (lastPath ? `: ${lastPath}` : ''),
+    ].filter(Boolean).join(' ').replace(/\s+:/g, ':');
+    const prefix = errorCode === 'TIMEOUT'
+      ? 'Görev zaman aşımına ulaştı.'
+      : (ERROR_CODE_LABELS[errorCode] || 'Görev yarıda kesildi.');
+    return stepParts ? `${prefix} Son aktif adım: ${stepParts}` : prefix;
+  }
+
+  function cleanErrorMessage(raw, errorCode = '') {
     let text = String(raw || '').trim();
-    if (!text) return '';
+    if (!text) return ERROR_CODE_LABELS[errorCode] || '';
+    if (ERROR_CODE_LABELS[text]) return ERROR_CODE_LABELS[text];
+    const rawEventSummary = summarizeRawEventTail(text, errorCode);
+    if (rawEventSummary) return rawEventSummary;
     for (let depth = 0; depth < 3; depth++) {
       if (!text.startsWith('{')) break;
       try {
@@ -166,6 +219,19 @@
       break;
     }
     return text;
+  }
+
+  function latestProgressStep(events) {
+    if (!Array.isArray(events) || !events.length) return '';
+    for (let i = events.length - 1; i >= 0; i--) {
+      const ev = events[i];
+      if (!ev || typeof ev !== 'object') continue;
+      if (ev.kind !== 'progress' && ev.type !== 'step') continue;
+      const detail = String(ev.detail ?? ev.message ?? '').trim();
+      if (!detail || detail === 'started' || detail.startsWith('model:')) continue;
+      return detail;
+    }
+    return '';
   }
 
   function formatEventLine(ev) {
@@ -253,6 +319,16 @@
     try {
       const collapsed = JSON.parse(localStorage.getItem(COLLAPSED_POOLS_KEY) || '[]');
       if (Array.isArray(collapsed)) state.collapsedPools = new Set(collapsed.filter(x => typeof x === 'string'));
+    } catch { /* ignore */ }
+    try {
+      const savedView = localStorage.getItem(ACTIVE_VIEW_KEY);
+      if (savedView && VALID_VIEWS.has(savedView)) state.view = savedView;
+      const savedSubtab = localStorage.getItem(POOL_SUBTAB_KEY);
+      if (savedSubtab === 'pools' || savedSubtab === 'catalog' || savedSubtab === 'quotas') state.poolSubtab = savedSubtab;
+      const savedTool = localStorage.getItem(POOLS_TOOL_KEY);
+      if (savedTool) state.poolsToolFilter = savedTool;
+      const savedChatId = localStorage.getItem(ACTIVE_CHAT_KEY);
+      if (savedChatId) state.activeChatId = savedChatId;
     } catch { /* ignore */ }
   }
 
@@ -542,16 +618,29 @@
   }
 
   function switchView(view, { fromPopstate = false } = {}) {
+    const nextView = VALID_VIEWS.has(view) ? view : 'chat';
     const prev = state.view;
-    state.view = view;
-    document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === `view-${view}`));
-    document.querySelectorAll('[data-view]').forEach(btn => btn.classList.toggle('active', btn.dataset.view === view));
-    const isChat = view === 'chat';
+    state.view = nextView;
+    try { localStorage.setItem(ACTIVE_VIEW_KEY, nextView); } catch { /* ignore */ }
+    document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === `view-${nextView}`));
+    document.querySelectorAll('[data-view]').forEach(btn => {
+      const isActive = btn.dataset.view === nextView;
+      btn.classList.toggle('active', isActive);
+      if (isActive) btn.setAttribute('aria-current', 'page');
+      else btn.removeAttribute('aria-current');
+    });
+    const settingsBtn = $('topbar-settings-btn');
+    if (settingsBtn) {
+      const isSettings = nextView === 'settings';
+      settingsBtn.classList.toggle('active', isSettings);
+      settingsBtn.setAttribute('aria-pressed', String(isSettings));
+    }
+    const isChat = nextView === 'chat';
     $('topbar-back-btn').hidden = isChat;
     $('topbar-brand-icon').hidden = !isChat;
-    if (view === 'chats') renderChatGroups($('mobile-chat-list'), true);
-    if (view === 'calls' || view === 'pools' || view === 'settings') void refreshState(false);
-    if (!fromPopstate && view !== prev) pushHistoryGuard(`view:${view}`);
+    if (nextView === 'chats') renderChatGroups($('mobile-chat-list'), true);
+    if (nextView === 'calls' || nextView === 'pools' || nextView === 'settings') void refreshState(false);
+    if (!fromPopstate && nextView !== prev) pushHistoryGuard(`view:${nextView}`);
   }
 
   function initMobileBackNavigation() {
@@ -589,6 +678,12 @@
       ? `v${state.poolHealth.version || '?'} · ${state.poolHealth.models || 0} model`
       : 'Servis kapalı';
     $('pool-offline-banner').hidden = running;
+    const httpsBanner = $('https-upgrade-banner');
+    if (httpsBanner) {
+      let dismissed = false;
+      try { dismissed = sessionStorage.getItem('remote-https-dismissed') === '1'; } catch { /* ignore */ }
+      httpsBanner.hidden = dismissed || !shouldOfferHttpsUpgrade();
+    }
 
     const navBadge = $('nav-active-badge');
     navBadge.hidden = active <= 0;
@@ -630,7 +725,25 @@
     const ctxBtn = $('context-toggle-btn');
     ctxBtn.classList.toggle('active', sel.includeContext);
     ctxBtn.setAttribute('aria-pressed', String(sel.includeContext));
-    $('context-toggle-label').textContent = sel.includeContext ? 'Bağlam: Özet' : 'Bağlam: Kapalı';
+    const ns = state.activeChat?.nativeSession;
+    const sameNativeSession = Boolean(
+      sel.includeContext &&
+      ns?.sessionId &&
+      (ns.workspace || '') === ws &&
+      (sel.routeId || sel.modelId
+        ? ((!sel.routeId || sel.routeId === ns.routeId) && (!sel.modelId || sel.modelId === ns.modelId))
+        : (!sel.group || !ns.group || sel.group === ns.group))
+    );
+    $('context-toggle-label').textContent = !sel.includeContext
+      ? 'Bağlam: Kapalı'
+      : sameNativeSession
+        ? 'Bağlam: Aynı Oturum'
+        : 'Bağlam: Özet';
+    ctxBtn.title = !sel.includeContext
+      ? 'Önceki sohbet bağlamı gönderilmez'
+      : sameNativeSession
+        ? 'Aynı model/araç seçili: mesajlar mevcut CLI oturumundan doğrudan devam eder; model değişince özet aktarılır'
+        : 'Yeni model/oturum başlatılır; önceki sohbetten kısa özet aktarılır';
     updateSendButton();
   }
 
@@ -749,12 +862,13 @@
     } catch (err) { toast(err.message, true); }
   }
 
-  function renderAssistantBubble(msg) {
+  function renderAssistantBubble(msg, prevUserMsg = null) {
     const [stateLabel, stateCls] = STATE_LABELS[msg.state] || [msg.state || 'Bekliyor', 'badge'];
     const isActive = msg.taskId && !TERMINAL_STATES.has(msg.state);
     const liveMeta = findRouteMeta(msg.routeId);
     const toolName = msg.toolLabel || liveMeta?.toolLabel || '';
     const subName = subscriptionText({ email: msg.email || liveMeta?.email, account: msg.account || liveMeta?.account, routeId: msg.routeId });
+    const canRetry = !isActive && ['timed_out', 'failed', 'cancelled'].includes(msg.state) && prevUserMsg && (prevUserMsg.text || prevUserMsg.attachments?.length);
 
     const statusBadge = el('span', { className: `badge ${stateCls}` }, [
       isActive ? el('span', { className: 'pulse-dot' }) : null,
@@ -778,6 +892,12 @@
         className: 'btn btn-primary btn-sm',
         text: '✓ İncelemeyi Kapat',
         onClick: () => void resolveReviewLock(msg.taskId, true),
+      }) : null,
+      canRetry ? el('button', {
+        type: 'button',
+        className: 'btn btn-secondary btn-sm',
+        text: '↻ Tekrar Dene',
+        onClick: () => void submitPromptPayload(prevUserMsg.text || '', prevUserMsg.attachments || []),
       }) : null,
       isActive ? el('button', {
         type: 'button',
@@ -809,6 +929,7 @@
           el('span', { className: 'msg-model-tag', text: modelText }),
           toolName ? el('span', { className: 'tool-pill', text: toolName }) : null,
           subName ? el('span', { className: 'sub-pill', title: subName, text: subName }) : null,
+          msg.resumedSession ? el('span', { className: 'badge', title: 'Önceki CLI oturumu kaldığı yerden devam ettirildi', text: '🔗 Aynı oturum' }) : null,
         ]),
         headRight,
       ]),
@@ -817,7 +938,7 @@
     if (msg.error) {
       const friendlyErr = msg.error === 'WORK_INCOMPLETE' && msg.report?.blockers?.length
         ? `Görev tamamlanmadı: ${msg.report.blockers.join(' · ')}`
-        : cleanErrorMessage(msg.errorDetail || msg.error);
+        : cleanErrorMessage(msg.errorDetail || msg.error, msg.error);
       bodyNodes.push(el('div', { className: 'error-box', text: friendlyErr }));
     }
 
@@ -848,7 +969,11 @@
     } else if (displayText) {
       bodyNodes.push(renderMarkdown(displayText));
     } else if (isActive) {
-      bodyNodes.push(el('p', { className: 'muted', text: 'Ajan çalışıyor, adımlar canlı olarak izleniyor…' }));
+      const stepLine = latestProgressStep(msg.events);
+      bodyNodes.push(el('p', {
+        className: 'muted',
+        text: stepLine ? `⚡ ${stepLine}` : 'Ajan çalışıyor, adımlar canlı olarak izleniyor…',
+      }));
     }
 
     if (msg.report && (msg.report.files?.length || msg.report.checks?.length || (!hideRawJson && msg.report.summary && msg.report.summary !== displayText))) {
@@ -927,8 +1052,10 @@
     const list = $('messages-list');
     list.replaceChildren();
 
+    let lastUserMsg = null;
     for (const msg of messages) {
       if (msg.role === 'user') {
+        lastUserMsg = msg;
         const bubbleChildren = [];
         if (msg.text) bubbleChildren.push(el('div', { text: msg.text }));
         if (Array.isArray(msg.attachments) && msg.attachments.length) {
@@ -950,7 +1077,7 @@
           ].filter(Boolean).join(' · ') }),
         ]));
       } else {
-        list.appendChild(renderAssistantBubble(msg));
+        list.appendChild(renderAssistantBubble(msg, lastUserMsg));
       }
     }
 
@@ -989,8 +1116,9 @@
         task.state === 'queued' ? el('div', { className: 'queue-box' }, [
           el('div', { text: describeQueueReason(task.queueReason, task.workspace) }),
         ]) : null,
+        active && latestProgressStep(task.events) ? el('p', { className: 'muted', style: 'margin-top:6px', text: `⚡ ${latestProgressStep(task.events)}` }) : null,
         task.result ? el('p', { className: 'muted', style: 'margin-top:6px', text: String(task.result).slice(0, 180) }) : null,
-        task.error ? el('div', { className: 'error-box', style: 'margin-top:6px', text: cleanErrorMessage(task.errorDetail || task.error) }) : null,
+        task.error ? el('div', { className: 'error-box', style: 'margin-top:6px', text: cleanErrorMessage(task.errorDetail || task.error, task.error) }) : null,
         el('div', { className: 'btn-row' }, [
           el('button', { type: 'button', className: 'btn btn-secondary btn-sm', text: 'İncele', onClick: () => void openTaskInspector(task.id) }),
           task.state === 'needs_review' ? el('button', {
@@ -1129,6 +1257,7 @@
           text: t === 'all' ? 'Tümü' : t,
           onClick: () => {
             state.poolsToolFilter = t;
+            try { localStorage.setItem(POOLS_TOOL_KEY, t); } catch { /* ignore */ }
             renderPoolsView();
           },
         }));
@@ -1178,8 +1307,8 @@
             ]),
             el('button', {
               type: 'button',
-              className: 'btn btn-secondary btn-sm',
-              text: 'Havuzu Seç',
+              className: `btn ${!state.selection.modelId && state.selection.group === pool.id ? 'btn-primary' : 'btn-secondary'} btn-sm`,
+              text: !state.selection.modelId && state.selection.group === pool.id ? '✓ Seçili Havuz' : 'Havuzu Seç',
               onClick: () => {
                 choosePoolAuto(pool.id);
                 switchView('chat');
@@ -1391,6 +1520,8 @@
         : 'Bu makinede aktif bir Tailscale IP (100.64.0.0/10) algılanmadı. Telefondan bağlanmak için bilgisayara ve telefona Tailscale kurun.';
     const httpsBtn = $('enable-https-btn');
     if (httpsBtn) httpsBtn.hidden = !state.tailscaleIp || Boolean(state.tailscaleHttpsUrl);
+    const switchHttpsBtn = $('switch-https-btn');
+    if (switchHttpsBtn) switchHttpsBtn.hidden = !shouldOfferHttpsUpgrade();
 
     const acl = { acls: [{ action: 'accept', src: ['tag:phone'], dst: [`tag:dev-pc:${state.port}`] }] };
     $('tailscale-acl-code').textContent = JSON.stringify(acl, null, 2);
@@ -1511,6 +1642,7 @@
       const filtered = (pool.models || []).filter(matchesSearch);
       if (q && !filtered.length) continue;
       const isPoolAutoSelected = !state.selection.modelId && state.selection.group === pool.id;
+      const containsSelectedModel = Boolean(state.selection.modelId) && filtered.some(m => m.modelId === state.selection.modelId && m.routeId === state.selection.routeId);
       const isCollapsed = !q && state.collapsedPools.has(pool.id);
 
       const block = el('div', { className: 'picker-cat-block' }, [
@@ -1526,6 +1658,7 @@
           }, [
             el('span', { className: 'picker-cat-chevron', text: isCollapsed ? '▸' : '▾' }),
             el('span', { text: `${pool.label || pool.id} (${filtered.length})` }),
+            isCollapsed && containsSelectedModel ? el('span', { className: 'badge', text: '✓ Seçili' }) : null,
           ]),
           el('button', {
             type: 'button',
@@ -1770,7 +1903,7 @@
         ]),
         el('div', { className: 'muted mono', text: `ID: ${task.id}` }),
         task.workspace ? el('div', { className: 'muted mono', text: `Klasör: ${task.workspace}` }) : null,
-        task.error ? el('div', { className: 'error-box', text: cleanErrorMessage(task.errorDetail || task.error) }) : null,
+        task.error ? el('div', { className: 'error-box', text: cleanErrorMessage(task.errorDetail || task.error, task.error) }) : null,
         task.result ? el('div', {}, [el('div', { className: 'sub-label', text: 'Yanıt' }), renderMarkdown(task.result)]) : null,
         eventLines.length ? el('div', {}, [
           el('div', { className: 'sub-label', text: `Adımlar & olaylar (${eventLines.length})` }),
@@ -1782,14 +1915,80 @@
     }
   }
 
-  // --- Chats & Live SSE Streaming ---
+  // --- Seamless 1-Tap HTTPS Session Handoff (Mobile Mic + PWA) ---
+  function shouldOfferHttpsUpgrade() {
+    if (window.isSecureContext) return false;
+    const host = String(location.hostname || '').toLowerCase();
+    if (host === '127.0.0.1' || host === 'localhost' || host === '::1') return false;
+    return Boolean(state.tailscaleHttpsUrl || state.tailscaleIp);
+  }
+
+  async function switchToHttps() {
+    toast('Güvenli HTTPS oturumu hazırlanıyor…');
+    try {
+      if (!state.tailscaleHttpsUrl && state.tailscaleIp) {
+        const enabled = await api('/r/tailscale/https', { method: 'POST', body: {} });
+        state.tailscaleHttpsUrl = enabled.tailscaleHttpsUrl || null;
+      }
+      const res = await api('/r/pair', {
+        method: 'POST',
+        body: { label: state.device?.label || 'Telefon', useTailscale: true },
+      });
+      if (res.url && res.url.startsWith('https://')) {
+        window.location.href = res.url;
+        return;
+      }
+      toast('Tailscale HTTPS adresi hazır değil. Ayarlar → "HTTPS Aç" düğmesini deneyin.', true);
+    } catch (err) {
+      toast(cleanErrorMessage(err.message), true);
+    }
+  }
+
+  // --- Chats & Live SSE Streaming (with Auto-Reconnect & Background Sync) ---
+  function clearStreamTimer(taskId) {
+    const timer = state.streamTimers.get(taskId);
+    if (timer) {
+      clearTimeout(timer);
+      state.streamTimers.delete(taskId);
+    }
+  }
+
   function closeAllStreams() {
     for (const es of state.streams.values()) es.close();
     state.streams.clear();
+    for (const timer of state.streamTimers.values()) clearTimeout(timer);
+    state.streamTimers.clear();
+    state.streamRetries.clear();
+  }
+
+  async function syncActiveChat(chatId = state.activeChatId) {
+    if (!chatId || state.syncingChat) return;
+    if (state.activeChatId && chatId !== state.activeChatId) return;
+    state.syncingChat = true;
+    try {
+      const { chat } = await api(`/r/chats/${encodeURIComponent(chatId)}`);
+      if (state.activeChatId !== chatId) return;
+      const feed = $('messages-feed');
+      const nearBottom = !feed || (feed.scrollHeight - feed.scrollTop - feed.clientHeight) < 160;
+      state.activeChat = chat;
+      renderTopbarAndStatus();
+      renderWorkspaceStrip();
+      renderMessages(nearBottom);
+      for (const msg of chat.messages || []) {
+        if (msg.role === 'assistant' && msg.taskId && !TERMINAL_STATES.has(msg.state)) {
+          watchTask(chat.id, msg.taskId);
+        }
+      }
+    } catch {
+      // Transient offline / background wake error; next tick will retry
+    } finally {
+      state.syncingChat = false;
+    }
   }
 
   function watchTask(chatId, taskId) {
     if (!taskId || state.streams.has(taskId)) return;
+    clearStreamTimer(taskId);
     const es = new EventSource(`/r/stream?taskId=${encodeURIComponent(taskId)}&chatId=${encodeURIComponent(chatId)}`);
     state.streams.set(taskId, es);
 
@@ -1806,29 +2005,67 @@
         msg.errorDetail = task.errorDetail || '';
         msg.report = task.report || null;
         msg.reportedModel = task.reportedModel || msg.reportedModel;
+        if (task.sessionId) {
+          msg.sessionId = task.sessionId;
+          state.activeChat.nativeSession = {
+            sessionId: task.sessionId,
+            routeId: msg.routeId || '',
+            modelId: msg.modelId || '',
+            adapter: msg.adapter || '',
+            group: msg.group || '',
+            workspace: msg.workspace || '',
+          };
+          renderTopbarAndStatus();
+        }
         msg.events = (task.events || []).slice(-30);
         renderMessages(true);
       }
     };
 
+    es.addEventListener('open', () => {
+      state.streamRetries.set(taskId, 0);
+    });
     es.addEventListener('update', e => {
+      state.streamRetries.set(taskId, 0);
       try { applyUpdate(JSON.parse(e.data)); } catch { /* ignore */ }
     });
     es.addEventListener('done', e => {
       try { applyUpdate(JSON.parse(e.data)); } catch { /* ignore */ }
       es.close();
       state.streams.delete(taskId);
+      clearStreamTimer(taskId);
+      state.streamRetries.delete(taskId);
       void refreshState(false);
     });
     es.addEventListener('error', () => {
       es.close();
       state.streams.delete(taskId);
+      if (!state.activeChat || state.activeChat.id !== chatId) return;
+      const msg = state.activeChat.messages.find(m => m.role === 'assistant' && m.taskId === taskId);
+      if (msg && TERMINAL_STATES.has(msg.state)) {
+        state.streamRetries.delete(taskId);
+        return;
+      }
+      const attempt = (state.streamRetries.get(taskId) || 0) + 1;
+      state.streamRetries.set(taskId, attempt);
+      void syncActiveChat(chatId);
+      if (attempt <= 20) {
+        const delayMs = Math.min(15_000, 1500 * Math.pow(2, Math.min(attempt - 1, 4)));
+        const timer = setTimeout(() => {
+          state.streamTimers.delete(taskId);
+          if (!state.activeChat || state.activeChat.id !== chatId) return;
+          const current = state.activeChat.messages.find(m => m.role === 'assistant' && m.taskId === taskId);
+          if (current && !TERMINAL_STATES.has(current.state)) watchTask(chatId, taskId);
+        }, delayMs);
+        state.streamTimers.set(taskId, timer);
+      }
     });
   }
 
   async function openChat(chatId) {
     closeAllStreams();
     state.activeChatId = chatId;
+    try { localStorage.setItem(ACTIVE_CHAT_KEY, chatId); } catch { /* ignore */ }
     renderChatList();
     try {
       const { chat } = await api(`/r/chats/${encodeURIComponent(chatId)}`);
@@ -1852,6 +2089,7 @@
       const { chat } = await api('/r/chats', { method: 'POST', body: { workspace: ws } });
       state.chats = [{ id: chat.id, title: chat.title, workspace: chat.workspace, updatedAt: chat.updatedAt, messageCount: 0 }, ...state.chats];
       state.activeChatId = chat.id;
+      try { localStorage.setItem(ACTIVE_CHAT_KEY, chat.id); } catch { /* ignore */ }
       state.activeChat = chat;
       renderTopbarAndStatus();
       renderChatList();
@@ -1863,17 +2101,15 @@
     }
   }
 
-  async function sendPrompt(event) {
-    event.preventDefault();
-    if (state.sending) return;
-    const input = $('prompt-input');
-    const text = input.value.trim();
-    const attachments = [...state.pendingAttachments];
-    if (!text && !attachments.length) return;
+  async function submitPromptPayload(rawText, rawAttachments = [], { clearComposer = false } = {}) {
+    if (state.sending) return false;
+    const text = String(rawText || '').trim();
+    const attachments = Array.isArray(rawAttachments) ? [...rawAttachments] : [];
+    if (!text && !attachments.length) return false;
 
     if (state.poolHealth?.status !== 'ok') {
       toast('CLI Agent Pool servisi kapalı. Önce servisi başlatın.', true);
-      return;
+      return false;
     }
     if (!state.activeChatId) await createNewChat('');
     const workspace = state.activeChat?.workspace || '';
@@ -1902,30 +2138,49 @@
           ...(cleanEffort ? { effort: cleanEffort } : {}),
         },
       });
-      input.value = '';
-      state.pendingAttachments = [];
-      renderAttachmentsStrip();
+      if (clearComposer) {
+        $('prompt-input').value = '';
+        state.pendingAttachments = [];
+        renderAttachmentsStrip();
+      }
       state.activeChat = res.chat;
       renderTopbarAndStatus();
       renderMessages(true);
       if (res.task?.id) watchTask(res.chat.id, res.task.id);
       void refreshState(false);
+      return true;
     } catch (err) {
       toast(cleanErrorMessage(err.message), true);
+      return false;
     } finally {
       state.sending = false;
       updateSendButton();
     }
   }
 
-  // --- Mobile-Fixed Voice Dictation ---
+  async function sendPrompt(event) {
+    event.preventDefault();
+    const input = $('prompt-input');
+    await submitPromptPayload(input.value, state.pendingAttachments, { clearComposer: true });
+  }
+
+  // --- Mobile-Fixed Voice Dictation (Android Chrome / iOS Safari / Tailscale HTTPS) ---
   function toggleVoiceDictation() {
     const input = $('prompt-input');
     if (!window.isSecureContext) {
+      if (state.tailscaleHttpsUrl || state.tailscaleIp) {
+        const ok = window.confirm(
+          'Mikrofon yalnızca güvenli HTTPS bağlantısında çalışır. Oturumunuz otomatik taşınarak HTTPS adresine geçilsin mi? (Yeni QR kod gerekmez.)',
+        );
+        if (ok) {
+          void switchToHttps();
+          return;
+        }
+      }
       input.focus();
       toast(
         state.tailscaleHttpsUrl
-          ? `Mikrofon için güvenli HTTPS adresini açın: ${state.tailscaleHttpsUrl} (veya yeni QR okutun).`
+          ? `Mikrofon için güvenli HTTPS adresini açın: ${state.tailscaleHttpsUrl}`
           : 'HTTP bağlantıda tarayıcı mikrofonu kısıtlıdır. Ayarlar → "HTTPS Aç" ile güvenli bağlantıyı etkinleştirin.',
         true,
       );
@@ -1938,7 +2193,7 @@
       return;
     }
     if (state.recording && state.recognition) {
-      state.recognition.stop();
+      try { state.recognition.stop(); } catch { try { state.recognition.abort(); } catch { /* ignore */ } }
       return;
     }
     const isMobile = /android|iphone|ipad|ipod/i.test(navigator.userAgent);
@@ -1946,8 +2201,8 @@
     rec.lang = 'tr-TR';
     rec.continuous = !isMobile;
     rec.interimResults = true;
+    rec.maxAlternatives = 1;
     const prefix = input.value ? `${input.value.trimEnd()} ` : '';
-    let finalized = '';
 
     rec.onstart = () => {
       state.recording = true;
@@ -1956,29 +2211,62 @@
       $('mic-status').hidden = false;
     };
     rec.onresult = e => {
-      let interim = '';
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const piece = e.results[i][0]?.transcript || '';
-        if (e.results[i].isFinal) finalized += `${piece} `;
-        else interim += piece;
+      // Rebuild from e.results[0..length-1] with overlap suppression to prevent Android Chrome duplicate phrases.
+      let sessionFinal = '';
+      let sessionInterim = '';
+      for (let i = 0; i < e.results.length; i++) {
+        const piece = String(e.results[i][0]?.transcript || '').trim();
+        if (!piece) continue;
+        if (e.results[i].isFinal) {
+          if (!sessionFinal || !sessionFinal.toLowerCase().endsWith(piece.toLowerCase())) {
+            sessionFinal = sessionFinal ? `${sessionFinal} ${piece}` : piece;
+          }
+        } else {
+          sessionInterim = sessionInterim ? `${sessionInterim} ${piece}` : piece;
+        }
       }
-      input.value = `${prefix}${finalized}${interim}`.trimStart();
+      const combined = [sessionFinal, sessionInterim].filter(Boolean).join(' ');
+      input.value = `${prefix}${combined}`.trimStart();
+      input.dispatchEvent(new Event('input', { bubbles: true }));
       updateSendButton();
     };
     rec.onerror = e => {
+      if (e.error === 'aborted') return;
+      if ((e.error === 'not-allowed' || e.error === 'service-not-allowed') && navigator.mediaDevices?.getUserMedia) {
+        // Trigger explicit Android PWA / Chrome microphone permission prompt if not permanently blocked.
+        navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+          stream.getTracks().forEach(t => t.stop());
+          toast('Mikrofon izni verildi. Konuşmak için mikrofon düğmesine tekrar dokunun.');
+        }).catch(() => {
+          toast('Mikrofon izni kapalı. Tarayıcı site ayarlarından mikrofon iznini açın veya klavye mikrofonunu kullanın.', true);
+        });
+        return;
+      }
       const msg = e.error === 'not-allowed' || e.error === 'service-not-allowed'
-        ? 'Mikrofon izni kapalı. Telefon klavye mikrofonunu kullanabilir veya tarayıcı izinlerini açabilirsiniz.'
-        : e.error === 'no-speech' ? 'Ses algılanmadı.' : `Ses hatası: ${e.error}`;
+        ? 'Mikrofon izni kapalı. Tarayıcı site ayarlarından mikrofonu açın veya telefon klavye mikrofonunu kullanın.'
+        : e.error === 'audio-capture'
+          ? 'Mikrofon cihazına erişilemedi. Başka bir uygulama mikrofonu kullanıyor olabilir.'
+          : e.error === 'network'
+            ? 'Ses tanıma servisine ağ erişimi sağlanamadı. Telefon klavye mikrofonunu kullanabilirsiniz.'
+            : e.error === 'no-speech' ? 'Ses algılanmadı.' : `Ses hatası: ${e.error}`;
       toast(msg, true);
     };
     rec.onend = () => {
       state.recording = false;
-      state.recognition = null;
+      if (state.recognition === rec) state.recognition = null;
       $('mic-btn').classList.remove('recording');
       $('mic-status').hidden = true;
       updateSendButton();
     };
-    try { rec.start(); } catch (err) { toast(err.message, true); }
+    try {
+      rec.start();
+    } catch (err) {
+      state.recording = false;
+      state.recognition = null;
+      $('mic-btn').classList.remove('recording');
+      $('mic-status').hidden = true;
+      toast(err.message || 'Mikrofon başlatılamadı.', true);
+    }
   }
 
   // --- Main State Refresh ---
@@ -2014,7 +2302,10 @@
       if ($('quotas-dialog').open) renderQuotaCardsInto($('quotas-dialog-body'));
 
       if (openInitialChat) {
-        if (state.chats.length) await openChat(state.chats[0].id);
+        const preferred = state.activeChatId && state.chats.some(c => c.id === state.activeChatId)
+          ? state.activeChatId
+          : state.chats[0]?.id;
+        if (preferred) await openChat(preferred);
         else await createNewChat('');
       }
     } catch (err) {
@@ -2042,6 +2333,8 @@
       $('model-search-input').value = '';
       renderModelPicker();
       $('model-dialog').showModal();
+      const selectedRow = $('picker-groups-list')?.querySelector('.model-row.selected, .picker-cat-auto.selected');
+      selectedRow?.scrollIntoView({ block: 'nearest' });
     });
     $('model-search-input').addEventListener('input', e => {
       state.pickerQuery = e.target.value;
@@ -2164,6 +2457,7 @@
     document.querySelectorAll('[data-pool-subtab]').forEach(btn => {
       btn.addEventListener('click', () => {
         state.poolSubtab = btn.dataset.poolSubtab;
+        try { localStorage.setItem(POOL_SUBTAB_KEY, state.poolSubtab); } catch { /* ignore */ }
         renderPoolsView();
       });
     });
@@ -2182,6 +2476,14 @@
 
     document.querySelectorAll('[data-theme]').forEach(btn => {
       btn.addEventListener('click', () => applyTheme(btn.dataset.theme, true));
+    });
+
+    $('banner-switch-https-btn')?.addEventListener('click', () => void switchToHttps());
+    $('switch-https-btn')?.addEventListener('click', () => void switchToHttps());
+    $('banner-dismiss-https-btn')?.addEventListener('click', () => {
+      try { sessionStorage.setItem('remote-https-dismissed', '1'); } catch { /* ignore */ }
+      const b = $('https-upgrade-banner');
+      if (b) b.hidden = true;
     });
 
     const startPool = async () => {
@@ -2246,12 +2548,26 @@
   // --- Boot ---
   applyTheme(readSavedTheme(), false);
   loadPreferences();
+  switchView(state.view, { fromPopstate: true });
   initDialogLightDismiss();
   initMobileBackNavigation();
   bindEvents();
   updateSendButton();
   void refreshState(true);
+  const wakeSync = () => {
+    if (document.hidden) return;
+    void refreshState(false);
+    void syncActiveChat();
+  };
+  document.addEventListener('visibilitychange', wakeSync);
+  window.addEventListener('online', wakeSync);
+  window.addEventListener('pageshow', wakeSync);
   setInterval(() => {
-    if (!document.hidden) void refreshState(false);
+    if (!document.hidden) {
+      void refreshState(false);
+      if (state.activeChat?.messages?.some(m => m.role === 'assistant' && m.taskId && !TERMINAL_STATES.has(m.state))) {
+        void syncActiveChat();
+      }
+    }
   }, 15_000);
 })();

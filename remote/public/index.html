@@ -113,6 +113,18 @@
           <button id="banner-start-pool-btn" type="button" class="btn btn-primary btn-sm">Servisi Başlat</button>
         </div>
 
+        <!-- HTTPS Upgrade Banner (1-tap session handoff for mobile mic & PWA) -->
+        <div id="https-upgrade-banner" class="alert-banner" hidden>
+          <div>
+            <strong>Mikrofon için HTTPS bağlantısına geçin.</strong>
+            <span>Oturumunuz otomatik taşınır, yeni QR kod gerekmez.</span>
+          </div>
+          <div class="inline-btn-group">
+            <button id="banner-switch-https-btn" type="button" class="btn btn-primary btn-sm">🔒 HTTPS'ye Geç</button>
+            <button id="banner-dismiss-https-btn" type="button" class="icon-btn" aria-label="Kapat">✕</button>
+          </div>
+        </div>
+
         <!-- Messages Feed -->
         <main id="messages-feed" class="messages-feed" aria-live="polite">
           <div id="empty-chat-state" class="empty-state">
@@ -268,7 +280,7 @@
             <div class="card-row">
               <div>
                 <h3>Paylaşılan Klasörler</h3>
-                <p class="muted">Tüm diski (ör. D:\) veya proje klasörlerinizi seçin; altındaki tüm projeler sohbette açılır.</p>
+                <p class="muted">Tüm diski (ör. D:\) veya proje klasörlerinizi seçin; altındaki tüm projeler sohbette açılır. Bu liste Remote klasör gezginini belirler; alt CLI araçlarının disk/komut izinleri ilgili aracın kendi ayarlarından yönetilir.</p>
               </div>
               <button id="add-shared-folder-btn" type="button" class="btn btn-primary btn-sm">📁 Klasör Seç</button>
             </div>
@@ -321,7 +333,10 @@
                 <h3>Tailscale Ağ Güvenliği &amp; HTTPS</h3>
                 <p id="tailscale-status-text" class="muted">Ağ bilgisi kontrol ediliyor…</p>
               </div>
-              <button id="enable-https-btn" type="button" class="btn btn-primary btn-sm" hidden>🔒 HTTPS Aç</button>
+              <div class="inline-btn-group">
+                <button id="switch-https-btn" type="button" class="btn btn-primary btn-sm" hidden>🔒 HTTPS'ye Geç</button>
+                <button id="enable-https-btn" type="button" class="btn btn-primary btn-sm" hidden>🔒 HTTPS Aç</button>
+              </div>
             </div>
             <p class="muted" style="margin-top:8px">HTTPS açıkken telefon mikrofonu, pano kopyalama ve Ana Ekrana Ekle tam çalışır; QR kod otomatik olarak güvenli HTTPS adresinizle üretilir.</p>
             <details class="acl-details">

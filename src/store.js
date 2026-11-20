@@ -54,9 +54,15 @@ export class Store {
     if (['succeeded','failed','timed_out','cancelled'].includes(state)) this.pruneHistory();
   }
   event(id, kind, detail) { this.db.prepare('INSERT INTO events(task_id,time,kind,detail) VALUES(?,?,?,?)').run(id, new Date().toISOString(), kind, detail); }
-  events(id, after = 0) { return this.db.prepare('SELECT seq,time,kind,detail FROM events WHERE task_id=? AND seq>? ORDER BY seq LIMIT 100').all(id, after); }
+  events(id, after = 0) {
+    if (!after) {
+      return this.db.prepare('SELECT seq,time,kind,detail FROM (SELECT seq,time,kind,detail FROM events WHERE task_id=? ORDER BY seq DESC LIMIT 100) ORDER BY seq ASC').all(id);
+    }
+    return this.db.prepare('SELECT seq,time,kind,detail FROM events WHERE task_id=? AND seq>? ORDER BY seq LIMIT 100').all(id, after);
+  }
   notifications(id) { return this.db.prepare("SELECT detail FROM events WHERE task_id=? AND kind='notification' ORDER BY seq DESC LIMIT 10").all(id).map(row => row.detail); }
   reportedModel(id) { return this.db.prepare("SELECT detail FROM events WHERE task_id=? AND kind='progress' AND detail LIKE 'model:%' ORDER BY seq DESC LIMIT 1").get(id)?.detail.slice(6) || null; }
+  sessionId(id) { return this.db.prepare("SELECT detail FROM events WHERE task_id=? AND kind='session' ORDER BY seq DESC LIMIT 1").get(id)?.detail || null; }
   errorDetail(id) { return this.db.prepare("SELECT detail FROM events WHERE task_id=? AND kind='error_detail' ORDER BY seq DESC LIMIT 1").get(id)?.detail || null; }
   originalError(id) { return this.db.prepare("SELECT detail FROM events WHERE task_id=? AND kind='original_error' ORDER BY seq DESC LIMIT 1").get(id)?.detail || null; }
   interrupted() { return this.db.prepare("SELECT * FROM tasks WHERE state='needs_review' AND error='INTERRUPTED' ORDER BY rowid").all(); }

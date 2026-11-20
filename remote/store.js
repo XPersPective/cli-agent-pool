@@ -82,9 +82,21 @@ export class RemoteStore {
       const parsed = JSON.parse(readFileSync(this.file, 'utf8'));
       const base = emptyState();
       const cleanPaths = list => (Array.isArray(list) ? list : []).filter(p => typeof p === 'string' && p.trim() && p.trim() !== '[object Object]');
+      const cleanSession = s => (s && typeof s === 'object' && typeof s.sessionId === 'string' && s.sessionId.trim()
+        ? {
+            sessionId: s.sessionId.trim(),
+            routeId: typeof s.routeId === 'string' ? s.routeId : '',
+            modelId: typeof s.modelId === 'string' ? s.modelId : '',
+            adapter: typeof s.adapter === 'string' ? s.adapter : '',
+            group: typeof s.group === 'string' ? s.group : '',
+            workspace: (typeof s.workspace === 'string' && s.workspace.trim() !== '[object Object]') ? s.workspace.trim() : '',
+            updatedAt: typeof s.updatedAt === 'string' ? s.updatedAt : '',
+          }
+        : null);
       const cleanChats = (Array.isArray(parsed.chats) ? parsed.chats : []).map(c => ({
         ...c,
         workspace: (typeof c?.workspace === 'string' && c.workspace.trim() !== '[object Object]') ? c.workspace.trim() : '',
+        nativeSession: cleanSession(c?.nativeSession),
       }));
       return {
         version: 1,
@@ -225,6 +237,7 @@ export class RemoteStore {
       id: randomUUID(),
       title: String(title || 'Yeni sohbet').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 80) || 'Yeni sohbet',
       workspace: String(workspace || '').trim(),
+      nativeSession: null,
       createdAt: now,
       updatedAt: now,
       messages: [],
@@ -243,12 +256,60 @@ export class RemoteStore {
       chat.title = patch.title.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 80);
     }
     if (typeof patch.workspace === 'string') {
-      chat.workspace = patch.workspace.trim();
+      const nextWs = patch.workspace.trim();
+      if (nextWs !== (chat.workspace || '')) chat.nativeSession = null;
+      chat.workspace = nextWs;
       if (chat.workspace) this.recordRecentFolder(chat.workspace);
     }
     chat.updatedAt = new Date().toISOString();
     this.writeState();
     return chat;
+  }
+
+  recordTaskSession(chatId, taskId, sessionId) {
+    const cleanId = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (!cleanId) return null;
+    const chat = this.getChat(chatId);
+    if (!chat) return null;
+    const msg = chat.messages.find(m => m.taskId === taskId);
+    if (!msg) return null;
+    const latestAssistant = [...chat.messages].reverse().find(m => m.role === 'assistant');
+    const changedMsg = msg.sessionId !== cleanId;
+    msg.sessionId = cleanId;
+    const shouldPromote = !latestAssistant || latestAssistant.taskId === taskId;
+    const prev = chat.nativeSession;
+    const nextSession = {
+      sessionId: cleanId,
+      routeId: msg.routeId || '',
+      modelId: msg.modelId || '',
+      adapter: msg.adapter || '',
+      group: msg.group || '',
+      workspace: msg.workspace || '',
+      updatedAt: new Date().toISOString(),
+    };
+    const changedChat = shouldPromote && (
+      !prev ||
+      prev.sessionId !== nextSession.sessionId ||
+      prev.routeId !== nextSession.routeId ||
+      prev.modelId !== nextSession.modelId ||
+      prev.workspace !== nextSession.workspace
+    );
+    if (shouldPromote) chat.nativeSession = nextSession;
+    if (changedMsg || changedChat) {
+      chat.updatedAt = new Date().toISOString();
+      this.writeState();
+    }
+    return chat.nativeSession;
+  }
+
+  clearChatNativeSession(chatId, onlyIfSessionId = '') {
+    const chat = this.getChat(chatId);
+    if (!chat || !chat.nativeSession) return false;
+    if (onlyIfSessionId && chat.nativeSession.sessionId !== onlyIfSessionId) return false;
+    chat.nativeSession = null;
+    chat.updatedAt = new Date().toISOString();
+    this.writeState();
+    return true;
   }
 
   deleteChat(chatId) {

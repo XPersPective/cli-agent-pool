@@ -21,6 +21,13 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 async function application(t) {
+  const savedPoolEnv = {};
+  for (const key of ['CLI_AGENT_POOL_WORKER', 'CLI_AGENT_POOL_TASK_TOKEN', 'CLI_AGENT_POOL_TASK_ID']) {
+    if (key in process.env) {
+      savedPoolEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+  }
   const root = mkdtempSync(path.join(tmpdir(), 'pool-mcp-'));
   const executable = path.join(root, 'fake-codex.js');
   writeFileSync(executable, `if(process.argv.includes('login')){console.log('Logged in using ChatGPT')}else{process.stdin.resume();process.stdin.on('end',()=>{console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'verified result'}}));console.log(JSON.stringify({type:'turn.completed'}))})}`);
@@ -37,7 +44,10 @@ async function application(t) {
   writeFileSync(path.join(root, 'config.json'), JSON.stringify({ ...config, port: address.port }));
   writeFileSync(path.join(root, 'access-token'), token);
   writeFileSync(path.join(root, 'management-token'), managementToken);
-  t.after(async () => { app.server.close(); app.server.closeAllConnections(); await pool.close(); store.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
+  t.after(async () => {
+    for (const [key, value] of Object.entries(savedPoolEnv)) process.env[key] = value;
+    app.server.close(); app.server.closeAllConnections(); await pool.close(); store.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  });
   return { root, pool, token, managementToken, app, url: new URL(`http://127.0.0.1:${address.port}/mcp`) };
 }
 

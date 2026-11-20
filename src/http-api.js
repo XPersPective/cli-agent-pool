@@ -11,7 +11,7 @@ export const publicTools = new Set(['pool_help', 'pool_get_policy', 'pool_catalo
   'pool_quota_overview', 'pool_capabilities', 'pool_get_quotas', 'pool_select', 'pool_preflight_status', 'pool_list_connections']);
 
 const numeric = new Set(['limit', 'offset', 'after', 'minRemainingPercent', 'timeoutSeconds']);
-const booleans = new Set(['compact', 'force']);
+const booleans = new Set(['compact', 'force', 'activeFirst']);
 const arrays = new Set(['readPaths', 'capabilities']);
 const aliases = { route: 'routeId', model: 'modelId', category: 'group', q: 'query' };
 const ignored = new Set(['pretty', 'live']);

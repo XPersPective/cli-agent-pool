@@ -113,7 +113,17 @@ export function runProcess({ argv, cwd, input = '', relay = false, extraEnv = {}
     stopReason = reason || 'CANCELLED';
     child.stdin.end();
   };
-  const timer = setTimeout(() => cancel('TIMEOUT'), timeoutMs);
+  let timer = null;
+  const scheduleTimeout = remaining => {
+    if (settled || stopReason) return;
+    const step = Math.min(remaining, 2_147_483_647);
+    timer = setTimeout(() => {
+      const left = remaining - step;
+      if (left > 0) scheduleTimeout(left);
+      else cancel('TIMEOUT');
+    }, step);
+  };
+  if (Number.isFinite(timeoutMs) && timeoutMs > 0) scheduleTimeout(timeoutMs);
   const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
   lines.on('line', line => { try { onLine(line); } catch { lineFailure = true; cancel('PROTOCOL_ERROR'); } });
   child.stdout.setEncoding('utf8');
@@ -133,7 +143,7 @@ export function runProcess({ argv, cwd, input = '', relay = false, extraEnv = {}
     child.once('error', () => { stopReason ||= 'SPAWN_FAILED'; });
     child.once('close', code => {
       settled = true;
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       lines.close();
       resolve({ code, output, stderr, stopReason: stopReason || (lineFailure ? 'PROTOCOL_ERROR' : null) });
     });

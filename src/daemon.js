@@ -255,9 +255,9 @@ export async function callPoolTool(client, name, args = {}) {
 }
 
 export async function runTaskFromCli(directory, options) {
-  const waitSeconds = Number(options.waitSeconds ?? 3600);
-  if (!Number.isInteger(waitSeconds) || waitSeconds < 1 || waitSeconds > Math.floor(2147483647 / 1000))
-    throw new PoolError('INVALID_REQUEST', '--wait pozitif saniye olmalı ve native timer aralığında kalmalı.');
+  const waitSeconds = Number(options.waitSeconds ?? 0);
+  if (!Number.isInteger(waitSeconds) || waitSeconds < 0 || waitSeconds > Math.floor(2147483647 / 1000))
+    throw new PoolError('INVALID_REQUEST', '--wait 0 (süresiz) veya pozitif saniye olmalı ve native timer aralığında kalmalı.');
   const workspace = allowedWorkspace(options.workspace || process.cwd());
   const config = loadConfig(directory);
   await ensureDaemon(directory, config);
@@ -272,7 +272,7 @@ export async function runTaskFromCli(directory, options) {
       ...(options.modelId ? { modelId: options.modelId } : {}),
       ...(options.group ? { group: options.group } : {}),
       ...(options.effort ? { effort: options.effort } : {}),
-      ...(options.timeoutSeconds ? { timeoutSeconds: Number(options.timeoutSeconds) } : {}),
+      ...(options.timeoutSeconds !== undefined ? { timeoutSeconds: Number(options.timeoutSeconds) } : {}),
       idempotencyKey: options.idempotencyKey || `cli-${randomUUID()}`,
     });
     if (options.detach) return submitted;

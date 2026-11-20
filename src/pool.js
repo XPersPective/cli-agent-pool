@@ -30,7 +30,9 @@ export const taskSchema = z.object({
   effort: z.string().max(100).optional(),
   clientLabel: z.string().trim().min(1).max(100).refine(value=>!/[\u0000-\u001f]/.test(value)).optional(),
   minRemainingPercent: z.number().min(0).max(100).optional(),
-  timeoutSeconds: z.number().int().min(1).max(Math.floor(2147483647 / 1000)).default(300),
+  timeoutSeconds: z.number().int().min(0).max(Math.floor(2147483647 / 1000)).default(0),
+  sessionId: z.string().trim().min(1).max(200).refine(value => !/[\u0000-\u001f]/.test(value)).optional(),
+  persistSession: z.boolean().optional(),
   idempotencyKey: z.string().min(8).max(128).regex(/^[a-zA-Z0-9_.:-]+$/),
   // Director profile (owner surface only) and its declared capabilities.
   profile: z.enum(['worker', 'director']).optional(),
@@ -308,9 +310,10 @@ export class Pool {
     const request = JSON.parse(task.request);
     const events = this.store.events(id, after);
     const reportedModel = this.store.reportedModel(id);
+    const sessionId = this.store.sessionId(id) || request.sessionId || null;
     const report = request.mode === 'execute' && task.result ? parseExecutionReport(task.result) : null;
     const originalError = this.store.originalError(id);
-    return { notifications: this.store.notifications(task.id), profile: request.profile || 'worker', parentTaskId: request.parentTaskId || null, preflight: request.preflight ? this.store.preflightForTask(task.id) : undefined, id: task.id, state: task.state, mode: request.mode || null, report, routeId: request.routeId, modelId: request.modelId, reportedModel, queueReason: null, blockedBy: null, group: request.group, effort: request.effort || null, clientLabel:request.clientLabel || null, historyExpired:Boolean(request.historyExpired), kind: request.kind, workspace: request.workspace, prompt: request.prompt || null, created: task.created, updated: task.updated, result: task.result, error: task.error, ...(originalError ? { originalError } : {}), errorDetail: this.store.errorDetail(id), events };
+    return { notifications: this.store.notifications(task.id), profile: request.profile || 'worker', parentTaskId: request.parentTaskId || null, preflight: request.preflight ? this.store.preflightForTask(task.id) : undefined, id: task.id, state: task.state, mode: request.mode || null, report, routeId: request.routeId, modelId: request.modelId, reportedModel, sessionId, queueReason: null, blockedBy: null, group: request.group, effort: request.effort || null, clientLabel:request.clientLabel || null, historyExpired:Boolean(request.historyExpired), kind: request.kind, workspace: request.workspace, prompt: request.prompt || null, created: task.created, updated: task.updated, result: task.result, error: task.error, ...(originalError ? { originalError } : {}), errorDetail: this.store.errorDetail(id), events };
   }
   list(limit = 50, offset = 0, activeFirst = false) {
     return this.store.list(limit, offset, activeFirst);
@@ -398,7 +401,12 @@ export class Pool {
       let events = 0;
       handle.run = this.execute(route, model, request, this.config.python, detail => {
         handle.activity = this.watchdog.now();
-        if (events++ < 100) this.store.event(task.id, 'progress', handle.redact ? handle.redact(detail) : detail);
+        if (typeof detail === 'string' && detail.startsWith('session:')) {
+          const sid = detail.slice(8).trim();
+          if (sid && sid.length <= 200 && !/[\u0000-\u001f]/.test(sid)) this.store.event(task.id, 'session', sid);
+          return;
+        }
+        if (events++ < 400) this.store.event(task.id, 'progress', handle.redact ? handle.redact(detail) : detail);
       }, this.directory, context);
       const outcome = await handle.run.done;
       if (handle.redact) { if (outcome.result) outcome.result = handle.redact(outcome.result); if (outcome.detail) outcome.detail = handle.redact(outcome.detail); }

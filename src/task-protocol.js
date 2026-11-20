@@ -112,8 +112,8 @@ export function compactTask(task) {
   }).filter(([key, value]) => !['prompt', 'events'].includes(key) && value !== undefined));
 }
 
-export async function waitForTask(getTask, id, { waitSeconds = 3600, now = Date.now, sleep } = {}) {
-  const deadline = now() + waitSeconds * 1000;
+export async function waitForTask(getTask, id, { waitSeconds = 0, now = Date.now, sleep } = {}) {
+  const deadline = waitSeconds > 0 ? now() + waitSeconds * 1000 : Infinity;
   for (;;) {
     const task = await getTask(id);
     if (!['queued', 'starting', 'running', 'cancelling'].includes(task.state)) return task;

@@ -253,8 +253,7 @@ CLI must still provision that account. Credentials remain in the official store.
 2.1.0 removes global/per-route worker count and queued-job caps. The caller
 controls parallelism through submissions; workspace reader/writer fairness and
 review locks remain. Retired concurrency/maxConcurrent inputs migrate away.
-Task timeout is caller-supplied (default 300s), bounded only by Node timer range,
-not a one-hour product ceiling. Waiting expiry still returns a durable task ID.
+Tasks run without a timeout by default (`timeoutSeconds: 0` = unlimited, continuing until the session finishes or is explicitly cancelled) and without an output byte ceiling while keeping retained memory bounded at 2 MB; callers may still pass an explicit positive `timeoutSeconds` when desired. Waiting expiry still returns a durable task ID when a positive `--wait` budget is supplied.
 
 Account profiles let one official CLI account live in each route. Codex and
 Claude routes with `profile` run with their own `CODEX_HOME` / `CLAUDE_CONFIG_DIR`

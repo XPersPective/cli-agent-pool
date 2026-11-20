@@ -102,13 +102,19 @@ test('caller can submit 128 independent tasks without global, route or queued-jo
  for(const finish of pending)finish({result:'done'});await Promise.all(tasks.map(t=>terminal(pool,t.id)));
 });
 
-test('legacy worker limits migrate away and caller timeouts are not capped at an hour',()=>{
+test('legacy worker limits migrate away and tasks default to no timeout (unlimited session)', async () => {
  const config=configSchema.parse({concurrency:32,routes:[{id:'test',adapter:'codex',executable:process.execPath,maxConcurrent:32,models:[]}]});
  assert(!('concurrency'in config));assert(!('maxConcurrent'in config.routes[0]));
  const task={prompt:'bounded task',workspace:tmpdir(),kind:'text',idempotencyKey:'long-timeout'};
  assert.equal(taskSchema.parse({...task,timeoutSeconds:86400}).timeoutSeconds,86400);
- assert.equal(taskSchema.parse(task).timeoutSeconds,300);
+ assert.equal(taskSchema.parse({...task,timeoutSeconds:0}).timeoutSeconds,0);
+ assert.equal(taskSchema.parse(task).timeoutSeconds,0);
  assert.throws(()=>taskSchema.parse({...task,timeoutSeconds:2147484}));
+ // timeoutMs: 0 must not arm a timer or fire immediately
+ const unlimited = await runProcess({ argv: [process.execPath, '-e', 'setTimeout(() => { process.stdout.write("alive"); }, 80)'], cwd: process.cwd(), timeoutMs: 0 }).done;
+ assert.equal(unlimited.code, 0);
+ assert.equal(unlimited.stopReason, null);
+ assert.equal(unlimited.output, 'alive');
 });
 
 test('write failure ends in failed without retrying or locking the workspace', async t => {

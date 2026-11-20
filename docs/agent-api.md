@@ -74,8 +74,9 @@ maksimum 6000 karakter/tercihen 200 kelimedir. Tam protokol ayrıntısı yalnız
 paketli skill references/operations.md dosyasında bulunur.
 
 Paralelliği çağıran gönderdiği iş sayısıyla belirler; worker/kuyruk adet tavanı
-yoktur. timeoutSeconds iş süresini belirler (varsayılan 300 saniye; bir saat
-tavanı yok). Çakışan çalışma klasörlerine yazma ve inceleme kilitleri korunur.
+yoktur. Görevler varsayılan olarak zaman aşımı olmadan (`timeoutSeconds: 0`,
+oturum sonuna veya iptale kadar) çalışır; çağıran isterse pozitif `timeoutSeconds`
+belirleyebilir. Çakışan çalışma klasörlerine yazma ve inceleme kilitleri korunur.
 
 Completed tasks expire after 7 days or the most recent 500 completed tasks. Keep needed reports externally; idempotency keys expire with their records. The UI can clear completed history while preserving active/review tasks.
 
