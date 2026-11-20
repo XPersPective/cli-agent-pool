@@ -152,6 +152,11 @@
 - [x] **Doğrulama kanıtı (2.20.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate`, `npm test` (`218/218`, yeni `test/remote.test.js` dahil) ve canlı `cli-agent-pool` servisi üzerinden `/r/state` uçtan uca entegrasyon testi doğrulandı.
 
 ## 2.19.0 — Onay/Ekleme Kilidi Düzeltmesi, Windows Pythonw İzolasyonu, 300 Model Sınırı, Neon/Ağ Hata Düzeltmeleri ve Otomatik Güncelleme Bildirimi
+## 2.29.1 — argsTemplate `effort: default` hatası
+- [x] **Kök neden**: `codex-acc2` / `codex-director` rotaları kayıtlı `argsTemplate` kullanıyordu; efor seçilmediğinde `{effort}` yer tutucusu `"default"` oluyor ve Codex API'si `Invalid value: 'default'` (HTTP 400) ile reddediyordu (`src/adapters.js`). Düzeltme: efor yoksa `{effort}` içeren belirteç ve önündeki `-c` atlanır. Test: `test/args-template-effort.test.js`.
+- [x] **Not — zaman aşımı**: v2.29.0 kodu süresizdir; telefondaki TIMEOUT hataları (600 sn) eski v2.28.0 servisi çalışırken oluştu. Yeniden başlatma ile kapandı.
+- [x] **Not — izin hatası**: `PERMISSION_REQUIRED` (`D:/n-workflow-runtime`) Antigravity yerel proje izninden gelir (`bec5c527…json` yalnız `D:/repositories` verir); Pool izin atlamaz, kullanıcı Antigravity'de izni ekleyip **İzinleri eşitle** yapmalıdır.
+
 ## 2.29.0 — Süresiz Oturumlar, Aynı Modelde Native CLI Oturum Devamlılığı, Okunaklı Adımlar, Alt Menü Aktif Sekme Vurgusu, Dayanıklı SSE ve Tek Tık HTTPS/Mikrofon
 - [x] **Ham NDJSON yerine okunaklı adım ve hata/iptal özetleri (`src/adapters.js`, `src/pool.js`, `src/store.js`, `remote/public/app.js`)**:
   - `summarizeEventStep`, `summarizeToolTarget` ve `formatStopReasonDetail` ile Antigravity, Codex, Claude, Qoder, Qwen, OpenCode ve MiMo araç adımları kısa Türkçe ilerleme satırlarına dönüştürülür (`#131 run_command: ...`, `Komut: ...`, `Read: ...`); zaman aşımı veya iptal durumunda ham JSONL/NDJSON akışı yerine son aktif adım özetlenir.

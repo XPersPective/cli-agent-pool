@@ -638,8 +638,17 @@ export function buildArguments(route, model, task, context = null) {
   const keepSession = Boolean(task.persistSession || task.sessionId);
   const sessionId = typeof task.sessionId === 'string' && task.sessionId.trim() ? task.sessionId.trim() : '';
   if (Array.isArray(route.argsTemplate) && route.argsTemplate.length > 0) {
-    const values = { model: model.id, effort: effort || 'default', workspace: task.workspace, prompt: task.prompt, kind: task.kind };
-    const built = route.argsTemplate.map(token => token.replace(/\{(model|effort|workspace|prompt|kind)\}/g, (_, k) => String(values[k] ?? '')));
+    const values = { model: model.id, effort: effort || '', workspace: task.workspace, prompt: task.prompt, kind: task.kind };
+    // No effort chosen: drop the effort token (and its `-c`/flag lead-in) instead of sending a bogus "default".
+    const tokens = [];
+    for (const token of route.argsTemplate) {
+      if (!effort && token.includes('{effort}')) {
+        if (tokens.length && /^-{1,2}[A-Za-z-]+$/.test(tokens[tokens.length - 1]) && !/^--?(?:sandbox|model|m|C)$/.test(tokens[tokens.length - 1])) tokens.pop();
+        continue;
+      }
+      tokens.push(token);
+    }
+    const built = tokens.map(token => token.replace(/\{(model|effort|workspace|prompt|kind)\}/g, (_, k) => String(values[k] ?? '')));
     return [...argv, ...built];
   }
   if (route.adapter === 'codex') {
