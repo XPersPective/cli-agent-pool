@@ -175,10 +175,12 @@ async function dashboardExecutable(directory) {
   return executable;
 }
 
-export async function openDashboardWindow(url, { remote = false } = {}) {
+export async function openDashboardWindow(url, { remote = false, reauth = false } = {}) {
   const windows = process.platform === 'win32';
   const executable = windows ? await dashboardExecutable(dataDirectory()) : process.platform === 'darwin' ? 'open' : 'xdg-open';
-  const winArgs = remote ? [dataDirectory(), '--remote-url', url, 'remote'] : [dataDirectory(), '--url', url];
+  const winArgs = remote
+    ? [dataDirectory(), '--remote-url', url, 'remote']
+    : [dataDirectory(), '--url', url, ...(reauth ? ['--reauth'] : [])];
   const proc = spawn(executable, windows ? winArgs : [url], { detached:true, stdio:'ignore', windowsHide:false });
   if(windows) {
     const [code] = await once(proc,'exit');

@@ -133,7 +133,7 @@ export async function main(args = process.argv.slice(2)) {
     const config = ensureInitialized(directory, false);
     const info = await ensureDaemon(directory, config);
     void ensureRemoteDaemon(directory, { python: config.python }).catch(() => {});
-    const windowInfo = await openDashboardWindow(info.dashboard);
+    const windowInfo = await openDashboardWindow(info.dashboard, { reauth: Boolean(info.reauthNeeded) });
     print({ ...info, ...windowInfo });
     return;
   }

@@ -48,13 +48,15 @@ test('pool CLI entrypoint executes when invoked through a directory symlink or j
   assert.ok(parsed?.mcpServers?.['cli-agent-pool']);
 });
 
-test('normal dashboard launch ensures the daemon before activating an existing window', () => {
+test('normal dashboard launch ensures the daemon before activating or re-authenticating an existing window', () => {
   const source = fs.readFileSync(new URL('../src/dashboard.cs', import.meta.url), 'utf8');
-  const ensure = source.indexOf('EnsureUrl(directory, args[1], args[2], isRemote ? "remote-ensure" : "ensure")');
+  const ensure = source.indexOf('EnsureUrl(directory, args[1], args[2], isRemote ? "remote-ensure" : "ensure", out reauthNeeded)');
   const existingWindow = source.indexOf('var windows = Windows(profile);');
-  const activateExisting = source.indexOf('if (windows.Count > 0) { Activate(windows); return 0; }');
+  const reopenCheck = source.indexOf('NeedsSessionReopen(windows, reauthNeeded)');
+  const activateExisting = source.indexOf('Activate(windows); return 0;');
 
   assert.notEqual(ensure, -1, 'normal shortcut path should ensure the daemon; --url/--remote-url keeps the supplied URL');
   assert.ok(existingWindow > ensure, 'daemon ensure must run before looking for a window to activate');
-  assert.ok(activateExisting > existingWindow, 'existing window activation must remain in place');
+  assert.ok(reopenCheck > existingWindow, 'stuck or expired windows must be detected before focusing');
+  assert.ok(activateExisting > reopenCheck, 'healthy existing window activation must remain in place');
 });

@@ -26,6 +26,7 @@ internal static class Dashboard {
     [DllImport("user32.dll")] static extern bool PostMessage(IntPtr window, uint message, IntPtr w, IntPtr l);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr window, StringBuilder name, int length);
     [DllImport("user32.dll")] static extern int GetWindowTextLength(IntPtr window);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr window, StringBuilder text, int length);
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window, out RECT rect);
     [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
     static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
@@ -94,7 +95,34 @@ internal static class Dashboard {
             if (attached) AttachThreadInput(curThread, fgThread, false);
         }
     }
-    static string EnsureUrl(string directory, string node, string pool, string ensureCommand) {
+    static string WindowTitle(IntPtr window) {
+        int len = GetWindowTextLength(window);
+        if (len <= 0) return "";
+        var sb = new StringBuilder(len + 1);
+        GetWindowText(window, sb, sb.Capacity);
+        return sb.ToString();
+    }
+    static bool NeedsSessionReopen(List<IntPtr> windows, bool reauthNeeded) {
+        if (reauthNeeded) return true;
+        foreach (IntPtr w in windows) {
+            string title = WindowTitle(w);
+            if (title.IndexOf("Oturum doldu", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                title.IndexOf("127.0.0.1", StringComparison.OrdinalIgnoreCase) >= 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+    static void CloseWindows(string profile, List<IntPtr> windows) {
+        foreach (IntPtr w in windows) PostMessage(w, 0x0010, IntPtr.Zero, IntPtr.Zero);
+        for (int i = 0; i < 25; i++) {
+            Thread.Sleep(100);
+            if (Windows(profile).Count == 0) break;
+        }
+        RetireWindowlessProfile(profile);
+    }
+    static string EnsureUrl(string directory, string node, string pool, string ensureCommand, out bool reauthNeeded) {
+        reauthNeeded = false;
         var start = new ProcessStartInfo(node, Quote(pool) + " " + ensureCommand) { UseShellExecute=false, CreateNoWindow=true, RedirectStandardOutput=true, RedirectStandardError=true, WorkingDirectory=directory };
         start.EnvironmentVariables["CLI_AGENT_POOL_HOME"] = directory;
         start.StandardOutputEncoding = Encoding.UTF8;
@@ -112,6 +140,7 @@ internal static class Dashboard {
             int jsonStart = text.IndexOf('{');
             Dictionary<string,object> payload = jsonStart >= 0 ? new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(text.Substring(jsonStart)) : null;
             string dashboard = payload != null && payload.ContainsKey("dashboard") ? Convert.ToString(payload["dashboard"]) : null;
+            if (payload != null && payload.ContainsKey("reauthNeeded") && payload["reauthNeeded"] is bool) reauthNeeded = (bool)payload["reauthNeeded"];
             if (string.IsNullOrWhiteSpace(dashboard)) {
                 File.WriteAllText(Path.Combine(directory,"dashboard-start-error.log"), "Exit: 0\r\nStdout: " + text + "\r\nStderr: " + error.Result);
                 throw new Exception("Servis pencere baglantisini dondurmedi. Kurulumu (npm run setup) kontrol edin.");
@@ -137,11 +166,18 @@ internal static class Dashboard {
                 try {
                     // A user may have stopped the service while leaving this browser window open.
                     // Every normal shortcut invocation must repair service state before focusing it.
+                    bool reauthNeeded = (args.Length == 4 && args[3] == "--reauth");
                     string url = (args[1] == "--url" || args[1] == "--remote-url")
                         ? args[2]
-                        : EnsureUrl(directory, args[1], args[2], isRemote ? "remote-ensure" : "ensure");
+                        : EnsureUrl(directory, args[1], args[2], isRemote ? "remote-ensure" : "ensure", out reauthNeeded);
                     var windows = Windows(profile);
-                    if (windows.Count > 0) { Activate(windows); return 0; }
+                    if (windows.Count > 0) {
+                        if (!isRemote && NeedsSessionReopen(windows, reauthNeeded)) {
+                            CloseWindows(profile, windows);
+                        } else {
+                            Activate(windows); return 0;
+                        }
+                    }
                     RetireWindowlessProfile(profile);
                     var uri = new Uri(url);
                     if (uri.Scheme != "http" || uri.Host != "127.0.0.1") throw new Exception("Invalid local dashboard URL");

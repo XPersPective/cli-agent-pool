@@ -102,7 +102,11 @@ export function createServer(pool, token, port = pool.config.port, management) {
     if (ui?.serve(req, res, actualPort)) return;
     const browser = req.url === '/ui' && ui;
     if (browser) {
-      if (req.headers.origin !== `http://127.0.0.1:${actualPort}` || !ui.authorized(req, actualPort)) return fail(403, 'UNAUTHORIZED', 'Yönetim oturumu geçersiz. Terminaldeki bağlantıdan yeniden açın.');
+      if (req.headers.origin !== `http://127.0.0.1:${actualPort}` || !ui.authorized(req, actualPort)) {
+        if (req.headers.origin === `http://127.0.0.1:${actualPort}`) ui.noteAuth(false);
+        return fail(403, 'UNAUTHORIZED', 'Yönetim oturumu geçersiz. Masaüstü kısayolundan veya "cli-agent-pool open" komutuyla yeniden açın.');
+      }
+      ui.noteAuth(true);
     } else if ('origin' in req.headers || 'sec-fetch-site' in req.headers) return fail(403, 'ORIGIN_DENIED', 'Bu bağlantı kaynağına izin verilmiyor.');
     // Preflight poolService probe: no bearer token, only a live 256-bit single-use nonce plus its secret.
     const probe = /^\/preflight\/([a-f0-9]{64})$/.exec(req.url || '');
@@ -174,9 +178,10 @@ export function createServer(pool, token, port = pool.config.port, management) {
           const value = browser
             ? await ui.operation(body)
             : body.operation === 'pair_ui'
-              ? { status: 'listening', version, endpoint: `http://127.0.0.1:${actualPort}/mcp`, dashboard: ui?.launchURL(actualPort) }
+              ? { status: 'listening', version, endpoint: `http://127.0.0.1:${actualPort}/mcp`, dashboard: ui?.launchURL(actualPort), ...(ui?.needsReauth() ? { reauthNeeded: true } : {}) }
               : await managementOperation(pool, management, body);
-          res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+          const renewed = browser ? ui.refreshCookie(req, actualPort) : null;
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...(renewed ? { 'Set-Cookie': renewed } : {}) });
           res.end(JSON.stringify(value));
         } catch (error) { fail(error instanceof PoolError ? 409 : 400, error instanceof PoolError ? error.code : 'INVALID_CONFIG', error instanceof PoolError ? error.message : 'Ayarlar geçersiz. Girdiğiniz değerleri kontrol edin.'); }
         return;

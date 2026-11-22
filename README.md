@@ -222,7 +222,7 @@ ve ücretsiz modeller her zaman `paid_api` bağlantıların önünde yer alır.
 
 `serve` komutu bir MCP adresi ve ayrı bir `dashboard` bağlantısı yazdırır.
 Dashboard bağlantısı tek kullanımlıktır; açıldıktan sonra adres temizlenir ve
-8 saatlik, HttpOnly / SameSite=Strict oturum çerezi kullanılır. Tarayıcıya sağlayıcı
+kalıcı, kendiliğinden yenilenen (HttpOnly / SameSite=Strict) oturum çerezi kullanılır. Tarayıcıya sağlayıcı
 credential'ı, API anahtarı veya kalıcı MCP/yönetim anahtarı verilmez.
 
 Ekranda kurulu CLI'lar, CLI bağlantısı ekleme, Özel API / Token Planı ekleme (Anthropic

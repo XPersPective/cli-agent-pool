@@ -145,7 +145,10 @@ export function managementOperation(pool, management, body) {
   return annotateView(configView(management.directory), management.directory);
 }
 
-export function browserUI(pool, management, { openLogin = openCliLogin } = {}) {
+const SESSION_COOKIE_MAX_AGE = 31536000; // 365 days (within Chromium's 400-day cap)
+const SESSION_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+export function browserUI(pool, management, { openLogin = openCliLogin, refreshIntervalMs = SESSION_REFRESH_INTERVAL_MS } = {}) {
   let folderPicker = null;
   const pendingAccounts = new Map();
   const pendingSwitches = new Map();
@@ -197,6 +200,9 @@ export function browserUI(pool, management, { openLogin = openCliLogin } = {}) {
   };
   let launchToken = randomBytes(32).toString('hex');
   let cachedUpdateStatus = null;
+  let lastAuthorizedAt = 0;
+  let lastUnauthorizedAt = 0;
+  const refreshedAt = new Map();
   const cookieSecret = createHmac('sha256', Buffer.from(management.token, 'hex')).update('cli-agent-pool-browser-cookie-v1').digest();
   const assets = new Map([
     ['/categories.js', ['text/javascript; charset=utf-8', readFileSync(new URL('../web/categories.js', import.meta.url))]],
@@ -209,35 +215,106 @@ export function browserUI(pool, management, { openLogin = openCliLogin } = {}) {
   ]);
   const equal = (a, b) => typeof a === 'string' && typeof b === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
   const sign = payload => createHmac('sha256', cookieSecret).update(payload).digest('hex');
+  const formatSessionCookie = (port, sessionId) =>
+    `pool_${port}=v2.${sessionId}.${sign(`${port}:v2:${sessionId}`)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_COOKIE_MAX_AGE}`;
+  const markRefreshed = sessionId => {
+    if (refreshedAt.size >= 128 && !refreshedAt.has(sessionId)) {
+      const oldest = refreshedAt.keys().next().value;
+      if (oldest) refreshedAt.delete(oldest);
+    }
+    refreshedAt.set(sessionId, Date.now());
+  };
+  const parseSession = (req, port) => {
+    const cookie = (req.headers.cookie || '').split(';').map(c => c.trim()).find(c => c.startsWith(`pool_${port}=`));
+    if (!cookie) return null;
+    const raw = cookie.slice(cookie.indexOf('=') + 1);
+    const parts = raw.split('.');
+    if (parts.length === 3 && parts[0] === 'v2') {
+      const [, sessionId, mac] = parts;
+      if (/^[a-f0-9]{32}$/.test(sessionId) && equal(mac, sign(`${port}:v2:${sessionId}`))) {
+        return { version: 2, sessionId };
+      }
+      return null;
+    }
+    // Legacy v1 timestamped cookie (<13-digit-expires>.<hmac>): accept while valid and upgrade seamlessly to v2.
+    if (parts.length === 2) {
+      const [expires, mac] = parts;
+      if (/^\d{13}$/.test(expires) && Number(expires) > Date.now() && equal(mac, sign(`${port}:${expires}`))) {
+        return { version: 1, sessionId: null };
+      }
+    }
+    return null;
+  };
+  const renewalCookie = (req, port, force = false) => {
+    const session = parseSession(req, port);
+    if (!session) return null;
+    if (session.version === 1) {
+      const id = randomBytes(16).toString('hex');
+      markRefreshed(id);
+      return formatSessionCookie(port, id);
+    }
+    const last = refreshedAt.get(session.sessionId) || 0;
+    if (force || Date.now() - last >= refreshIntervalMs) {
+      markRefreshed(session.sessionId);
+      return formatSessionCookie(port, session.sessionId);
+    }
+    return null;
+  };
   return {
     launchURL(port) {
       if (!launchToken) launchToken = randomBytes(32).toString('hex');
       return `http://127.0.0.1:${port}/?token=${launchToken}`;
     },
     authorized(req, port) {
-      const cookie = (req.headers.cookie || '').split(';').map(c => c.trim()).find(c => c.startsWith(`pool_${port}=`));
-      if (!cookie) return false;
-      const [expires, mac] = cookie.slice(cookie.indexOf('=') + 1).split('.');
-      return /^\d{13}$/.test(expires) && Number(expires) > Date.now() && equal(mac, sign(`${port}:${expires}`));
+      return Boolean(parseSession(req, port));
+    },
+    noteAuth(ok) {
+      if (ok) lastAuthorizedAt = Date.now();
+      else lastUnauthorizedAt = Date.now();
+    },
+    needsReauth() {
+      return lastUnauthorizedAt > lastAuthorizedAt;
+    },
+    refreshCookie(req, port, force = false) {
+      return renewalCookie(req, port, force);
     },
     serve(req, res, port) {
       let url;
       try { url = new URL(req.url, `http://127.0.0.1:${port}`); } catch { return false; }
-      if (req.method !== 'GET' || !assets.has(url.pathname)) return false;
+      if ((req.method !== 'GET' && req.method !== 'HEAD') || !assets.has(url.pathname)) return false;
       const pairing = url.searchParams.get('token');
-      if (url.pathname === '/' && pairing && launchToken && equal(pairing, launchToken)) {
-        launchToken = null;
-        const expires = String(Date.now() + 8 * 60 * 60 * 1000);
-        res.writeHead(303, { Location: '/', 'Set-Cookie': `pool_${port}=${expires}.${sign(`${port}:${expires}`)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800`, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
-        res.end(); return true;
+      if (url.pathname === '/' && pairing) {
+        const purpose = String(req.headers['sec-purpose'] || req.headers.purpose || req.headers['x-purpose'] || '').toLowerCase();
+        if (req.method === 'HEAD' || /prefetch|preview|prerender/.test(purpose)) {
+          res.writeHead(204, { 'Cache-Control': 'no-store' });
+          res.end(); return true;
+        }
+        if (launchToken && equal(pairing, launchToken)) {
+          launchToken = null;
+          const sessionId = randomBytes(16).toString('hex');
+          markRefreshed(sessionId);
+          lastAuthorizedAt = Date.now();
+          res.writeHead(303, { Location: '/', 'Set-Cookie': formatSessionCookie(port, sessionId), 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
+          res.end(); return true;
+        }
+        if (parseSession(req, port)) {
+          lastAuthorizedAt = Date.now();
+          const renewed = renewalCookie(req, port, true);
+          res.writeHead(303, { Location: '/', ...(renewed ? { 'Set-Cookie': renewed } : {}), 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
+          res.end(); return true;
+        }
       }
-      if (!this.authorized(req, port)) {
+      if (req.method !== 'GET') return false;
+      if (!parseSession(req, port)) {
+        lastUnauthorizedAt = Date.now();
         res.writeHead(401, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
-        res.end('Yönetim ekranını terminalde yazdırılan tek kullanımlık bağlantıdan açın.'); return true;
+        res.end('Yönetim ekranını masaüstü kısayolundan veya "cli-agent-pool open" komutuyla açın.'); return true;
       }
+      lastAuthorizedAt = Date.now();
+      const renewed = url.pathname === '/' ? renewalCookie(req, port, true) : null;
       const [type, bytes] = assets.get(url.pathname);
       res.writeHead(200, {
-        'Content-Type': type, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
+        'Content-Type': type, ...(renewed ? { 'Set-Cookie': renewed } : {}), 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
         'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
       });
       res.end(bytes); return true;

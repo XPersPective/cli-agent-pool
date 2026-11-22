@@ -402,10 +402,12 @@ async function call(operation, payload = {}) {
     const value = await response.json().catch(() => ({}));
     if (response.status === 401 || response.status === 403 || value?.error?.code === 'UNAUTHORIZED') {
       sessionExpired = true;
-      throw new Error('Yönetim oturumu süresi doldu. Masaüstü kısayolundan veya "cli-agent-pool open" komutuyla yeniden açın.');
+      document.title = 'Oturum doldu — CLI Agent Pool';
+      throw new Error('Yönetim oturumu doğrulanamadı. Masaüstü kısayolundan veya "cli-agent-pool open" komutuyla yeniden açın.');
     }
     if (!response.ok) throw new Error(value.error?.message || 'İşlem tamamlanamadı. Yeniden deneyin.');
     sessionExpired = false;
+    if (document.title !== 'CLI Agent Pool') document.title = 'CLI Agent Pool';
     if (operation === 'save') {
       poolDirty = false;
       updateSave();
