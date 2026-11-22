@@ -627,7 +627,7 @@ export function browserUI(pool, management, { openLogin = openCliLogin, refreshI
           : await installDesktopAndSkills(management.directory);
         const restartScheduled = Boolean(res.restartRequired);
         // Yeni sürüm kurulduysa çalışan servis eski varlıkları sunmaya devam eder; servisi yeni kurulumdan başlat.
-        if (restartScheduled) scheduleServiceRestart(management.directory, res.runtimePath ? path.join(res.runtimePath, 'bin', 'pool.js') : undefined);
+        if (restartScheduled) scheduleServiceRestart(management.directory, res.runtimePath ? path.join(res.runtimePath, 'bin', 'pool.js') : undefined, pool.config.python);
         return {
           updated: true,
           version,

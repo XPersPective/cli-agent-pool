@@ -364,11 +364,12 @@ export async function checkUpdateStatus({ runningVersion = version, installedRoo
   };
 }
 
-export function scheduleServiceRestart(directory, targetPoolBin = poolBinPath) {
+export function scheduleServiceRestart(directory, targetPoolBin = poolBinPath, python = undefined) {
   const entry = targetPoolBin || poolBinPath;
   spawnDetachedHidden([process.execPath, entry, 'restart'], {
     cwd: directory,
     env: { ...process.env, CLI_AGENT_POOL_HOME: directory },
+    ...(python ? { python } : {}),
   });
   return { scheduled: true };
 }

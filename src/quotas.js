@@ -1,11 +1,13 @@
 // Native vendor quota readers. Credentials are read from the official CLI's own
 // local store, kept in memory for one request and never written or returned.
+import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runProcess } from './process.js';
+import { promisify } from 'node:util';
+import { resolveWindowsPython, runProcess } from './process.js';
 
 const TIMEOUT_MS = 10_000;
 
@@ -161,12 +163,24 @@ export async function zaiQuota(home = homedir(), monitor = zaiMonitor) {
 // ---- Google Antigravity ----------------------------------------------------
 const ANTIGRAVITY_CLIENT = { id: '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com', secret: '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' };
 const ANTIGRAVITY_ENDPOINTS = ['https://daily-cloudcode-pa.googleapis.com', 'https://cloudcode-pa.googleapis.com'];
-const credentialScript = fileURLToPath(new URL('./wincred.ps1', import.meta.url));
+const credentialScript = fileURLToPath(new URL('./wincred.py', import.meta.url));
+const execFileAsync = promisify(execFile);
 
 async function windowsCredential(target) {
   try {
+    const pyw = resolveWindowsPython('python', { preferWindowless: true });
+    if (/pythonw\.exe$/i.test(pyw)) {
+      const { stdout } = await execFileAsync(pyw, [credentialScript, target], {
+        cwd: path.dirname(credentialScript),
+        timeout: TIMEOUT_MS,
+        maxBuffer: 65_536,
+        windowsHide: true,
+        encoding: 'utf8',
+      });
+      return stdout || null;
+    }
     const res = await runProcess({
-      argv: ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', credentialScript, '-Target', target],
+      argv: [pyw, credentialScript, target],
       cwd: path.dirname(credentialScript),
       timeoutMs: TIMEOUT_MS,
       maxBytes: 65_536,

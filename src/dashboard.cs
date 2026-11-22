@@ -123,7 +123,7 @@ internal static class Dashboard {
     }
     static string EnsureUrl(string directory, string node, string pool, string ensureCommand, out bool reauthNeeded) {
         reauthNeeded = false;
-        var start = new ProcessStartInfo(node, Quote(pool) + " " + ensureCommand) { UseShellExecute=false, CreateNoWindow=true, RedirectStandardOutput=true, RedirectStandardError=true, WorkingDirectory=directory };
+        var start = new ProcessStartInfo(node, Quote(pool) + " " + ensureCommand) { UseShellExecute=false, CreateNoWindow=true, WindowStyle=ProcessWindowStyle.Hidden, RedirectStandardOutput=true, RedirectStandardError=true, WorkingDirectory=directory };
         start.EnvironmentVariables["CLI_AGENT_POOL_HOME"] = directory;
         start.StandardOutputEncoding = Encoding.UTF8;
         start.StandardErrorEncoding = Encoding.UTF8;

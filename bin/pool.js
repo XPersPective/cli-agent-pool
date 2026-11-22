@@ -114,7 +114,7 @@ export async function main(args = process.argv.slice(2)) {
     const res = await installDesktopAndSkills(directory, null, { fixConsole: Boolean(flags['fix-console']) });
     if (res.restartRequired) {
       const targetBin = res.runtimePath ? path.join(res.runtimePath, 'bin', 'pool.js') : undefined;
-      scheduleServiceRestart(directory, targetBin);
+      scheduleServiceRestart(directory, targetBin, ensureInitialized(directory, false).python);
       res.restartScheduled = true;
     }
     print(res);
