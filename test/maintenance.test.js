@@ -18,7 +18,7 @@ test('native effort variants migrate atomically and keep the actual CLI ID and p
  writeFileSync(file,`const a=process.argv.slice(2);if(a[0]==='models'){console.log('gemini-3.8-flash-high\\tFlash High\\ngemini-3.8-flash-low\\tFlash Low');process.exit(0)}let input='';process.stdin.on('data',c=>input+=c).on('end',()=>{const message=JSON.parse(input);if(a.includes('--print')||a.some(v=>v.startsWith('--print='))||a.includes('-p')||a[a.indexOf('--input-format')+1]!=='stream-json')process.exit(2);console.log(JSON.stringify({event:'result',result:{status:'SUCCESS',response:message.message?.content}}))});`);
  const route={id:'agy',adapter:'agy',executable:file,models:[{id:'gemini-3.8-flash-high',alias:'High',group:'high',enabled:true,efforts:['high']},{id:'gemini-3.8-flash-low',alias:'Low',group:'low',enabled:true,efforts:['low']}]};
  const catalog=await routeCatalog(route,root,process.platform==='win32'?'python':'python3');
- assert.equal(catalog.models.length,1);assert.deepEqual(catalog.models[0].efforts,['high','low']);
+ assert.equal(catalog.models.length,1);assert.deepEqual(catalog.models[0].efforts,['low','high']);
  mergeCatalogModels(route,catalog);assert.equal(route.models.length,1);
  assert.deepEqual(route.models[0].memberships,[{group:'high',effort:'high'},{group:'low',effort:'low'}]);
  const task={kind:'text',workspace:root,prompt:'--output-format is literal; Türkçe',effort:'low',timeoutSeconds:5};

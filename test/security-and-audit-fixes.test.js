@@ -18,7 +18,8 @@ import { parseOpenCodeGoUsage, antigravityModelWindows, kimiLoggedIn } from '../
 import { encodeQrMatrix } from '../remote/qr.js';
 import { createRemoteServer } from '../remote/server.js';
 import { RemoteStore } from '../remote/store.js';
-import { settingsViewSignature, quotaWindowPercent, quotaMatches } from '../web/pool-state.js';
+import { settingsViewSignature, quotaWindowPercent, quotaMatches, cleanModelDisplayName, sortEfforts, modelIssueInfo } from '../web/pool-state.js';
+import { compactCatalog, categoryPage, quotaOverview } from '../src/catalog.js';
 
 function httpRequest(port, method, urlPath, { headers = {}, body = null } = {}) {
   return new Promise((resolve, reject) => {
@@ -454,4 +455,68 @@ test('web/pool-state fixes: settingsViewSignature tracks real quota windows/emai
   const infoSnap = { status: 'unknown', informational: true, note: 'Bugun: 3 oturum', windows: [] };
   assert.equal(quotaMatches(infoSnap, 'm1', 'healthy', route, model), true);
   assert.equal(quotaMatches(infoSnap, 'm1', 'unknown', route, model), false);
+});
+
+test('model display names strip parenthetical efforts, normalize casing, sort efforts, and suppress colliding shared desktop accounts', async t => {
+  assert.equal(cleanModelDisplayName('gemini-4-argon', 'Gemini 4 Argon (Medium)'), 'Gemini 4 Argon');
+  assert.equal(cleanModelDisplayName('gemini-4-neon', 'Gemini 4 Neon (High)'), 'Gemini 4 Neon');
+  assert.equal(cleanModelDisplayName('claude-opus-5-5', 'Claude Opus 5.5 (Low)'), 'Claude Opus 5.5');
+  assert.equal(cleanModelDisplayName('claude-opus-5-5', 'claude-opus-5-5'), 'Claude Opus 5.5');
+  assert.equal(cleanModelDisplayName('claude-fable-5-2', 'claude-fable-5-2'), 'Claude Fable 5.2');
+  assert.equal(cleanModelDisplayName('gemini-4-argon', 'gemini-4-argon'), 'Gemini 4 Argon');
+  assert.equal(cleanModelDisplayName('claude-opus-4-6-thinking', 'Claude Opus 4.6 (Thinking)'), 'Claude Opus 4.6 Thinking');
+  assert.equal(cleanModelDisplayName('openrouter/baidu/ernie-5.5-flash-preview:free', 'ERNIE-5.5-Flash-Preview (free) (Ücretsiz)'), 'ERNIE-5.5 Flash Preview');
+  assert.equal(cleanModelDisplayName('respan/gemini-4-carbon:free', 'gemini-4-carbon:free'), 'Gemini 4 Carbon');
+  assert.equal(cleanModelDisplayName('gpt-6.2-sol', 'GPT-6.2-Sol'), 'GPT-6.2 Sol');
+  assert.deepEqual(sortEfforts(['high', 'xhigh', 'medium', 'default', 'low', 'high']), ['low', 'medium', 'high', 'xhigh']);
+
+  // Duplicate shared default desktop route colliding with an isolated profile route must be suppressed cleanly.
+  const root = mkdtempSync(path.join(tmpdir(), 'pool-audit-dup-'));
+  const config = configSchema.parse({
+    workspaceRoots: [root],
+    routes: [
+      { id: 'agy-local', adapter: 'agy', executable: process.execPath, enabled: true, billing: 'subscription', models: [{ id: 'gemini-4-argon', alias: 'Gemini 4 Argon (Medium)', group: 'high', memberships: [{ group: 'high' }], efforts: ['medium', 'high', 'low'], kinds: ['text'] }] },
+      { id: 'agy-acc4', adapter: 'agy', profile: 'acc4', executable: process.execPath, enabled: true, billing: 'subscription', models: [{ id: 'gemini-4-argon', alias: 'gemini-4-argon', group: 'high', memberships: [{ group: 'high' }], efforts: ['high', 'low', 'medium'], kinds: ['text'] }] },
+    ],
+  });
+  const store = new Store(':memory:');
+  const now = new Date().toISOString();
+  store.saveQuota('agy-local', { status: 'available', email: 'same@example.com', observedAt: now, windows: [{ name: '5h', remainingPercent: 90 }] });
+  store.saveQuota('agy-acc4', { status: 'available', email: 'same@example.com', observedAt: now, windows: [{ name: '5h', remainingPercent: 90 }] });
+  const pool = new Pool(config, store, { directory: root });
+  t.after(async () => { await pool.close(); store.close(); rmSync(root, { recursive: true, force: true }); });
+
+  const dupMap = pool.duplicateRouteMap();
+  assert.equal(dupMap.get('agy-local'), 'agy-acc4');
+  assert.equal(dupMap.has('agy-acc4'), false);
+
+  const cat = compactCatalog(pool, { view: 'models' });
+  assert.equal(cat.models.length, 1);
+  assert.equal(cat.models[0].routeId, 'agy-acc4');
+  assert.equal(cat.models[0].name, 'Gemini 4 Argon');
+  assert.deepEqual(cat.models[0].efforts, ['low', 'medium', 'high']);
+
+  const page = categoryPage(pool, { group: 'high' });
+  assert.equal(page.models.length, 1);
+  assert.equal(page.models[0].routeId, 'agy-acc4');
+
+  const pick = pool.select({ kind: 'text', group: 'high' });
+  assert.equal(pick.selected.routeId, 'agy-acc4');
+
+  const qOver = quotaOverview(pool);
+  const localQ = qOver.connections.find(c => c.routeId === 'agy-local');
+  assert.equal(localQ.status, 'duplicate_account');
+  assert.equal(localQ.duplicateOf, 'agy-acc4');
+  assert.equal(modelIssueInfo(config.routes[0], config.routes[0].models[0], localQ).state, 'duplicate_account');
+
+  // Remote UI contract: confirm dialog, compact responsive model pill, no raw "(high)" parenthetical in bubbles.
+  const remoteHtml = readFileSync(path.join(process.cwd(), 'remote', 'public', 'index.html'), 'utf8');
+  const remoteJs = readFileSync(path.join(process.cwd(), 'remote', 'public', 'app.js'), 'utf8');
+  const remoteCss = readFileSync(path.join(process.cwd(), 'remote', 'public', 'style.css'), 'utf8');
+  assert.match(remoteHtml, /id="confirm-dialog"/);
+  assert.match(remoteHtml, /id="model-pill-effort"/);
+  assert.match(remoteHtml, /id="model-pill-provider"/);
+  assert.match(remoteJs, /askConfirm\(\{/);
+  assert.match(remoteJs, /kaldırmak istiyor musunuz/);
+  assert.match(remoteCss, /\.inline-model-provider \{ display: none; \}/);
 });

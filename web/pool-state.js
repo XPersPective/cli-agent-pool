@@ -29,7 +29,7 @@ export function settingsViewSignature(config, quotas = {}, ui = '') {
     const wins = Array.isArray(q?.windows)
       ? q.windows.map(w => `${w.name || ''}:${w.remainingPercent ?? ''}`).join(';')
       : '';
-    return `${id}:${q?.status || ''}:${q?.auth || ''}:${q?.subscription || ''}:${q?.email || ''}:${q?.informational ? 1 : 0}:${q?.remaining ?? ''}:${q?.used ?? ''}:${wins}`;
+    return `${id}:${q?.status || ''}:${q?.auth || ''}:${q?.subscription || ''}:${q?.email || ''}:${q?.duplicateOf || ''}:${q?.informational ? 1 : 0}:${q?.remaining ?? ''}:${q?.used ?? ''}:${wins}`;
   }).join(',');
   return `${JSON.stringify(rest)}|${routeSig}|${quotaSig}|${ui}`;
 }
@@ -144,6 +144,9 @@ export function modelIssueInfo(route, model, snapshot, quotaError = '') {
   if (route && !activeBillingSet.has(route.billing)) {
     return { state: 'billing_unconfirmed', level: 'error', badge: 'Plan doğrulanmadı', isError: true, isUnknown: false, isDisabled: false };
   }
+  if (snapshot?.status === 'duplicate_account' || snapshot?.duplicateOf) {
+    return { state: 'duplicate_account', level: 'error', badge: `Kopya hesap (${snapshot.duplicateOf || 'aynı hesap'})`, isError: true, isUnknown: false, isDisabled: false };
+  }
   if (snapshot?.status === 'auth_required' || snapshot?.auth === 'missing' || snapshot?.auth === 'rejected') {
     return { state: 'auth_error', level: 'error', badge: 'Giriş gerekli', isError: true, isUnknown: false, isDisabled: false };
   }
@@ -248,7 +251,120 @@ export function quotaToggleTarget(details = []) {
 }
 
 export function effortLabel(value) {
-  return ({ low: 'Düşük', medium: 'Orta', high: 'Yüksek', xhigh: 'Çok yüksek', max: 'En yüksek', minimal: 'En az', none: 'Kapalı', default: 'Varsayılan' })[value] || value || 'CLI varsayılanı';
+  return ({ low: 'Düşük', medium: 'Orta', high: 'Yüksek', xhigh: 'Çok yüksek', max: 'En yüksek', ultra: 'Ultra', minimal: 'En az', none: 'Kapalı', default: 'Varsayılan' })[value] || value || 'CLI varsayılanı';
+}
+
+export function effortShortLabel(value) {
+  const key = String(value || '').trim().toLowerCase();
+  return ({ minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'XHigh', max: 'Max', ultra: 'Ultra', none: 'None' })[key] || (key && key !== 'default' ? key[0].toUpperCase() + key.slice(1) : '');
+}
+
+const EFFORT_ORDER = { minimal: 0, low: 1, medium: 2, high: 3, xhigh: 4, max: 5, ultra: 6 };
+export function sortEfforts(efforts = []) {
+  const seen = new Set();
+  const clean = [];
+  for (const raw of Array.isArray(efforts) ? efforts : []) {
+    const val = String(raw || '').trim();
+    if (!val || val === 'default' || seen.has(val)) continue;
+    seen.add(val);
+    clean.push(val);
+  }
+  return clean.sort((a, b) => {
+    const ia = EFFORT_ORDER[a.toLowerCase()];
+    const ib = EFFORT_ORDER[b.toLowerCase()];
+    if (ia !== undefined && ib !== undefined) return ia - ib;
+    if (ia !== undefined) return -1;
+    if (ib !== undefined) return 1;
+    return a.localeCompare(b, 'en');
+  });
+}
+
+const DISPLAY_WORD_MAP = {
+  gpt: 'GPT', glm: 'GLM', ernie: 'ERNIE', oss: 'OSS', ai: 'AI', cli: 'CLI', api: 'API',
+  deepseek: 'DeepSeek', minimax: 'MiniMax', mimo: 'MiMo', qwen: 'Qwen', qoder: 'Qoder',
+  claude: 'Claude', gemini: 'Gemini', opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku', fable: 'Fable',
+  argon: 'Argon', neon: 'Neon', hydrogen: 'Hydrogen', carbon: 'Carbon', flash: 'Flash', pro: 'Pro',
+  sol: 'Sol', astra: 'Astra', luna: 'Luna', terra: 'Terra', flex: 'Flex', fast: 'Fast',
+  ultrafast: 'Ultrafast', mini: 'Mini', nano: 'Nano', thinking: 'Thinking',
+  orchestrator: 'Orchestrator', muse: 'Muse', ember: 'Ember', preview: 'Preview',
+  codex: 'Codex', kimi: 'Kimi', free: 'Free', lite: 'Lite', turbo: 'Turbo',
+  llama: 'Llama', mistral: 'Mistral', grok: 'Grok',
+};
+
+function formatDisplayWord(token) {
+  if (!token) return '';
+  const lower = token.toLowerCase();
+  if (DISPLAY_WORD_MAP[lower]) return DISPLAY_WORD_MAP[lower];
+  if (/^v\d+(?:\.\d+)*$/i.test(token)) return `V${token.slice(1)}`;
+  if (/^[a-z]\d+[a-z]?$/i.test(token)) return token.toUpperCase();
+  if (/^\d/.test(token)) return token;
+  return token[0].toUpperCase() + token.slice(1);
+}
+
+// Produce a clean, consistent human-readable model display name with no trailing
+// parenthetical effort labels like "(Medium)" or "(High)" and consistent casing.
+export function cleanModelDisplayName(modelId = '', rawName = '') {
+  const id = String(modelId || '').trim();
+  let text = String(rawName || '').trim() || id;
+  if (!text) return '';
+  // Preserve descriptive Turkish ZCode sentences such as "ZCode varsayılan modeli: ...".
+  if (/^zcode\s+varsayılan/i.test(text)) return text;
+
+  // Strip stacked trailing parenthetical effort/free tags: "(High)", "(Medium)", "(free)", "(Ücretsiz)".
+  for (let i = 0; i < 4; i++) {
+    const next = text
+      .replace(/\s*\((?:low|medium|high|xhigh|max|ultra|minimal|default|free|ücretsiz)\)\s*$/i, '')
+      .trim();
+    if (next === text) break;
+    text = next;
+  }
+  // Unwrap clean parenthetical modifiers like "(Thinking)", "(Argon)", "(Neon)".
+  text = text.replace(/\s*\((Thinking|Argon|Neon|Hydrogen|Carbon|Preview|Fast|Pro|Flash)\)\s*/gi, (_, inner) => ` ${formatDisplayWord(inner)} `).trim();
+
+  // Strip provider prefix (opencode/, openrouter/org/, respan/) & :free tag if still slug-shaped.
+  if (text.includes('/') && !text.includes(' ')) {
+    text = text.split('/').at(-1) || text;
+  }
+  text = text.replace(/:free$/i, '').trim();
+
+  // Normalize slug-style names (e.g. "claude-opus-5-5", "gemini-4-argon", "GPT-6.2-Sol", "ERNIE-5.5-Flash-Preview")
+  // or lowercase starts into clean consistent Title/Brand Case without losing version numbers.
+  const isSlug = !text.includes(' ') && /[-_]/.test(text);
+  const startsLower = /^[a-z]/.test(text);
+  if (isSlug || startsLower) {
+    // Join single-digit version hyphens (e.g. 5-5 -> 5.5, 4-6 -> 4.6) while keeping brand hyphens like GPT-6.2.
+    let normalized = text
+      .replace(/(^|[-_\s])(gpt|glm|mimo|minimax|qwen|ernie)-(\d+(?:\.\d+)?)(?=$|[-_\s])/gi, '$1$2\u0001$3')
+      .replace(/(^|[-_\s])(\d)-(\d)(?=$|[-_\s])/g, '$1$2.$3')
+      .replace(/[-_]+/g, ' ')
+      .replace(/\u0001/g, '-');
+    text = normalized
+      .split(/\s+/)
+      .filter(Boolean)
+      .map(part => {
+        if (part.includes('-')) {
+          const [head, ...rest] = part.split('-');
+          return [formatDisplayWord(head), ...rest.map(formatDisplayWord)].join('-');
+        }
+        return formatDisplayWord(part);
+      })
+      .join(' ');
+  } else {
+    // Even for already spaced vendor names, fix stray lowercase brand/family words (e.g. "gemini 4 argon").
+    text = text
+      .split(/\s+/)
+      .map(part => {
+        if (part.includes('-')) {
+          const [head, ...rest] = part.split('-');
+          return [formatDisplayWord(head), ...rest.map(formatDisplayWord)].join('-');
+        }
+        const lower = part.toLowerCase();
+        if (DISPLAY_WORD_MAP[lower]) return DISPLAY_WORD_MAP[lower];
+        return /^[a-z]/.test(part) ? formatDisplayWord(part) : part;
+      })
+      .join(' ');
+  }
+  return text.replace(/\s+/g, ' ').trim();
 }
 
 // Family names are navigation hints, not capability scores. Exact identities keep versions distinct.

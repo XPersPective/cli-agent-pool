@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 import { allowedWorkspace, configView, dataDirectory, PoolError } from '../src/config.js';
 import { ensureDaemon, ensureInitialized, managementRequest, scheduleServiceRestart } from '../src/daemon.js';
 import { pickWindowsFolder } from '../src/web.js';
-import { quotaApplies } from '../web/pool-state.js';
+import { quotaApplies, cleanModelDisplayName, sortEfforts } from '../web/pool-state.js';
 import { version } from '../src/version.js';
 import { qrSvg } from './qr.js';
 import { buildCompactPrompt, RemoteStore } from './store.js';
@@ -242,8 +242,9 @@ function shortWindowLabel(name = '') {
 }
 
 function enrichModel(model, routeWindowsByRoute, routeMetaByRoute = new Map()) {
-  const cleanEfforts = (Array.isArray(model.efforts) ? model.efforts : []).filter(e => e && e !== 'default');
+  const cleanEfforts = sortEfforts(model.efforts);
   const cleanEffort = model.effort && model.effort !== 'default' ? model.effort : '';
+  const cleanName = cleanModelDisplayName(model.modelId || model.id, model.name || model.alias);
   const routeWins = routeWindowsByRoute.get(model.routeId) || [];
   const applicable = routeWins.filter(w => quotaApplies(w, model.modelId || model.id) && Number.isFinite(w.remainingPercent));
   const byLabel = new Map();
@@ -260,6 +261,7 @@ function enrichModel(model, routeWindowsByRoute, routeMetaByRoute = new Map()) {
   const adapter = model.adapter || meta.adapter || '';
   return {
     ...model,
+    name: cleanName,
     adapter,
     toolLabel: toolLabelFor(adapter),
     email: model.email || meta.email || '',

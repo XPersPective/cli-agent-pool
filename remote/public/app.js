@@ -159,6 +159,151 @@
     return '';
   }
 
+  const EFFORT_LABELS = { minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'XHigh', max: 'Max', ultra: 'Ultra' };
+  const EFFORT_ORDER = { minimal: 0, low: 1, medium: 2, high: 3, xhigh: 4, max: 5, ultra: 6 };
+
+  function formatEffortLabel(value) {
+    const key = String(value || '').trim().toLowerCase();
+    if (!key || key === 'default') return '';
+    return EFFORT_LABELS[key] || (key[0].toUpperCase() + key.slice(1));
+  }
+
+  function sortEfforts(efforts) {
+    const seen = new Set();
+    const out = [];
+    for (const raw of Array.isArray(efforts) ? efforts : []) {
+      const val = String(raw || '').trim();
+      if (!val || val === 'default' || seen.has(val)) continue;
+      seen.add(val);
+      out.push(val);
+    }
+    return out.sort((a, b) => {
+      const ia = EFFORT_ORDER[a.toLowerCase()];
+      const ib = EFFORT_ORDER[b.toLowerCase()];
+      if (ia !== undefined && ib !== undefined) return ia - ib;
+      if (ia !== undefined) return -1;
+      if (ib !== undefined) return 1;
+      return a.localeCompare(b, 'en');
+    });
+  }
+
+  const DISPLAY_WORDS = {
+    gpt: 'GPT', glm: 'GLM', ernie: 'ERNIE', oss: 'OSS', ai: 'AI', cli: 'CLI', api: 'API',
+    deepseek: 'DeepSeek', minimax: 'MiniMax', mimo: 'MiMo', qwen: 'Qwen', qoder: 'Qoder',
+    claude: 'Claude', gemini: 'Gemini', opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku', fable: 'Fable',
+    argon: 'Argon', neon: 'Neon', hydrogen: 'Hydrogen', carbon: 'Carbon', flash: 'Flash', pro: 'Pro',
+    sol: 'Sol', astra: 'Astra', luna: 'Luna', terra: 'Terra', flex: 'Flex', fast: 'Fast',
+    ultrafast: 'Ultrafast', mini: 'Mini', nano: 'Nano', thinking: 'Thinking',
+    orchestrator: 'Orchestrator', muse: 'Muse', ember: 'Ember', preview: 'Preview',
+    codex: 'Codex', kimi: 'Kimi', free: 'Free', lite: 'Lite', turbo: 'Turbo',
+  };
+
+  function formatWord(token) {
+    if (!token) return '';
+    const lower = token.toLowerCase();
+    if (DISPLAY_WORDS[lower]) return DISPLAY_WORDS[lower];
+    if (/^v\d+(?:\.\d+)*$/i.test(token)) return `V${token.slice(1)}`;
+    if (/^[a-z]\d+[a-z]?$/i.test(token)) return token.toUpperCase();
+    if (/^\d/.test(token)) return token;
+    return token[0].toUpperCase() + token.slice(1);
+  }
+
+  function cleanDisplayName(rawName, modelId = '') {
+    let text = String(rawName || '').trim() || String(modelId || '').trim();
+    if (!text) return '';
+    if (/^zcode\s+varsayılan/i.test(text)) return text;
+    for (let i = 0; i < 4; i++) {
+      const next = text.replace(/\s*\((?:low|medium|high|xhigh|max|ultra|minimal|default|free|ücretsiz)\)\s*$/i, '').trim();
+      if (next === text) break;
+      text = next;
+    }
+    text = text.replace(/\s*\((Thinking|Argon|Neon|Hydrogen|Carbon|Preview|Fast|Pro|Flash)\)\s*/gi, (_, inner) => ` ${formatWord(inner)} `).trim();
+    if (text.includes('/') && !text.includes(' ')) text = text.split('/').at(-1) || text;
+    text = text.replace(/:free$/i, '').trim();
+    const isSlug = !text.includes(' ') && /[-_]/.test(text);
+    const startsLower = /^[a-z]/.test(text);
+    if (isSlug || startsLower) {
+      const normalized = text
+        .replace(/(^|[-_\s])(gpt|glm|mimo|minimax|qwen|ernie)-(\d+(?:\.\d+)?)(?=$|[-_\s])/gi, '$1$2\u0001$3')
+        .replace(/(^|[-_\s])(\d)-(\d)(?=$|[-_\s])/g, '$1$2.$3')
+        .replace(/[-_]+/g, ' ')
+        .replace(/\u0001/g, '-');
+      text = normalized.split(/\s+/).filter(Boolean).map(part => (
+        part.includes('-') ? part.split('-').map(formatWord).join('-') : formatWord(part)
+      )).join(' ');
+    } else {
+      text = text.split(/\s+/).map(part => {
+        if (part.includes('-')) return part.split('-').map(formatWord).join('-');
+        const lower = part.toLowerCase();
+        if (DISPLAY_WORDS[lower]) return DISPLAY_WORDS[lower];
+        return /^[a-z]/.test(part) ? formatWord(part) : part;
+      }).join(' ');
+    }
+    return text.replace(/\s+/g, ' ').trim();
+  }
+
+  function makeTrashIcon() {
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', '14');
+    svg.setAttribute('height', '14');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '2');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.setAttribute('aria-hidden', 'true');
+    for (const d of ['M3 6h18', 'M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6', 'M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2']) {
+      const p = document.createElementNS(ns, 'path');
+      p.setAttribute('d', d);
+      svg.appendChild(p);
+    }
+    return svg;
+  }
+
+  let confirmPending = null;
+  function askConfirm({ title = 'Onay', message = '', confirmLabel = 'Kaldır', danger = true } = {}) {
+    const dlg = $('confirm-dialog');
+    if (!dlg || typeof dlg.showModal !== 'function') {
+      return Promise.resolve(window.confirm(message || title));
+    }
+    if (confirmPending) {
+      confirmPending(false);
+      confirmPending = null;
+    }
+    $('confirm-dialog-title').textContent = title;
+    $('confirm-dialog-message').textContent = message;
+    const okBtn = $('confirm-ok-btn');
+    const cancelBtn = $('confirm-cancel-btn');
+    const xBtn = $('confirm-dialog-x');
+    okBtn.textContent = confirmLabel;
+    okBtn.className = `btn ${danger ? 'btn-danger' : 'btn-primary'} btn-sm`;
+    return new Promise(resolve => {
+      let settled = false;
+      const finish = value => {
+        if (settled) return;
+        settled = true;
+        confirmPending = null;
+        okBtn.removeEventListener('click', onOk);
+        cancelBtn.removeEventListener('click', onCancel);
+        xBtn.removeEventListener('click', onCancel);
+        dlg.removeEventListener('close', onClose);
+        if (dlg.open) dlg.close();
+        resolve(value);
+      };
+      const onOk = () => finish(true);
+      const onCancel = () => finish(false);
+      const onClose = () => finish(false);
+      confirmPending = finish;
+      okBtn.addEventListener('click', onOk);
+      cancelBtn.addEventListener('click', onCancel);
+      xBtn.addEventListener('click', onCancel);
+      dlg.addEventListener('close', onClose);
+      dlg.showModal();
+    });
+  }
+
   // --- Clean Error & Event Formatters ---
   const ERROR_CODE_LABELS = {
     TIMEOUT: 'Görev zaman aşımına ulaştı.',
@@ -704,32 +849,51 @@
     $('topbar-chat-sub').textContent = ws ? `📁 ${folderName(ws)}` : '💬 Projesiz sohbet';
 
     // Inline Antigravity-style Model Button inside Composer Bottom-Left
+    // Priority on small/mobile screens: Model Name + Effort ("Gemini 4 Argon — High") ALWAYS visible;
+    // provider and quota show cleanly on wider screens and inside the picker dialog.
     const sel = state.selection;
     const poolObj = state.pools.find(p => p.id === sel.group);
     const poolLabel = poolObj?.label || sel.group;
     let title = 'Otomatik Model';
-    let meta = poolLabel || '';
+    let effortText = '';
+    let providerText = poolLabel ? `· ${poolLabel}` : '';
+    let quotaText = '';
     let dotClass = running ? 'mini-dot ok' : 'mini-dot warn';
 
     if (sel.modelId) {
       const found = findModelObj(sel.routeId, sel.modelId);
-      title = found?.name || sel.modelName || sel.modelId;
-      const parts = [];
-      if (sel.effort && sel.effort !== 'default') parts.push(sel.effort);
-      if (found?.toolLabel) parts.push(found.toolLabel);
+      title = cleanDisplayName(found?.name || sel.modelName || sel.modelId, sel.modelId);
+      const effLabel = formatEffortLabel(sel.effort);
+      if (effLabel) effortText = `— ${effLabel}`;
+      providerText = found?.toolLabel ? `· ${found.toolLabel}` : '';
       if (found?.quotaWindows?.length) {
-        parts.push(found.quotaWindows.slice(0, 2).map(w => `${w.label} %${w.remainingPercent}`).join(' '));
+        quotaText = `· ${found.quotaWindows.slice(0, 2).map(w => `${w.label} %${w.remainingPercent}`).join(' ')}`;
       } else if (found?.quota?.remainingPercent != null) {
-        parts.push(`%${Math.round(found.quota.remainingPercent)}`);
+        quotaText = `· %${Math.round(found.quota.remainingPercent)}`;
       }
-      meta = parts.join(' · ');
       const minPct = found?.quota?.remainingPercent;
       if (minPct != null && minPct <= 10) dotClass = 'mini-dot danger';
       else if (minPct != null && minPct <= 30) dotClass = 'mini-dot warn';
     }
     $('model-pill-dot').className = dotClass;
     $('model-pill-name').textContent = title;
-    $('model-pill-meta').textContent = meta;
+    const effEl = $('model-pill-effort');
+    if (effEl) {
+      effEl.textContent = effortText;
+      effEl.hidden = !effortText;
+    }
+    const provEl = $('model-pill-provider');
+    if (provEl) {
+      provEl.textContent = providerText;
+      provEl.hidden = !providerText;
+    }
+    const metaEl = $('model-pill-meta');
+    if (metaEl) {
+      metaEl.textContent = quotaText;
+      metaEl.hidden = !quotaText;
+    }
+    const pillBtn = $('model-pill-btn');
+    if (pillBtn) pillBtn.title = [title, effortText, providerText, quotaText].filter(Boolean).join(' ');
 
     const ctxBtn = $('context-toggle-btn');
     ctxBtn.classList.toggle('active', sel.includeContext);
@@ -821,12 +985,17 @@
             el('button', {
               type: 'button',
               className: 'chat-del-btn',
-              'aria-label': 'Sohbeti sil',
-              title: 'Sohbeti sil',
-              text: '🗑',
+              'aria-label': `${chat.title || 'Bu sohbet'} sohbetini kaldır`,
+              title: 'Sohbeti kaldır',
               onClick: async e => {
                 e.stopPropagation();
-                if (!window.confirm(`"${chat.title || 'Bu sohbet'}" silinsin mi?`)) return;
+                const confirmed = await askConfirm({
+                  title: 'Sohbeti kaldır',
+                  message: `"${chat.title || 'Bu sohbet'}" sohbetini kaldırmak istiyor musunuz? Bu işlem geri alınamaz.`,
+                  confirmLabel: 'Kaldır',
+                  danger: true,
+                });
+                if (!confirmed) return;
                 try {
                   await api(`/r/chats/${encodeURIComponent(chat.id)}`, { method: 'DELETE' });
                   if (state.activeChatId === chat.id) {
@@ -839,10 +1008,10 @@
                     renderMessages(false);
                   }
                   await refreshState(false);
-                  toast('Sohbet silindi.');
+                  toast('Sohbet kaldırıldı.');
                 } catch (err) { toast(err.message, true); }
               },
-            }),
+            }, [makeTrashIcon()]),
           ]));
         }
       }
@@ -932,10 +1101,9 @@
       }) : null,
     ]);
 
-    const modelText = [
-      msg.reportedModel || msg.modelId || 'Otomatik',
-      msg.effort && msg.effort !== 'default' ? `(${msg.effort})` : '',
-    ].filter(Boolean).join(' ');
+    const cleanModelLabel = cleanDisplayName(msg.reportedModel || msg.modelId || 'Otomatik', msg.modelId);
+    const effLabel = formatEffortLabel(msg.effort);
+    const modelText = effLabel ? `${cleanModelLabel} — ${effLabel}` : cleanModelLabel;
 
     const bodyNodes = [
       el('div', { className: 'msg-head' }, [
@@ -1119,7 +1287,7 @@
         el('div', { className: 'card-row' }, [
           el('div', { style: 'min-width:0' }, [
             el('div', { className: 'msg-model-stack' }, [
-              el('strong', { text: task.reportedModel || task.modelId || task.routeId || 'Görev' }),
+              el('strong', { text: cleanDisplayName(task.reportedModel || task.modelId || task.routeId || 'Görev', task.modelId) }),
               task.toolLabel ? el('span', { className: 'tool-pill', text: task.toolLabel }) : null,
               subName ? el('span', { className: 'sub-pill', text: subName }) : null,
             ]),
@@ -1339,14 +1507,16 @@
           } else {
             for (const m of models) {
               const selected = state.selection.modelId === m.modelId && state.selection.routeId === m.routeId;
+              const displayName = cleanDisplayName(m.name || m.modelId, m.modelId);
+              const sortedEff = sortEfforts(m.efforts);
               listWrap.appendChild(el('div', { className: `pool-mgmt-row${selected ? ' selected' : ''}` }, [
                 el('div', { className: 'model-row-text', style: 'flex:1;min-width:160px' }, [
                   el('div', { className: 'msg-model-stack' }, [
-                    el('strong', { className: 'model-row-name', text: m.name || m.modelId }),
+                    el('strong', { className: 'model-row-name', text: displayName }),
                     m.toolLabel ? el('span', { className: 'tool-pill', text: m.toolLabel }) : null,
                     subscriptionText(m) ? el('span', { className: 'sub-pill', text: subscriptionText(m) }) : null,
                   ]),
-                  m.efforts?.length ? el('div', { className: 'model-row-sub', text: `efor: ${m.efforts.join(' · ')}` }) : null,
+                  sortedEff.length ? el('div', { className: 'model-row-sub', text: `efor: ${sortedEff.map(formatEffortLabel).join(' · ')}` }) : null,
                 ]),
                 el('div', { className: 'pool-mgmt-actions' }, [
                   renderInlineQuotaTags(m),
@@ -1355,9 +1525,9 @@
                     className: 'mini-action-btn',
                     text: selected ? '✓ Seçili' : 'Seç',
                     onClick: () => {
-                      chooseModel({ ...m, group: pool.id });
+                      chooseModel({ ...m, name: displayName, efforts: sortedEff, group: pool.id });
                       switchView('chat');
-                      toast(`${m.name || m.modelId} seçildi.`);
+                      toast(`${displayName} seçildi.`);
                     },
                   }),
                   el('button', {
@@ -1409,15 +1579,17 @@
           ])
         : null;
 
+      const displayName = cleanDisplayName(m.name || m.modelId, m.modelId);
+      const sortedEff = sortEfforts(m.efforts);
       listWrap.appendChild(el('div', { className: `pool-mgmt-row${selected ? ' selected' : ''}` }, [
         el('div', { className: 'model-row-text', style: 'flex:1;min-width:160px' }, [
           el('div', { className: 'msg-model-stack' }, [
-            el('strong', { className: 'model-row-name', text: m.name || m.modelId }),
+            el('strong', { className: 'model-row-name', text: displayName }),
             m.toolLabel ? el('span', { className: 'tool-pill', text: m.toolLabel }) : null,
             subscriptionText(m) ? el('span', { className: 'sub-pill', text: subscriptionText(m) }) : null,
             ...[...memberGroups].map(g => el('span', { className: 'badge', text: state.pools.find(p => p.id === g)?.label || g })),
           ]),
-          m.efforts?.length ? el('div', { className: 'model-row-sub', text: `efor: ${m.efforts.join(' · ')}` }) : null,
+          sortedEff.length ? el('div', { className: 'model-row-sub', text: `efor: ${sortedEff.map(formatEffortLabel).join(' · ')}` }) : null,
         ]),
         el('div', { className: 'pool-mgmt-actions' }, [
           renderInlineQuotaTags(m),
@@ -1427,9 +1599,9 @@
             className: 'mini-action-btn',
             text: selected ? '✓ Seçili' : 'Seç',
             onClick: () => {
-              chooseModel({ ...m, group: [...memberGroups][0] || '' });
+              chooseModel({ ...m, name: displayName, efforts: sortedEff, group: [...memberGroups][0] || '' });
               switchView('chat');
-              toast(`${m.name || m.modelId} seçildi.`);
+              toast(`${displayName} seçildi.`);
             },
           }),
         ]),
@@ -1516,7 +1688,13 @@
           className: 'btn btn-danger btn-sm',
           text: 'İptal Et',
           onClick: async () => {
-            if (!window.confirm(`"${dev.label}" cihazının erişimi iptal edilsin mi?`)) return;
+            const ok = await askConfirm({
+              title: 'Cihaz erişimini iptal et',
+              message: `"${dev.label}" cihazının erişimi iptal edilsin mi?`,
+              confirmLabel: 'İptal Et',
+              danger: true,
+            });
+            if (!ok) return;
             try {
               await api('/r/devices/revoke', { method: 'POST', body: { deviceId: dev.id } });
               toast('Cihaz oturumu iptal edildi.');
@@ -1554,12 +1732,12 @@
   }
 
   function chooseModel(model) {
-    const cleanEfforts = (Array.isArray(model.efforts) ? model.efforts : []).filter(e => e && e !== 'default');
+    const cleanEfforts = sortEfforts(model.efforts);
     const candidateEffort = (model.effort && model.effort !== 'default') ? model.effort : '';
     state.selection.group = model.group || model.category || (Array.isArray(model.categories) ? model.categories[0] || '' : '');
     state.selection.routeId = model.routeId || '';
     state.selection.modelId = model.modelId || '';
-    state.selection.modelName = model.name || model.modelId || '';
+    state.selection.modelName = cleanDisplayName(model.name || model.modelId || '', model.modelId);
     state.selection.efforts = cleanEfforts;
     state.selection.effort = candidateEffort || (cleanEfforts.includes(state.selection.effort) ? state.selection.effort : '');
     saveSelection();
@@ -1572,11 +1750,12 @@
     const sel = state.selection;
     const poolLabel = state.pools.find(p => p.id === sel.group)?.label || sel.group || 'Otomatik';
     const found = findModelObj(sel.routeId, sel.modelId);
+    const cleanName = found ? cleanDisplayName(found.name || found.modelId, found.modelId) : (sel.modelName ? cleanDisplayName(sel.modelName, sel.modelId) : 'Havuzdan otomatik');
+    const effLabel = formatEffortLabel(sel.effort);
     const left = el('div', { className: 'picker-selected-left' }, [
-      el('strong', { text: '✓ Seçili:' }),
+      el('strong', { text: '✓' }),
       el('span', { className: 'badge', text: poolLabel }),
-      el('strong', { text: found?.name || sel.modelName || 'Havuzdan otomatik' }),
-      sel.effort ? el('span', { className: 'badge', text: sel.effort }) : null,
+      el('strong', { text: effLabel ? `${cleanName} — ${effLabel}` : cleanName }),
       found?.toolLabel ? el('span', { className: 'tool-pill', text: found.toolLabel }) : null,
       found && subscriptionText(found) ? el('span', { className: 'sub-pill', text: subscriptionText(found) }) : null,
     ]);
@@ -1590,11 +1769,12 @@
     body.replaceChildren();
     const q = state.pickerQuery.trim().toLowerCase();
 
-    const matchesSearch = m => !q || [m.name, m.modelId, m.routeId, m.toolLabel, m.email, m.account, m.billing].some(s => String(s || '').toLowerCase().includes(q));
+    const matchesSearch = m => !q || [m.name, cleanDisplayName(m.name, m.modelId), m.modelId, m.routeId, m.toolLabel, m.email, m.account, m.billing].some(s => String(s || '').toLowerCase().includes(q));
 
     const buildModelRow = (m, poolId) => {
       const isSelected = state.selection.modelId === m.modelId && state.selection.routeId === m.routeId;
-      const efforts = (Array.isArray(m.efforts) ? m.efforts : []).filter(e => e && e !== 'default');
+      const efforts = sortEfforts(m.efforts);
+      const displayName = cleanDisplayName(m.name || m.modelId, m.modelId);
       const wrap = el('div', { className: 'model-row-wrap' });
       const subParts = [m.toolLabel, subscriptionText(m)].filter(Boolean).join(' · ');
 
@@ -1602,7 +1782,7 @@
         type: 'button',
         className: `model-row${isSelected ? ' selected' : ''}`,
         onClick: () => {
-          chooseModel({ ...m, group: poolId || m.category || m.categories?.[0] || '' });
+          chooseModel({ ...m, name: displayName, efforts, group: poolId || m.category || m.categories?.[0] || '' });
           renderModelPicker();
           if (!efforts.length) $('model-dialog').close();
         },
@@ -1610,7 +1790,7 @@
         el('div', { className: 'model-row-left' }, [
           el('span', { className: 'model-check', text: isSelected ? '✓' : '' }),
           el('div', { className: 'model-row-text' }, [
-            el('div', { className: 'model-row-name', text: m.name || m.modelId }),
+            el('div', { className: 'model-row-name', text: displayName }),
             el('div', { className: 'model-row-sub', text: subParts || m.routeId }),
           ]),
         ]),
@@ -1636,7 +1816,7 @@
           effRow.appendChild(el('button', {
             type: 'button',
             className: `effort-pill${state.selection.effort === eff ? ' active' : ''}`,
-            text: eff,
+            text: formatEffortLabel(eff),
             onClick: () => {
               state.selection.effort = eff;
               saveSelection();
@@ -2207,13 +2387,16 @@
   }
 
   // --- Mobile-Fixed Voice Dictation (Android Chrome / iOS Safari / Tailscale HTTPS) ---
-  function toggleVoiceDictation() {
+  async function toggleVoiceDictation() {
     const input = $('prompt-input');
     if (!window.isSecureContext) {
       if (state.tailscaleHttpsUrl || state.tailscaleIp) {
-        const ok = window.confirm(
-          'Mikrofon yalnızca güvenli HTTPS bağlantısında çalışır. Oturumunuz otomatik taşınarak HTTPS adresine geçilsin mi? (Yeni QR kod gerekmez.)',
-        );
+        const ok = await askConfirm({
+          title: 'HTTPS bağlantısına geç',
+          message: 'Mikrofon yalnızca güvenli HTTPS bağlantısında çalışır. Oturumunuz otomatik taşınarak HTTPS adresine geçilsin mi? (Yeni QR kod gerekmez.)',
+          confirmLabel: 'HTTPS’ye Geç',
+          danger: false,
+        });
         if (ok) {
           void switchToHttps();
           return;
@@ -2492,7 +2675,13 @@
     // Calls actions
     $('refresh-calls-btn').addEventListener('click', () => void refreshState(false));
     $('clear-calls-btn').addEventListener('click', async () => {
-      if (!window.confirm('Tamamlanmış çağrı geçmişi temizlensin mi?')) return;
+      const ok = await askConfirm({
+        title: 'Çağrı geçmişini temizle',
+        message: 'Tamamlanmış çağrı geçmişi temizlensin mi?',
+        confirmLabel: 'Temizle',
+        danger: true,
+      });
+      if (!ok) return;
       try {
         await api('/r/tasks/clear', { method: 'POST', body: {} });
         toast('Çağrı geçmişi temizlendi.');
@@ -2559,7 +2748,13 @@
       try {
         const res = await api('/r/pool/stop', { method: 'POST', body: { force: false } });
         if (res.confirmRequired) {
-          if (window.confirm(`${res.activeCount} aktif görev çalışıyor. Yine de zorla durdurulsun mu?`)) {
+          const ok = await askConfirm({
+            title: 'Servisi zorla durdur',
+            message: `${res.activeCount} aktif görev çalışıyor. Yine de zorla durdurulsun mu?`,
+            confirmLabel: 'Zorla Durdur',
+            danger: true,
+          });
+          if (ok) {
             await api('/r/pool/stop', { method: 'POST', body: { force: true } });
             toast('Servis durduruldu.');
           }

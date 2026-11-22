@@ -1,4 +1,4 @@
-import { modelFiltered } from '../web/pool-state.js';
+import { modelFiltered, cleanModelDisplayName, sortEfforts } from '../web/pool-state.js';
 import { agyProjectArguments } from './agy-project.js';
 import { zcodePlanConfig, zcodePlanFile } from './zcode-plan.js';
 import { taskPrompt, executionReportJsonSchema, parseExecutionReport } from './task-protocol.js';
@@ -1215,7 +1215,7 @@ export async function claudeCatalog(route, cwd, python, directory = dataDirector
     if (typeof id !== 'string' || !id || id.length > 100 || /[\u0000-\u001f]/.test(id)) continue;
     const existing = models.find(model => model.id === id);
     if (existing) { if (row.value) existing.aliases.push(row.value); continue; }
-    models.push({ id, name: id, aliases: [row.value].filter(Boolean), efforts: (row.supportedEffortLevels || []).filter(value => typeof value === 'string').slice(0, 10), free: false });
+    models.push({ id, name: cleanModelDisplayName(id, row.displayName || id), aliases: [row.value].filter(Boolean), efforts: sortEfforts((row.supportedEffortLevels || []).filter(value => typeof value === 'string').slice(0, 10)), free: false });
   }
   return { connection: route.id, models: models.slice(0, MAX_ROUTE_MODELS), nextCursor: null };
 }
@@ -1277,20 +1277,23 @@ function mergeCatalogModelsInto(route, catalog, filters) {
             members.set(value.group,value);
           }
         }
-        Object.assign(merged,{id:item.id,alias:item.name || item.id,variants:item.variants,efforts:item.efforts,memberships:[...members.values()],enabled:previous.some(model=>model.enabled!==false)});
-        if (merged.defaultEffort && !item.efforts.includes(merged.defaultEffort)) delete merged.defaultEffort;
+        const cleanName = cleanModelDisplayName(item.id, item.name || item.id).slice(0, 100);
+        const cleanEfforts = sortEfforts(item.efforts);
+        Object.assign(merged,{id:item.id,alias:cleanName,variants:item.variants,efforts:cleanEfforts,memberships:[...members.values()],enabled:previous.some(model=>model.enabled!==false)});
+        if (merged.defaultEffort && !cleanEfforts.includes(merged.defaultEffort)) delete merged.defaultEffort;
         route.models = route.models.filter(model=>!previous.includes(model)); route.models.push(merged);
         continue;
       }
     }
     const existing = route.models.find(model => model.id === item.id) || route.models.find(model => item.aliases?.includes(model.id));
     if (existing) {
-      if (existing.memberships?.some(member => member.effort && !item.efforts.includes(member.effort))) throw new PoolError('CATALOG_EFFORT_CHANGED', 'Katalogda havuz eforu artık desteklenmiyor. Önce o modelin havuz eforunu düzenleyin.');
+      const cleanEfforts = sortEfforts(item.efforts);
+      if (existing.memberships?.some(member => member.effort && !cleanEfforts.includes(member.effort))) throw new PoolError('CATALOG_EFFORT_CHANGED', 'Katalogda havuz eforu artık desteklenmiyor. Önce o modelin havuz eforunu düzenleyin.');
       existing.id = item.id;
-      existing.alias = (item.name || item.id).slice(0, 100);
-      existing.efforts = item.efforts;
+      existing.alias = cleanModelDisplayName(item.id, item.name || item.id).slice(0, 100);
+      existing.efforts = cleanEfforts;
       if (item.variants) existing.variants = item.variants;
-      if (!item.efforts.includes(existing.defaultEffort)) delete existing.defaultEffort;
+      if (!cleanEfforts.includes(existing.defaultEffort)) delete existing.defaultEffort;
     } else {
       if (route.models.length >= MAX_ROUTE_MODELS && (route.adapter === 'opencode' || route.adapter === 'mimo')) {
         const liveIds = new Set(catalog.models.map(m => m.id));
@@ -1298,7 +1301,7 @@ function mergeCatalogModelsInto(route, catalog, filters) {
         if (pruneIdx >= 0) route.models.splice(pruneIdx, 1);
       }
       if (route.models.length < MAX_ROUTE_MODELS) {
-        route.models.push({ id: item.id, alias: (item.name || item.id).slice(0, 100), group: 'unassigned', memberships: [], enabled: true, efforts: item.efforts, ...(route.adapter === 'opencode' && item.free === true ? { billing: 'free' } : {}), ...(item.variants?{variants:item.variants}:{}), kinds: ['mmx', 'ollama', 'lmstudio', 'omniroute'].includes(route.adapter) ? ['text'] : ['text', 'read', 'write'] });
+        route.models.push({ id: item.id, alias: cleanModelDisplayName(item.id, item.name || item.id).slice(0, 100), group: 'unassigned', memberships: [], enabled: true, efforts: sortEfforts(item.efforts), ...(route.adapter === 'opencode' && item.free === true ? { billing: 'free' } : {}), ...(item.variants?{variants:item.variants}:{}), kinds: ['mmx', 'ollama', 'lmstudio', 'omniroute'].includes(route.adapter) ? ['text'] : ['text', 'read', 'write'] });
         added++;
       }
     }
@@ -1347,7 +1350,9 @@ export async function routeCatalog(route, cwd, python, directory = dataDirectory
     const grouped = new Map();
     for (const model of models) {
       const effort = model.efforts[0], id = effort ? model.id.slice(0, -effort.length - 1) : model.id;
-      const entry = grouped.get(id) || { id, name: model.name || id, efforts: [], free: false };
+      const cleanName = cleanModelDisplayName(id, model.name || id);
+      const entry = grouped.get(id) || { id, name: cleanName, efforts: [], free: false };
+      if (!entry.name || entry.name === id) entry.name = cleanName;
       if (effort) {
         entry.variants ||= {};
         entry.aliases ||= [];
@@ -1357,6 +1362,7 @@ export async function routeCatalog(route, cwd, python, directory = dataDirectory
       }
       grouped.set(id, entry);
     }
+    for (const entry of grouped.values()) entry.efforts = sortEfforts(entry.efforts);
     return { connection: route.id, models: [...grouped.values()].slice(0, MAX_ROUTE_MODELS), nextCursor: null };
   }
   if (route.adapter === 'claude' && !route.api) return claudeCatalog(route, cwd, python, directory);

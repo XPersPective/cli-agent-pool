@@ -25,6 +25,8 @@ import {
   settingsViewSignature,
   formatCompactQuotaWindows,
   normalizeDisplayMode,
+  cleanModelDisplayName,
+  sortEfforts,
 } from '/pool-state.js';
 import { dismissOnBackdrop } from '/dialogs.js';
 import { capabilityLabel } from '/capabilities.js';
@@ -288,7 +290,8 @@ const groupLabel = group => {
 const activeRoutesForDisplay = () => {
   if (!settings?.config) return [];
   const includeDisabled = showDisabledRoutes || $('quota-filter')?.value === 'disabled';
-  return includeDisabled ? settings.config.routes : visibleRoutes(settings.config);
+  if (includeDisabled) return settings.config.routes;
+  return visibleRoutes(settings.config).filter(route => !snapshot?.quotas?.[route.id]?.duplicateOf);
 };
 function billingMatches(route, model, filter) {
   if (!filter || filter === 'all') return true;
@@ -996,6 +999,27 @@ function renderSettingsSubscriptionPane(route, sub, email, issue) {
   sessionBar.append(sessionInfo, sessionActions);
   pane.append(sessionBar);
 
+  const duplicateOf = snapshot?.quotas?.[route.id]?.duplicateOf || '';
+  const hasSiblingIsolated = !route.profile && !route.api && route.runtime !== 'wsl' && accountAdapters.has(route.adapter) &&
+    (settings?.config?.routes || []).some(other => other.id !== route.id && other.adapter === route.adapter && Boolean(other.profile));
+  if (duplicateOf) {
+    const dupNote = element(
+      'div',
+      `Kopya hesap çakışması: Bu paylaşımlı masaüstü bağlantısı şu anda ${duplicateOf} ile aynı hesaba bağlı. Masaüstü uygulamasında hesap değiştirildiğinde bu bağlantı da değişir; kopya modeller Havuzlar ve Remote ekranından otomatik gizlendi. Kalıcı ayrı hesap için "İzole oturuma geç / Giriş yap" düğmesini kullanın.`,
+      'notice-inline error',
+    );
+    dupNote.style.cssText = 'margin:8px 0 10px;padding:8px 10px;border-radius:8px;background:var(--danger-soft,rgba(239,68,68,.12));border:1px solid var(--danger,#ef4444);font-size:12px;line-height:1.45;';
+    pane.append(dupNote);
+  } else if (hasSiblingIsolated) {
+    const driftNote = element(
+      'div',
+      'Not: Bu bağlantı masaüstü CLI oturumuyla paylaşımlıdır. Masaüstü uygulamasında hesap değiştirirseniz bu bağlantının hesabı da değişebilir; kalıcı izolasyon için "İzole oturuma geç / Giriş yap" kullanın.',
+      'notice-inline warn',
+    );
+    driftNote.style.cssText = 'margin:8px 0 10px;padding:7px 10px;border-radius:8px;background:var(--warn-soft,rgba(245,158,11,.10));border:1px solid var(--warn,#f59e0b);font-size:12px;line-height:1.4;';
+    pane.append(driftNote);
+  }
+
   const authNote = loginNotice(route);
   if (authNote.children.length) pane.append(authNote);
 
@@ -1171,13 +1195,15 @@ function renderSettingsSubscriptionPane(route, sub, email, issue) {
 
       const textWrap = element('div', null, 'route-model-info');
       const titleLine = element('div', null, 'route-model-title');
-      titleLine.append(element('strong', model.id));
-      if (model.alias && model.alias !== model.id) titleLine.append(element('small', model.alias));
+      const displayLabel = cleanModelDisplayName(model.id, model.alias);
+      titleLine.append(element('strong', displayLabel));
+      if (displayLabel !== model.id) titleLine.append(element('small', model.id));
       textWrap.append(titleLine);
 
       const meta = element('div', null, 'route-model-meta');
       meta.append(element('span', familyLabel(modelFamily(model.id)), 'badge subtle'));
-      if (model.efforts?.length) meta.append(element('span', model.efforts.join(', '), 'badge subtle'));
+      const sortedEff = sortEfforts(model.efforts);
+      if (sortedEff.length) meta.append(element('span', sortedEff.join(', '), 'badge subtle'));
       const poolsList = memberships(model).map(m => groupLabel(m.group));
       if (poolsList.length) meta.append(element('span', `Havuz: ${poolsList.join(', ')}`, 'badge subtle'));
       meta.append(element('span', excluded ? 'Filtreli (Katalog/Havuz dışı)' : 'Sistemde aktif', `badge ${excluded ? 'warn' : 'ok'}`));
@@ -2651,9 +2677,12 @@ function modelCard(route, model, member, options = {}) {
   });
   row.classList.toggle('is-selected', check.checked);
 
+  const displayTitle = cleanModelDisplayName(model.id, model.alias);
   const info = element('div', null, 'model-info');
   const titleRow = element('div', null, 'model-title-row');
-  titleRow.append(check, adapterIcon(route.adapter, model.id), element('strong', model.id));
+  const strongTitle = element('strong', displayTitle);
+  strongTitle.title = model.id;
+  titleRow.append(check, adapterIcon(route.adapter, model.id), strongTitle);
 
   let orderControls = null;
   if (!hiddenView && reorderList && reorderList.length > 1) {
@@ -2719,7 +2748,8 @@ function modelCard(route, model, member, options = {}) {
     row.classList.add('is-mini');
     row.title = `Ayrıntılı görünüm için çift tıklayın · ${model.id} · ${adapterLabels[route.adapter] || route.adapter} · ${subLabel}`;
     const miniTop = element('div', null, 'mini-row-top');
-    const modelName = element('strong', model.id, 'mini-model-name');
+    const modelName = element('strong', displayTitle, 'mini-model-name');
+    modelName.title = model.id;
     const toolWrap = element('span', null, 'mini-tool-wrap');
     toolWrap.append(
       adapterIcon(route.adapter, model.id),

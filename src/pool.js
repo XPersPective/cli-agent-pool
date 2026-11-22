@@ -87,6 +87,30 @@ export class Pool {
     request.capabilities = [...new Set(request.capabilities?.length ? request.capabilities : CAPABILITIES)].sort();
     return createHash('sha256').update(JSON.stringify(request)).digest('hex');
   }
+  // Detect enabled routes on the same adapter that resolve to the same account email.
+  // An isolated profile route always takes precedence over a shared default desktop route
+  // (e.g. agy-local drifting when the user switches accounts in the Antigravity desktop app).
+  duplicateRouteMap() {
+    const duplicates = new Map();
+    const byAdapter = new Map();
+    for (const route of this.config.routes) {
+      if (!route.enabled || route.api) continue;
+      const rawEmail = this.store.quota(route.id)?.email || route.email;
+      const email = typeof rawEmail === 'string' ? rawEmail.trim().toLowerCase() : '';
+      if (!email) continue;
+      const key = `${route.adapter}\0${email}`;
+      if (!byAdapter.has(key)) byAdapter.set(key, []);
+      byAdapter.get(key).push(route);
+    }
+    for (const routes of byAdapter.values()) {
+      if (routes.length < 2) continue;
+      const canonical = routes.find(r => Boolean(r.profile)) || routes[0];
+      for (const route of routes) {
+        if (route.id !== canonical.id) duplicates.set(route.id, canonical.id);
+      }
+    }
+    return duplicates;
+  }
   models() {
     return this.config.routes.flatMap(route => route.models.filter(model => !modelFiltered(this.config.modelFilters, route.id, model.id)).flatMap(model => {
       const billing = model.billing || route.billing;
@@ -146,8 +170,10 @@ export class Pool {
       return Math.max(0, Math.min(...wins.map(w => w.remainingPercent)) - (activeByRoute.get(model.routeId) || 0) * 3);
     };
     const rejected = new Map();
+    const duplicateRoutes = this.duplicateRouteMap();
     const matches = (request.group ? this.models() : this.catalogModels()).filter(model => {
       if ((request.routeId && model.routeId !== request.routeId) || (request.modelId && model.id !== request.modelId) || (request.group && model.group !== request.group)) return false;
+      if (!request.routeId && duplicateRoutes.has(model.routeId)) return false;
       const snapshot = options.ignoreQuota ? null : this.store.quota(model.routeId);
       const route = this.config.routes.find(r => r.id === model.routeId);
       const reason = rejectionReason(model, route, snapshot, request, activeByRoute.get(model.routeId) || 0);

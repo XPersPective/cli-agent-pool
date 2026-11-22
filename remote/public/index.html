@@ -184,7 +184,9 @@
                 <button id="model-pill-btn" type="button" class="inline-model-btn" aria-haspopup="dialog" aria-controls="model-dialog">
                   <span id="model-pill-dot" class="mini-dot"></span>
                   <span id="model-pill-name" class="inline-model-name">Model Seç</span>
-                  <span id="model-pill-meta" class="inline-model-meta"></span>
+                  <span id="model-pill-effort" class="inline-model-effort" hidden></span>
+                  <span id="model-pill-provider" class="inline-model-provider" hidden></span>
+                  <span id="model-pill-meta" class="inline-model-meta" hidden></span>
                   <span class="chevron" aria-hidden="true">▾</span>
                 </button>
               </div>
@@ -475,6 +477,21 @@
       <button type="button" class="icon-btn dialog-close" data-close-dialog="task-dialog" aria-label="Kapat">✕</button>
     </div>
     <div id="task-dialog-body" class="dialog-body"></div>
+  </dialog>
+
+  <!-- DIALOG 7: STYLED CONFIRMATION MODAL -->
+  <dialog id="confirm-dialog" class="sheet-dialog confirm-dialog" closedby="any" aria-labelledby="confirm-dialog-title">
+    <div class="dialog-head compact-head">
+      <h2 id="confirm-dialog-title">Onay</h2>
+      <button type="button" class="icon-btn dialog-close" id="confirm-dialog-x" aria-label="Kapat">✕</button>
+    </div>
+    <div class="dialog-body">
+      <p id="confirm-dialog-message" class="confirm-dialog-message"></p>
+    </div>
+    <div class="dialog-foot confirm-dialog-foot">
+      <button id="confirm-cancel-btn" type="button" class="btn btn-secondary btn-sm">Vazgeç</button>
+      <button id="confirm-ok-btn" type="button" class="btn btn-danger btn-sm">Kaldır</button>
+    </div>
   </dialog>
 
   <script src="/app.js"></script>

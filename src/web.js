@@ -351,16 +351,30 @@ export function browserUI(pool, management, { openLogin = openCliLogin, refreshI
             updateAvailable: restartRequired,
             targetVersion: installedVersion,
           };
+        const duplicateRoutes = typeof pool.duplicateRouteMap === 'function' ? pool.duplicateRouteMap() : new Map();
+        const quotasWithDup = Object.fromEntries(pool.config.routes.map(route => {
+          const base = quotas[route.id] || null;
+          const dupOf = duplicateRoutes.get(route.id);
+          if (!dupOf) return [route.id, base];
+          return [route.id, {
+            ...(base || { connection: route.id, windows: [], observedAt: new Date().toISOString() }),
+            status: 'duplicate_account',
+            duplicateOf: dupOf,
+            note: `Paylaşımlı masaüstü oturumu ${dupOf} ile aynı hesaba geçti; kopya modeller otomatik gizlendi. Ayrı kalıcı hesap için "İzole oturuma geç / Giriş yap" kullanın.`,
+          }];
+        }));
         return {
           version,
           updateStatus,
           revision: configView(management.directory).revision,
           connections: pool.config.routes.map(route => {
             const { id, adapter, enabled, billing, autoSelect, api, profile, runtime } = route;
-            const email = quotas[id]?.email || routeAccountEmail(route, management.directory);
+            const email = quotasWithDup[id]?.email || routeAccountEmail(route, management.directory);
+            const duplicateOf = duplicateRoutes.get(id) || null;
             return {
               id, adapter, enabled, billing, account: profile || 'default', runtime: runtime || 'native',
               ...(email ? { email } : {}),
+              ...(duplicateOf ? { duplicateOf } : {}),
               autoSelect: autoSelect ?? (billing !== 'paid_api'),
               protocol: api?.protocol || null,
               baseUrl: api?.baseUrl || null,
@@ -368,7 +382,7 @@ export function browserUI(pool, management, { openLogin = openCliLogin, refreshI
               loginCommand: loginCommands[adapter],
             };
           }),
-          quotas,
+          quotas: quotasWithDup,
           models: pool.models(),
           tasks: pool.list(160,0,true),
           installed: discover(),
