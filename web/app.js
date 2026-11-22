@@ -438,7 +438,10 @@ async function action(operation) {
   }
 }
 
+let detailOpener = null;
+let switchingPage = false;
 function showDetail(value) {
+  if (!$('detail').open) detailOpener = document.activeElement;
   $('detail-heading').textContent = value.windows ? 'Kota bilgisi' : 'Çağrı bilgisi';
   $('detail-content').replaceChildren(...(value.windows ? [quotaBody(value)] : taskDetails(value)));
   $('detail').hidden = false;
@@ -534,8 +537,9 @@ async function runScanImport(routeId) {
   const before = baseConfig || settings?.config;
   const res = await call('scan_import', typeof routeId === 'string' ? { routeId } : {});
   settings = { ...res, config: draft ? mergeScanDraft(res.config, before, draft) : res.config };
-  poolDirty = Boolean(draft);
+  poolDirty = Boolean(draft && JSON.stringify(settings.config) !== JSON.stringify(res.config));
   baseConfig = structuredClone(res.config);
+  updateSave();
   renderPool();
   if (!$('settings').hidden) renderSettings();
   await refresh();
@@ -557,8 +561,9 @@ async function addAccount(routeId) {
         const draft = poolDirty ? structuredClone(settings.config) : null;
         const before = baseConfig || settings?.config;
         settings = { ...res, config: draft ? mergeScanDraft(res.config, before, draft) : res.config };
-        poolDirty = Boolean(draft);
+        poolDirty = Boolean(draft && JSON.stringify(settings.config) !== JSON.stringify(res.config));
         baseConfig = structuredClone(res.config);
+        updateSave();
         renderPool();
         if (!$('settings').hidden) renderSettings();
         await refresh();
@@ -716,7 +721,13 @@ function startPolling() {
 async function triggerSafeExit() {
   let res = await call('shutdown', { force: false });
   if (res.confirmRequired) {
-    if (!window.confirm(`Şu anda ${res.activeCount} çalışan görev var. Yine de servisi kapatıp güvenli çıkış yapmak istiyor musunuz?`)) {
+    const confirmed = await askConfirm({
+      title: 'Güvenli çıkış',
+      message: `Şu anda ${res.activeCount} çalışan görev var. Yine de servisi kapatıp güvenli çıkış yapmak istiyor musunuz?`,
+      confirmLabel: 'Yine de kapat',
+      danger: true,
+    });
+    if (!confirmed) {
       notice('Güvenli çıkış iptal edildi.');
       return;
     }
@@ -755,9 +766,7 @@ void (async () => {
 })();
 
 $('update-app')?.addEventListener('click', () => void action(triggerUpdate));
-$('settings-update')?.addEventListener('click', () => void action(triggerUpdate));
 $('safe-exit')?.addEventListener('click', () => void action(triggerSafeExit));
-$('settings-shutdown')?.addEventListener('click', () => void action(triggerSafeExit));
 
 async function reconnectPool() {
   serviceStopped = false;
@@ -790,9 +799,14 @@ async function refresh() {
         try {
           const draft = JSON.parse(localStorage.getItem('pool-draft') || 'null');
           if (draft?.base?.routes && draft?.config?.routes) {
-            settings.config = mergeScanDraft(settings.config, draft.base, draft.config);
-            dirty();
-            notice('Kaydedilmemiş değişiklikler geri yüklendi. Kaydedebilir veya vazgeçebilirsiniz.');
+            const merged = mergeScanDraft(settings.config, draft.base, draft.config);
+            if (JSON.stringify(merged) !== JSON.stringify(baseConfig)) {
+              settings.config = merged;
+              dirty();
+              notice('Kaydedilmemiş değişiklikler geri yüklendi. Kaydedebilir veya vazgeçebilirsiniz.');
+            } else {
+              try { localStorage.removeItem('pool-draft'); } catch { /* ignore */ }
+            }
           }
         } catch { /* Invalid or unavailable browser drafts do not block the saved configuration. */ }
       }
@@ -805,7 +819,18 @@ async function refresh() {
 
     renderCalls();
     updateCardActivity();
-    if (selectedTask && $('detail').open) await openTask(selectedTask, false);
+    if (selectedTask && $('detail').open) {
+      try {
+        await openTask(selectedTask, false);
+      } catch (taskErr) {
+        if (/NOT_FOUND|bulunamadı/i.test(taskErr?.message || '')) {
+          $('detail').close();
+          $('detail').hidden = true;
+          selectedTask = null;
+          selectedTaskStamp = '';
+        }
+      }
+    }
     if (wasOffline) notice('Bağlantı yeniden kuruldu.');
   } catch (error) {
     if (!serviceStopped) {
@@ -865,20 +890,38 @@ function renderSettingsSubscriptionPane(route, sub, email, issue) {
   const enabledToggle = makeSwitch({
     checked: route.enabled,
     disabled: locked,
-    onChange: async value => {
-      route.enabled = value;
-      dirty();
-      // Anahtar anında kaydedilir: bağlantı etkinleşince aracı ve modelleri ana sayfada görünür.
-      settings = await call('save', settings);
-      poolDirty = false;
-      baseConfig = structuredClone(settings.config);
-      updateSave();
-      renderSettings();
-      renderPool();
-      await refresh();
-      notice(`${adapterLabels[route.adapter] || route.adapter} bağlantısı ${value ? 'etkinleştirildi' : 'kapatıldı'}.`);
-    },
+    onChange: value => void action(async () => {
+      const prevEnabled = route.enabled;
+      const before = structuredClone(baseConfig);
+      const draft = structuredClone(settings.config);
+      const targetDraft = draft.routes.find(item => item.id === route.id);
+      if (targetDraft) targetDraft.enabled = value;
+      const isolated = structuredClone(before);
+      const targetBase = isolated.routes.find(item => item.id === route.id);
+      if (!targetBase) throw new Error('Bağlantı bulunamadı.');
+      targetBase.enabled = value;
+      try {
+        // Anahtar anında kaydedilir: yalnız bu bağlantının etkin durumu kaydedilir, diğer taslaklar korunur.
+        const saved = await call('save', { ...settings, config: isolated });
+        settings = { ...saved, config: mergeScanDraft(saved.config, before, draft) };
+        baseConfig = structuredClone(saved.config);
+        poolDirty = JSON.stringify(settings.config) !== JSON.stringify(saved.config);
+        updateSave();
+        renderSettings(true);
+        renderPool();
+        await refresh();
+        notice(`${adapterLabels[route.adapter] || route.adapter} bağlantısı ${value ? 'etkinleştirildi' : 'kapatıldı'}.`);
+      } catch (err) {
+        route.enabled = prevEnabled;
+        enabledToggle.input.checked = prevEnabled;
+        enabledToggle.input.setAttribute('aria-checked', String(prevEnabled));
+        const st = enabledToggle.wrap.querySelector('.switch-state');
+        if (st) st.textContent = prevEnabled ? 'Etkin' : 'Kapalı';
+        throw err;
+      }
+    }),
   });
+  enabledToggle.input.dataset.locked = String(locked);
   enabledToggle.wrap.title = locked
     ? 'Ödeme / plan türü doğrulanmadan bağlantı etkinleştirilemez.'
     : 'Bağlantıyı etkinleştirir veya kapatır; değişiklik anında kaydedilir.';
@@ -894,9 +937,13 @@ function renderSettingsSubscriptionPane(route, sub, email, issue) {
       sessionActions.append(button(loginLabel, () => switchAccount(route.id)));
       if (route.profile && hasSession) {
         sessionActions.append(button('Oturumu kapat', async () => {
+          const draft = poolDirty ? structuredClone(settings.config) : null;
+          const before = baseConfig || settings?.config;
           const res = await call('logout_route', { routeId: route.id });
-          settings = { ...res, config: res.config };
+          settings = { ...res, config: draft ? mergeScanDraft(res.config, before, draft) : res.config };
           baseConfig = structuredClone(res.config);
+          poolDirty = Boolean(draft && JSON.stringify(settings.config) !== JSON.stringify(res.config));
+          updateSave();
           if (snapshot?.quotas) delete snapshot.quotas[route.id];
           renderSettings(true);
           renderPool();
@@ -956,8 +1003,9 @@ function renderSettingsSubscriptionPane(route, sub, email, issue) {
   grid.append(
     settingField('Ödeme / plan türü', route.billing, value => {
       route.billing = value;
-      enabled.disabled = !activeBillings.has(value);
-      enabled.dataset.locked = String(!activeBillings.has(value));
+      const nextLocked = !activeBillings.has(value);
+      enabledToggle.input.disabled = nextLocked;
+      enabledToggle.input.dataset.locked = String(nextLocked);
     }, Object.entries(billingLabels).map(([k, v]) => [k, v])),
     settingField('Dosya araçları', route.toolPolicy || 'native', value => { route.toolPolicy = value; }, [['native', 'Native CLI yetenekleri · istek text/read/write seçer'], ['configured', 'Yapılandırılmış model kapsamıyla sınırla']]),
     settingField('Öncelik (küçük değer önce)', route.priority, value => { route.priority = Number(value); }),
@@ -970,7 +1018,7 @@ function renderSettingsSubscriptionPane(route, sub, email, issue) {
     const autoCheck = document.createElement('input');
     autoCheck.type = 'checkbox';
     autoCheck.checked = route.autoSelect ?? route.billing !== 'paid_api';
-    autoCheck.addEventListener('change', () => { route.autoSelect = autoCheck.checked; });
+    autoCheck.addEventListener('change', () => { route.autoSelect = autoCheck.checked; dirty(); });
     autoLabel.append(autoCheck, element('span', 'Bu ücretli API için kategori isteklerinde kullanıma izin ver'));
     pane.append(autoLabel);
   }
@@ -991,7 +1039,7 @@ function renderSettingsSubscriptionPane(route, sub, email, issue) {
       keyInput.value = '';
       settings.secretStates ||= {};
       settings.secretStates[route.id] = true;
-      renderSettings();
+      renderSettings(true);
       await refresh();
       notice(`${sub.subscriptionLabel} için API anahtarı yerel kasaya kaydedildi.`);
     });
@@ -1002,7 +1050,7 @@ function renderSettingsSubscriptionPane(route, sub, email, issue) {
     const trusted = document.createElement('input');
     trusted.type = 'checkbox';
     trusted.checked = route.trustedSettings;
-    trusted.addEventListener('change', () => { route.trustedSettings = trusted.checked; });
+    trusted.addEventListener('change', () => { route.trustedSettings = trusted.checked; dirty(); });
     trustedLabel.append(trusted, element('span', `CLI yerel ayarlarını inceledim (Giriş komutu: ${loginCommandsLabel(route.adapter)})`));
     pane.append(trustedLabel);
   }
@@ -1181,6 +1229,8 @@ function renderSettingsSubscriptionPane(route, sub, email, issue) {
 // kullanıcı yerini kaybetmez.
 function withStableView(render) {
   const scrollY = window.scrollY;
+  const scrollContainers = ['pool-panel', 'settings', 'calls-panel'].map(id => [id, $(id)?.scrollTop || 0]);
+  const routeListScroll = document.querySelector('.route-models-list')?.scrollTop || 0;
   const active = document.activeElement;
   const activeId = active?.id || '';
   const activeLabel = active?.getAttribute?.('aria-label') || '';
@@ -1192,6 +1242,9 @@ function withStableView(render) {
     render();
   } finally {
     window.scrollTo({ top: scrollY });
+    for (const [id, top] of scrollContainers) { const el = $(id); if (el) el.scrollTop = top; }
+    const routeList = document.querySelector('.route-models-list');
+    if (routeList) routeList.scrollTop = routeListScroll;
     if (activeId) {
       $(activeId)?.focus?.({ preventScroll: true });
     } else if (activeLabel) {
@@ -1213,6 +1266,8 @@ function settingsSignature() {
     [...selectedSettingsRoute.entries()].map(([key, value]) => `${key}=${value}`).join(','),
     $('routes-search')?.value || '',
     $('routes-filter')?.value || '',
+    JSON.stringify(settings?.secretStates || {}),
+    JSON.stringify(quotaErrors || {}),
   ].join('|');
   return settingsViewSignature(settings?.config, snapshot?.quotas || {}, uiSig);
 }
@@ -1373,7 +1428,11 @@ $('detail').addEventListener('close', () => {
   $('detail').hidden = true;
   selectedTask = null;
   selectedTaskStamp = '';
-  $('calls-tab').focus();
+  const target = detailOpener;
+  detailOpener = null;
+  if (!switchingPage && target && target.isConnected && !target.closest('[hidden]')) {
+    target.focus?.();
+  }
 });
 $('open-settings').addEventListener('click', () => switchPage('settings'));
 
@@ -1434,11 +1493,6 @@ async function saveModelsBatch(targets, enableRoutes = false, message = 'Seçile
 }
 
 $('save-pool').addEventListener('click', () => void action(saveSettings));
-$('settings').addEventListener('change', event => {
-  if (['theme', 'routes-search', 'routes-filter'].includes(event.target.id)) return;
-  if (event.target.classList?.contains('route-models-search') || event.target.classList?.contains('route-model-exclude')) return;
-  dirty();
-});
 
 $('add-route').addEventListener('click', () => void action(async () => {
   const adapter = $('new-adapter').value;
@@ -1447,31 +1501,44 @@ $('add-route').addEventListener('click', () => void action(async () => {
   if (!cli) throw new Error('Kurulu bir CLI seçin.');
   if (!$('subscription-confirmed').checked) throw new Error('Önce CLI’ın seçtiğiniz ödeme/plan türüyle yapılandırıldığını onaylayın.');
   const modelId = $('new-model').value.trim();
+  const before = structuredClone(baseConfig);
+  const draft = poolDirty ? structuredClone(settings.config) : null;
   let id = `${adapter}-local`;
   let suffix = 2;
-  while (settings.config.routes.some(route => route.id === id)) id = `${adapter}-local-${suffix++}`;
+  while (before.routes.some(route => route.id === id) || settings.config.routes.some(route => route.id === id)) id = `${adapter}-local-${suffix++}`;
   const kinds = ['mmx', 'ollama', 'lmstudio', 'omniroute'].includes(adapter) ? ['text'] : ['text', 'read', 'write'];
   const initialModels = modelId
     ? [{ id: modelId, alias: modelId, group: billing === 'free' ? 'free' : 'unassigned', enabled: true, efforts: [], kinds }]
     : (cli.discoveredModels || []).map(({ free, ...m }) => ({ ...m, ...(free === true ? { billing: 'free' } : {}) }));
   const route = { id, adapter, executable: cli.executable, enabled: false, billing, trustedSettings: true, priority: 100, models: initialModels };
-  settings.config.routes.push(route);
-  settings = await call('save', settings);
+  const candidate = structuredClone(before);
+  candidate.routes.push(route);
+  let saved = await call('save', { ...settings, config: candidate });
+  let finalCount = initialModels.length;
   if (!modelId && ['codex', 'opencode', 'mimo'].includes(adapter)) {
     try {
       const catalog = await call('catalog', { routeId: id });
-      settings.config.routes.find(connection => connection.id === id).models = catalog.models.map(model => ({
-        id: model.id, alias: model.name, group: model.free ? 'free' : 'unassigned', enabled: true, efforts: model.efforts, ...(model.free ? { billing: 'free' } : {}), kinds,
-      }));
-      settings = await call('save', settings);
+      const withCatalog = structuredClone(saved.config);
+      const addedRoute = withCatalog.routes.find(connection => connection.id === id);
+      if (addedRoute) {
+        addedRoute.models = catalog.models.map(model => ({
+          id: model.id, alias: model.name, group: model.free ? 'free' : 'unassigned', enabled: true, efforts: model.efforts, ...(model.free ? { billing: 'free' } : {}), kinds,
+        }));
+        finalCount = addedRoute.models.length;
+        saved = await call('save', { ...saved, config: withCatalog });
+      }
     } catch {}
   }
+  settings = { ...saved, config: draft ? mergeScanDraft(saved.config, before, draft) : saved.config };
+  baseConfig = structuredClone(saved.config);
+  poolDirty = Boolean(draft && JSON.stringify(settings.config) !== JSON.stringify(saved.config));
+  updateSave();
   $('new-model').value = '';
   $('subscription-confirmed').checked = false;
-  renderSettings();
+  renderSettings(true);
   renderPool();
   await refresh();
-  notice(`${id} bağlantısı (${initialModels.length} model) eklendi.`);
+  notice(`${id} bağlantısı (${finalCount} model) eklendi.`);
 }));
 
 $('add-api-route').addEventListener('click', () => void action(async () => {
@@ -1482,25 +1549,32 @@ $('add-api-route').addEventListener('click', () => void action(async () => {
   const apiKey = $('api-key').value.trim();
   const modelNames = $('api-models').value.split(',').map(s => s.trim()).filter(Boolean);
   if (!/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error('Bağlantı kimliği yalnızca harf, rakam, tire ve alt çizgi içermelidir.');
-  if (settings.config.routes.some(route => route.id === id)) throw new Error('Bu bağlantı kimliği zaten tanımlı.');
+  if (baseConfig.routes.some(route => route.id === id)) throw new Error('Bu bağlantı kimliği zaten tanımlı.');
   if (!baseUrl) throw new Error('API Base URL girin.');
   if (!modelNames.length) throw new Error('En az bir model kimliği girin.');
   const hostAdapter = protocol === 'anthropic' ? 'claude' : 'opencode';
   const cli = snapshot.installed.find(item => item.adapter === hostAdapter && item.executable);
   if (!cli) throw new Error(`${protocol} API yuvası için bilgisayarınızda ${hostAdapter} CLI kurulu olmalıdır.`);
+  const before = structuredClone(baseConfig);
+  const draft = poolDirty ? structuredClone(settings.config) : null;
   const route = {
     id, adapter: hostAdapter, executable: cli.executable, enabled: true, billing, trustedSettings: true,
     priority: billing === 'paid_api' ? 200 : 100,
     api: { protocol, baseUrl, secretRef: id },
-    models: modelNames.map(m => ({ id: m, alias: m, group: billing === 'free' ? 'free' : 'api', enabled: true, efforts: [], kinds: ['text', 'read', 'write'] })),
+    models: modelNames.map(m => ({ id: m, alias: m, group: billing === 'free' ? 'free' : 'unassigned', enabled: true, efforts: [], kinds: ['text', 'read', 'write'] })),
   };
-  settings.config.routes.push(route);
-  settings = await call('save', { ...settings, secrets: apiKey ? { [id]: apiKey } : {} });
+  const candidate = structuredClone(before);
+  candidate.routes.push(route);
+  const saved = await call('save', { ...settings, config: candidate, secrets: apiKey ? { [id]: apiKey } : {} });
+  settings = { ...saved, config: draft ? mergeScanDraft(saved.config, before, draft) : saved.config };
+  baseConfig = structuredClone(saved.config);
+  poolDirty = Boolean(draft && JSON.stringify(settings.config) !== JSON.stringify(saved.config));
+  updateSave();
   $('api-id').value = '';
   $('api-base-url').value = '';
   $('api-key').value = '';
   $('api-models').value = '';
-  renderSettings();
+  renderSettings(true);
   renderPool();
   await refresh();
   notice(`${id} API bağlantısı eklendi ve etkinleştirildi.`);
@@ -1513,42 +1587,52 @@ $('add-custom-cli').addEventListener('click', () => void action(async () => {
   const billing = $('custom-cli-billing').value;
   const modelNames = $('custom-cli-models').value.split(',').map(s => s.trim()).filter(Boolean);
   if (!/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error('Bağlantı kimliği yalnızca harf, rakam, tire ve alt çizgi içermelidir.');
-  if (settings.config.routes.some(route => route.id === id)) throw new Error('Bu bağlantı kimliği zaten tanımlı.');
+  if (baseConfig.routes.some(route => route.id === id)) throw new Error('Bu bağlantı kimliği zaten tanımlı.');
   if (!executable) throw new Error('Çalıştırılabilir dosya yolunu girin.');
   if (!argsTemplate.length) throw new Error('Argüman şablonunu girin.');
   if (!modelNames.length) throw new Error('En az bir model kimliği girin.');
+  const before = structuredClone(baseConfig);
+  const draft = poolDirty ? structuredClone(settings.config) : null;
   const route = {
     id, adapter: 'custom', executable, argsTemplate, promptStdin: !argsTemplate.some(a => a.includes('{prompt}')),
     enabled: false, billing, trustedSettings: true, priority: 100,
-    models: modelNames.map(m => ({ id: m, alias: m, group: 'custom', enabled: true, efforts: [], kinds: ['text', 'read', 'write'] })),
+    models: modelNames.map(m => ({ id: m, alias: m, group: billing === 'free' ? 'free' : 'unassigned', enabled: true, efforts: [], kinds: ['text', 'read', 'write'] })),
   };
-  settings.config.routes.push(route);
-  settings = await call('save', settings);
+  const candidate = structuredClone(before);
+  candidate.routes.push(route);
+  const saved = await call('save', { ...settings, config: candidate });
+  settings = { ...saved, config: draft ? mergeScanDraft(saved.config, before, draft) : saved.config };
+  baseConfig = structuredClone(saved.config);
+  poolDirty = Boolean(draft && JSON.stringify(settings.config) !== JSON.stringify(saved.config));
+  updateSave();
   $('custom-cli-id').value = '';
   $('custom-cli-exe').value = '';
   $('custom-cli-args').value = '';
   $('custom-cli-models').value = '';
-  renderSettings();
+  renderSettings(true);
   renderPool();
   await refresh();
   notice(`${id} özel CLI bağlantısı eklendi.`);
 }));
 
 function switchPage(page) {
-  $('pool-panel').hidden = page !== 'pool';
-  $('calls-panel').hidden = page !== 'calls';
-  $('settings').hidden = page !== 'settings';
-  if (page === 'pool') renderPool();
-  if (page === 'calls') renderCalls();
-  if (page === 'settings' && settings) renderSettings();
-  $('detail').close();
-  $('detail').hidden = true;
-  selectedTask = null;
-  selectedTaskStamp = '';
-  for (const [id, target] of [['pool-tab', 'pool'], ['calls-tab', 'calls'], ['open-settings', 'settings']]) {
-    if (page === target) $(id).setAttribute('aria-current', 'page');
-    else $(id).removeAttribute('aria-current');
-  }
+  switchingPage = true;
+  try {
+    $('pool-panel').hidden = page !== 'pool';
+    $('calls-panel').hidden = page !== 'calls';
+    $('settings').hidden = page !== 'settings';
+    if (page === 'pool') renderPool();
+    if (page === 'calls') renderCalls();
+    if (page === 'settings' && settings) renderSettings();
+    if ($('detail').open) $('detail').close();
+    $('detail').hidden = true;
+    selectedTask = null;
+    selectedTaskStamp = '';
+    for (const [id, target] of [['pool-tab', 'pool'], ['calls-tab', 'calls'], ['open-settings', 'settings']]) {
+      if (page === target) $(id).setAttribute('aria-current', 'page');
+      else $(id).removeAttribute('aria-current');
+    }
+  } finally { switchingPage = false; }
 }
 
 document.querySelector('.skip').addEventListener('click', () => { switchPage('pool'); $('toggle-pool').focus(); });
@@ -1561,7 +1645,7 @@ $('discard-settings').addEventListener('click', () => void action(async () => {
   settings = await call('settings');
   poolDirty = false;
   baseConfig = structuredClone(settings.config);
-  renderSettings();
+  renderSettings(true);
   renderPool();
   updateSave();
 }));
@@ -2762,9 +2846,11 @@ function modelCard(route, model, member, options = {}) {
     actions.append(removeAll, addAnother);
     footer.append(actions);
   } else if (member) {
+    const memberGroup = member.group;
     const effort = settingField('Varsayılan efor', member.effort || '', value => void action(async () => {
       model.memberships = memberships(model);
-      const item = model.memberships.find(item => item.group === selectedGroup);
+      const item = model.memberships.find(item => item.group === memberGroup);
+      if (!item) return;
       if (value) item.effort = value;
       else delete item.effort;
       await saveModel(route.id, model.id);
@@ -2846,6 +2932,7 @@ function modelCard(route, model, member, options = {}) {
 }
 
 function openFilters(route, model) {
+  if (!settings?.config) return;
   const filters = settings.config.modelFilters ||= [];
   $('filter-actions').replaceChildren();
   if (route && model) {
@@ -2897,6 +2984,8 @@ $('close-filters').addEventListener('click', () => $('model-filter-dialog').clos
 $('model-filter-dialog').addEventListener('close', () => $('open-filters').focus());
 
 function renderCategoryEditor() {
+  if (!settings?.config) return;
+  settings.config.categories ||= structuredClone(categoriesOf(settings.config));
   const cats = categoriesOf(settings.config);
   const memberCounts = Object.fromEntries(cats.map(cat => [cat.id, 0]));
   for (const route of settings.config.routes || []) {
@@ -2916,7 +3005,7 @@ function renderCategoryEditor() {
       ...categoryPresetDefs.map(preset => {
         const exists = cats.some(c => c.name.toLocaleLowerCase('tr') === preset.name.toLocaleLowerCase('tr'));
         const btn = button(`+ ${preset.name}`, async () => {
-          settings.config.categories ||= [];
+          settings.config.categories ||= structuredClone(categoriesOf(settings.config));
           if (settings.config.categories.some(c => c.name.toLocaleLowerCase('tr') === preset.name.toLocaleLowerCase('tr'))) return;
           settings.config.categories.push({ id: `category-${preset.id}-${crypto.randomUUID().slice(0, 6)}`, name: preset.name });
           await savePreference('categories');
@@ -2984,6 +3073,7 @@ function renderCategoryEditor() {
 }
 
 $('open-category-dialog')?.addEventListener('click', () => {
+  if (!settings?.config) return;
   renderCategoryEditor();
   if (!$('category-dialog').open) $('category-dialog').showModal();
   $('category-name')?.focus();
@@ -2991,8 +3081,10 @@ $('open-category-dialog')?.addEventListener('click', () => {
 $('close-category-dialog')?.addEventListener('click', () => $('category-dialog').close());
 $('category-dialog')?.addEventListener('close', () => $('open-category-dialog')?.focus());
 $('add-category').addEventListener('click', () => void action(async () => {
+  if (!settings?.config) return;
   const name = $('category-name').value.trim();
   if (!name) throw new Error('Kategori adı gerekli.');
+  settings.config.categories ||= structuredClone(categoriesOf(settings.config));
   settings.config.categories.push({ id: 'category-' + crypto.randomUUID(), name });
   await savePreference('categories');
   $('category-name').value = '';
@@ -3065,7 +3157,12 @@ function openPoolPicker(route, model, batchTargets = null) {
     pendingPoolBatch = batchTargets;
     pendingPoolModel = null;
     $('add-pool-model').textContent = `${batchTargets.length} seçili model`;
-    $('add-pool-effort').replaceChildren(new Option('Mevcut eforu koru', 'preserve'), new Option('CLI varsayılanı', ''), ...['low', 'medium', 'high'].map(effort => new Option(effortLabel(effort), effort)));
+    const batchEfforts = [...new Set(batchTargets.flatMap(({ routeId, modelId }) => {
+      const r = settings.config.routes.find(item => item.id === routeId);
+      return r?.models.find(item => item.id === modelId)?.efforts || [];
+    }))];
+    const effortChoices = batchEfforts.length ? batchEfforts : ['low', 'medium', 'high'];
+    $('add-pool-effort').replaceChildren(new Option('Mevcut eforu koru', 'preserve'), new Option('CLI varsayılanı', ''), ...effortChoices.map(effort => new Option(effortLabel(effort), effort)));
     $('add-pool-targets').replaceChildren(...poolGroups().map(group => plainButton(groupLabel(group), async () => {
       const effortVal = $('add-pool-effort').value;
       const targets = [...(pendingPoolBatch || [])];
@@ -3079,11 +3176,16 @@ function openPoolPicker(route, model, batchTargets = null) {
       });
       if (!confirmed) return;
       await action(async () => {
+        // Validate every target before mutating any in-memory model/route.
+        const resolved = [];
         for (const { routeId, modelId } of targets) {
           const targetRoute = settings.config.routes.find(item => item.id === routeId);
           const targetModel = targetRoute?.models.find(item => item.id === modelId);
           if (!targetModel) continue;
           if (!activeBillings.has(targetRoute.billing)) throw new Error(`${targetRoute.id}: Bağlantı ayarlarından bu aracın plan türünü doğrulayın.`);
+          resolved.push({ targetRoute, targetModel });
+        }
+        for (const { targetRoute, targetModel } of resolved) {
           const member = memberships(targetModel).find(item => item.group === group);
           const eff = effortVal === 'preserve' ? (member?.effort || '') : (targetModel.efforts?.includes(effortVal) ? effortVal : '');
           addMembership(targetModel, group, eff);
@@ -3091,7 +3193,7 @@ function openPoolPicker(route, model, batchTargets = null) {
           targetRoute.enabled = true;
         }
         selectedCatalogItems.clear();
-        await saveModelsBatch(targets, true, `${targets.length} model ${groupLabel(group)} havuzuna eklendi.`);
+        await saveModelsBatch(targets, true, `${resolved.length} model ${groupLabel(group)} havuzuna eklendi.`);
       });
     })));
     $('add-pool-dialog').showModal();
@@ -3140,20 +3242,31 @@ function openPoolPicker(route, model, batchTargets = null) {
 $('close-add-pool').addEventListener('click', () => $('add-pool-dialog').close());
 $('add-pool-dialog').addEventListener('close', () => { pendingPoolModel = null; pendingPoolBatch = null; });
 
+let pendingQuotaRouteId = null;
 async function refreshQuotas(routeId) {
-  if (quotasRefreshing || serviceStopped) return;
+  if (!snapshot || serviceStopped) return;
+  if (quotasRefreshing) {
+    if (routeId) pendingQuotaRouteId = routeId;
+    return;
+  }
   quotasRefreshing = true;
   $('refresh-quotas').textContent = 'Limitler sorgulanıyor…';
   renderPool();
   try {
     const result = await call('quotas', { ...(routeId ? { routeId } : {}), force: true });
-    snapshot.quotas = { ...snapshot.quotas, ...result.quotas };
+    if (snapshot) snapshot.quotas = { ...snapshot.quotas, ...result.quotas };
     quotaErrors = routeId ? { ...quotaErrors, [routeId]: result.errors[routeId] } : result.errors;
   } catch (error) { notice(error.message, true); }
   finally {
     quotasRefreshing = false;
     $('refresh-quotas').textContent = 'Kotaları yenile';
     renderPool();
+    if (!$('settings').hidden) renderSettings();
+    if (pendingQuotaRouteId) {
+      const nextRoute = pendingQuotaRouteId;
+      pendingQuotaRouteId = null;
+      void refreshQuotas(nextRoute);
+    }
   }
 }
 $('refresh-quotas').addEventListener('click', () => { void refreshQuotas(); });
@@ -3314,33 +3427,52 @@ function updateCardActivity() {
     const link = card.querySelector('.model-call');
     if (!link) return;
     link.hidden = !task;
-    link.textContent = task ? activeStates.has(task.state) ? '● Çalışıyor' : `Son çağrı: ${labels[task.state] || task.state}` : '';
+    if (card.classList.contains('is-mini')) {
+      link.textContent = task ? (activeStates.has(task.state) ? '●' : '•') : '';
+      link.title = task ? (activeStates.has(task.state) ? 'Çalışıyor (ayrıntılar için tıkla)' : `Son çağrı: ${labels[task.state] || task.state}`) : '';
+    } else {
+      link.textContent = task ? (activeStates.has(task.state) ? '● Çalışıyor' : `Son çağrı: ${labels[task.state] || task.state}`) : '';
+    }
     link.dataset.taskId = task?.id || '';
   });
 }
 
-$('clear-history').addEventListener('click', async () => {
-  try {
+$('clear-history').addEventListener('click', () => void (async () => {
+  const confirmed = await askConfirm({
+    title: 'Çağrı geçmişini temizle',
+    message: 'Tamamlanan ve başarısız tüm çağrı kayıtları silinsin mi?',
+    confirmLabel: 'Temizle',
+    danger: true,
+  });
+  if (!confirmed) return;
+  await action(async () => {
     const result = await call('clear_history');
-    $('detail').close();
+    if ($('detail').open) $('detail').close();
     $('detail').hidden = true;
     selectedTask = null;
     selectedTaskStamp = '';
     await refresh();
     notice(`${result.removed} tamamlanan/başarısız çağrı temizlendi.`);
-  } catch (error) { notice(error.message, true); }
-});
-$('clear-all-history')?.addEventListener('click', async () => {
-  try {
+  });
+})());
+$('clear-all-history')?.addEventListener('click', () => void (async () => {
+  const confirmed = await askConfirm({
+    title: 'Tüm çağrı geçmişini temizle',
+    message: 'İnceleme bekleyenler dahil tüm tamamlanmış çağrı geçmişi silinsin mi?',
+    confirmLabel: 'Tümünü temizle',
+    danger: true,
+  });
+  if (!confirmed) return;
+  await action(async () => {
     const result = await call('clear_history', { includeReview: true });
-    $('detail').close();
+    if ($('detail').open) $('detail').close();
     $('detail').hidden = true;
     selectedTask = null;
     selectedTaskStamp = '';
     await refresh();
     notice(`${result.removed} çağrı (inceleme bekleyenler dahil) temizlendi.`);
-  } catch (error) { notice(error.message, true); }
-});
+  });
+})());
 
 window.addEventListener('beforeunload', event => {
   if (poolDirty) { event.preventDefault(); event.returnValue = ''; }

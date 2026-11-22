@@ -26,7 +26,7 @@
   </header>
   <main>
     <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
-    <div id="console-fix-banner" class="notice" role="region" aria-label="Windows arka plan konsol izni" hidden>
+    <div id="console-fix-banner" class="console-banner" role="region" aria-label="Windows arka plan konsol izni" hidden>
       <span>Windows 11'de arka plan CLI kontrollerinin boş terminal hatası (0x800700e8) açmasını önlemek için Varsayılan Konsol ayarına izin verin.</span>
       <button id="apply-console-fix" type="button" class="topbar-btn">İzin Ver ve Düzelt</button>
       <button id="dismiss-console-fix" type="button" class="quiet-icon" aria-label="Bildirimi kapat">✕</button>
@@ -223,14 +223,14 @@
           <li><code>GET <span data-origin></span>/api/health</code> — servis durumu, model ve görev sayıları</li>
           <li><code>GET <span data-origin></span>/api/catalog?view=models&amp;limit=40</code> — model kataloğu</li>
           <li><code>GET <span data-origin></span>/api/pools</code> — havuz kategorileri, <code>/api/pools/&lt;id&gt;</code> — bir kategorinin modelleri</li>
-          <li><code>GET <span data-origin></span>/api/quotas</code> — bağlantı başına önbelleklenmiş kota, <code>?live=1</code> CLI'dan sorar</li>
+          <li><code>GET <span data-origin></span>/api/quotas</code> — bağlantı başına önbelleklenmiş kota (canlı sorgu: <code>GET /api/quotas/&lt;routeId&gt;?live=1</code> + Bearer token)</li>
           <li><code>GET <span data-origin></span>/api/select?kind=write&amp;mode=execute</code> — görev için model önerisi (göndermeden)</li>
           <li><code>GET <span data-origin></span>/api/help[?code=X]</code> — servis haritası veya tek hata kodunun açıklaması</li>
           <li><code>GET <span data-origin></span>/api/capabilities</code>, <code>GET <span data-origin></span>/api/connections</code></li>
         </ul>
         <h4>Görev uçları <span class="badge subtle">Bearer token</span></h4>
         <ul class="guide-list">
-          <li><code>POST <span data-origin></span>/api/tasks</code> — gövde: <code>{prompt, workspace, kind, mode?, routeId?, modelId?, group?, effort?}</code></li>
+          <li><code>POST <span data-origin></span>/api/tasks</code> — gövde: <code>{prompt, workspace, kind, idempotencyKey, mode?, routeId?, modelId?, group?, effort?}</code></li>
           <li><code>GET <span data-origin></span>/api/tasks/&lt;id&gt;</code> — görev durumu/sonucu, <code>POST <span data-origin></span>/api/tasks/&lt;id&gt;/cancel</code></li>
           <li><code>POST <span data-origin></span>/api/tools/&lt;tool&gt;</code> — herhangi bir havuz aracı (gövde = argümanlar)</li>
         </ul>
@@ -239,10 +239,10 @@
           <li><code>cli-agent-pool status</code> — bağlantılar, kotalar, havuzlar, katalog</li>
           <li><code>cli-agent-pool quotas [--route &lt;id&gt;] [--live]</code> — tek bağlantının kotası</li>
           <li><code>cli-agent-pool pools --group &lt;id&gt;</code> · <code>cli-agent-pool catalog --view models</code></li>
-          <li><code>cli-agent-pool model --route &lt;id&gt; --model &lt;id&gt;</code> · <code>cli-agent-pool help-code &lt;KOD&gt;</code></li>
+          <li><code>cli-agent-pool model --route &lt;id&gt; --model &lt;id&gt;</code> · <code>cli-agent-pool help-code --code &lt;KOD&gt;</code></li>
         </ul>
         <h4>MCP</h4>
-        <ul class="guide-list"><li><code>POST <span data-origin></span>/mcp</code> — <code>havuz_*</code> araçları</li></ul>
+        <ul class="guide-list"><li><code>POST <span data-origin></span>/mcp</code> — <code>pool_*</code> araçları</li></ul>
       </div></details>
       <details class="settings-section"><summary>Kurulu CLI bağlantısı ekle</summary><fieldset class="settings-body"><legend class="sr-only">Kurulu CLI bağlantısı ekle</legend>
         <label class="setting-field" for="new-adapter">Kurulu CLI<select id="new-adapter"><option value="">CLI seçin</option></select></label>

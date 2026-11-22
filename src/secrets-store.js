@@ -38,16 +38,26 @@ export function saveSecret(directory, secretRef, value) {
   }
 }
 
+function assertSafeSecretsDir(directory) {
+  const dir = path.join(directory, 'secrets');
+  if (!existsSync(dir)) return null;
+  if (lstatSync(dir).isSymbolicLink()) throw new PoolError('UNSAFE_DATA_DIRECTORY', 'Gizli anahtar klasörü sembolik bağlantı olamaz.');
+  return dir;
+}
+
 export function hasSecret(directory, secretRef) {
   validateRef(secretRef);
-  const filename = path.join(directory, 'secrets', `${secretRef}.key`);
+  const dir = assertSafeSecretsDir(directory);
+  if (!dir) return false;
+  const filename = path.join(dir, `${secretRef}.key`);
   return existsSync(filename) && lstatSync(filename).isFile();
 }
 
 export function loadSecret(directory, secretRef) {
   validateRef(secretRef);
-  const filename = path.join(directory, 'secrets', `${secretRef}.key`);
-  if (!existsSync(filename) || !lstatSync(filename).isFile()) {
+  const dir = assertSafeSecretsDir(directory);
+  const filename = dir ? path.join(dir, `${secretRef}.key`) : null;
+  if (!filename || !existsSync(filename) || !lstatSync(filename).isFile()) {
     throw new PoolError('SECRET_MISSING', 'Bu API bağlantısı için kayıtlı anahtar bulunamadı. Panelden anahtarı kaydedin.');
   }
   const value = readFileSync(filename, 'utf8').trim();
@@ -57,6 +67,8 @@ export function loadSecret(directory, secretRef) {
 
 export function deleteSecret(directory, secretRef) {
   validateRef(secretRef);
-  const filename = path.join(directory, 'secrets', `${secretRef}.key`);
-  if (existsSync(filename)) unlinkSync(filename);
+  const dir = assertSafeSecretsDir(directory);
+  if (!dir) return;
+  const filename = path.join(dir, `${secretRef}.key`);
+  if (existsSync(filename) && lstatSync(filename).isFile()) unlinkSync(filename);
 }

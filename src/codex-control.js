@@ -9,7 +9,10 @@ export async function codexControl(route, cwd, python, method, directory = dataD
   const storeOverride = route.profile ? ['-c', 'cli_auth_credentials_store="file"'] : [];
   const handle = runProcess({ extraEnv: command.env, argv: [...command.argv, ...storeOverride, 'app-server', '--stdio', '-c', 'model_provider="openai"'], cwd, python, relay: true, timeoutMs: 20_000,
     onLine(line) {
-      const message = JSON.parse(line);
+      if (!line || !line.trim()) return;
+      let message;
+      try { message = JSON.parse(line); } catch { return; }
+      if (!message || typeof message !== 'object') return;
       if (message.method && message.id != null) {
         handle.send(JSON.stringify({ id: message.id, error: { code: -32601, message: 'Control-only client' } }) + '\n');
       } else if (pending.has(message.id)) {
@@ -20,8 +23,10 @@ export async function codexControl(route, cwd, python, method, directory = dataD
       }
     },
   });
-  handle.done.then(() => { for (const p of pending.values()) p.reject(new PoolError('CONTROL_CLOSED', 'Codex kontrol bağlantısı kapandı.')); pending.clear(); });
+  let closed = false;
+  handle.done.then(() => { closed = true; for (const p of pending.values()) p.reject(new PoolError('CONTROL_CLOSED', 'Codex kontrol bağlantısı kapandı.')); pending.clear(); });
   const call = (name, params = {}) => new Promise((resolve, reject) => {
+    if (closed) { reject(new PoolError('CONTROL_CLOSED', 'Codex kontrol bağlantısı kapandı.')); return; }
     const id = nextId++;
     pending.set(id, { resolve, reject });
     handle.send(JSON.stringify({ id, method: name, params }) + '\n');

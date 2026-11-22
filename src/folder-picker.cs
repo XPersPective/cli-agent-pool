@@ -64,10 +64,11 @@ internal static class FolderPicker
         try
         {
             var dialog = (IFileDialog)new NativeFolderDialog();
-            using (var owner = new Form { TopMost = true, Opacity = 0.01, ShowInTaskbar = true, StartPosition = FormStartPosition.CenterScreen, Width = 1, Height = 1, FormBorderStyle = FormBorderStyle.None, Text = "Klasör Seç" })
             try
             {
-                owner.Show();
+                using (var owner = new Form { TopMost = true, Opacity = 0.01, ShowInTaskbar = true, StartPosition = FormStartPosition.CenterScreen, Width = 1, Height = 1, FormBorderStyle = FormBorderStyle.None, Text = "Klasör Seç" })
+                {
+                    owner.Show();
                 IntPtr fg = GetForegroundWindow();
                 uint unused;
                 uint fgTid = fg != IntPtr.Zero ? GetWindowThreadProcessId(fg, out unused) : 0;
@@ -112,14 +113,15 @@ internal static class FolderPicker
                     finally { Marshal.ReleaseComObject(item); }
                 }
                 else if (result != unchecked((int)0x800704C7)) Marshal.ThrowExceptionForHR(result);
-                using (var output = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)))
-                    output.WriteLine(new JavaScriptSerializer().Serialize(new { path = selected }));
+                    using (var output = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)))
+                        output.WriteLine(new JavaScriptSerializer().Serialize(new { path = selected }));
+                }
             }
             finally { Marshal.ReleaseComObject(dialog); }
         }
-        catch
+        catch (Exception ex)
         {
-            Console.Error.WriteLine("Windows folder picker failed.");
+            Console.Error.WriteLine("Windows folder picker failed: " + ex.Message);
             Environment.ExitCode = 1;
         }
     }

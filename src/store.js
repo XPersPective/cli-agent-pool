@@ -5,32 +5,41 @@ export class Store {
     this.owner = new DatabaseSync(filename === ':memory:' ? ':memory:' : `${filename}.owner`);
     try { this.owner.exec('PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE; CREATE TABLE IF NOT EXISTS owner_lock(id INTEGER);'); }
     catch { this.owner.close(); throw new Error('POOL_ALREADY_RUNNING'); }
-    this.db = new DatabaseSync(filename);
-    this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;');
-    const version = this.db.prepare('PRAGMA user_version').get().user_version;
-    if (version > 2) { this.db.close(); this.owner.close(); throw new Error('Unsupported database version'); }
-    this.db.exec(`CREATE TABLE IF NOT EXISTS tasks (
-      id TEXT PRIMARY KEY, key TEXT NOT NULL UNIQUE, fingerprint TEXT NOT NULL,
-      state TEXT NOT NULL, workspace TEXT NOT NULL, request TEXT NOT NULL,
-      created TEXT NOT NULL, updated TEXT NOT NULL, result TEXT, error TEXT
-    );
-    CREATE INDEX IF NOT EXISTS task_state ON tasks(state, created);
-    CREATE TABLE IF NOT EXISTS events (
-      seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL,
-      time TEXT NOT NULL, kind TEXT NOT NULL, detail TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS quotas (route_id TEXT PRIMARY KEY, snapshot TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS preflight (scope TEXT PRIMARY KEY, entry TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS exit_hooks (
-      task_id TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT 'pending',
-      attempts INTEGER NOT NULL DEFAULT 0, next_at INTEGER NOT NULL DEFAULT 0
-    );
-    PRAGMA user_version=2;`);
-    const interruptedAt = new Date().toISOString();
-    this.db.prepare("UPDATE tasks SET state='failed', error='INTERRUPTED', updated=? WHERE state IN ('starting','running','cancelling')").run(interruptedAt);
-    this.db.prepare("UPDATE tasks SET state='failed', error=COALESCE(NULLIF(error,''), 'MANUALLY_RESOLVED'), updated=? WHERE state='needs_review'").run(interruptedAt);
-    this.recoverHooks();
-    this.pruneHistory();
+    try {
+      this.db = new DatabaseSync(filename);
+      this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;');
+      const version = this.db.prepare('PRAGMA user_version').get().user_version;
+      if (version > 2) throw new Error('Unsupported database version');
+      this.db.exec(`CREATE TABLE IF NOT EXISTS tasks (
+        id TEXT PRIMARY KEY, key TEXT NOT NULL UNIQUE, fingerprint TEXT NOT NULL,
+        state TEXT NOT NULL, workspace TEXT NOT NULL, request TEXT NOT NULL,
+        created TEXT NOT NULL, updated TEXT NOT NULL, result TEXT, error TEXT
+      );
+      CREATE INDEX IF NOT EXISTS task_state ON tasks(state, created);
+      CREATE TABLE IF NOT EXISTS events (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL,
+        time TEXT NOT NULL, kind TEXT NOT NULL, detail TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS events_task_seq ON events(task_id, seq);
+      CREATE INDEX IF NOT EXISTS events_task_kind_seq ON events(task_id, kind, seq);
+      CREATE TABLE IF NOT EXISTS quotas (route_id TEXT PRIMARY KEY, snapshot TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS preflight (scope TEXT PRIMARY KEY, entry TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS exit_hooks (
+        task_id TEXT PRIMARY KEY, state TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0, next_at INTEGER NOT NULL DEFAULT 0
+      );
+      PRAGMA user_version=2;`);
+      this.startupInterrupted = this.db.prepare("SELECT * FROM tasks WHERE state IN ('starting','running','cancelling') OR (state='needs_review' AND error='INTERRUPTED') ORDER BY rowid").all();
+      const interruptedAt = new Date().toISOString();
+      this.db.prepare("UPDATE tasks SET state='failed', error='INTERRUPTED', updated=? WHERE state IN ('starting','running','cancelling')").run(interruptedAt);
+      this.db.prepare("UPDATE tasks SET state='failed', error=COALESCE(NULLIF(error,''), 'MANUALLY_RESOLVED'), updated=? WHERE state='needs_review'").run(interruptedAt);
+      this.recoverHooks();
+      this.pruneHistory();
+    } catch (error) {
+      try { this.db?.close(); } catch { /* ignore */ }
+      try { this.owner.close(); } catch { /* ignore */ }
+      throw error;
+    }
   }
   byKey(key) { return this.db.prepare('SELECT * FROM tasks WHERE key=?').get(key); }
   get(id) { return this.db.prepare('SELECT * FROM tasks WHERE id=?').get(id); }

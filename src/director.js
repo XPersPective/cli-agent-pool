@@ -3,7 +3,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
-import { PoolError, allowedWorkspace, overlaps } from './config.js';
+import { PoolError, allowedWorkspace } from './config.js';
 import { agyProjectMatches } from './agy-project.js';
 import { profileHome } from './profiles.js';
 import { serviceHelp } from './service-help.js';
@@ -32,7 +32,7 @@ export async function preflightScope(pool, input, options = {}) {
   const route = pool.config.routes.find(item => item.id === request.routeId);
   assertDirectorRoute(route);
   const workspace = allowedWorkspace(request.workspace);
-  const model = pool.select({ kind: 'write', mode: 'execute', routeId: route.id, ...(request.modelId ? { modelId: request.modelId } : {}), effort: request.effort }, options).selected;
+  const model = pool.select({ kind: 'write', mode: 'execute', routeId: route.id, ...(request.modelId ? { modelId: request.modelId } : {}), effort: request.effort, ...(options.minRemainingPercent !== undefined ? { minRemainingPercent: options.minRemainingPercent } : {}) }, options).selected;
   const capabilities = normalizeCapabilities(request.capabilities);
   const readPaths = validateReadPaths(request.readPaths || [], pool.config.directorReadRoots || defaultReadRoots());
   const effort = request.effort || model.defaultEffort || null;
@@ -91,6 +91,7 @@ export async function preflightStatus(pool, input) {
 export function preflightAck(pool, nonce, token) {
   const entry = typeof nonce === 'string' ? pool.nonces.get(nonce) : null;
   if (!entry || entry.capability !== 'poolMcp') throw new PoolError('NOT_FOUND', 'Unknown or expired preflight nonce.');
+  pool.nonces.delete(nonce);
   const run = token ? pool.taskTokens.get(sha(token)) : null;
   entry.probe.acks.set('poolMcp', { at: Date.now(), token: Boolean(run && run.taskId === entry.probe.taskId) });
   return { acknowledged: true };
@@ -105,15 +106,18 @@ export function serviceAck(pool, nonce, secret) {
 }
 
 export async function submitDirector(pool, input, options = {}) {
+  if (input?.kind !== undefined && input.kind !== 'write') throw new PoolError('INVALID_REQUEST', 'A director task requires kind: write.');
+  if (input?.mode !== undefined && input.mode !== 'execute') throw new PoolError('INVALID_REQUEST', 'A director task requires mode: execute.');
   const identity = pool.directorIdentity(input);
   const existing = pool.store.byKey(input.idempotencyKey);
   if (existing) {
     if (JSON.parse(existing.request).directorIdentity !== identity) throw new PoolError('IDEMPOTENCY_CONFLICT', 'This key belongs to different task content.');
     return pool.get(existing.id);
   }
-  const { readPaths, capabilities, routeId, modelId, workspace, effort } = input;
+  const { readPaths, capabilities, routeId, modelId, workspace, effort, minRemainingPercent } = input;
   if (!routeId) throw new PoolError('INVALID_REQUEST', 'A director task pins routeId (and usually modelId).');
-  const scope = await preflightScope(pool, { routeId, modelId, effort, workspace, capabilities, readPaths });
+  await pool.selectLive({ kind: 'write', mode: 'execute', routeId, ...(modelId ? { modelId } : {}), effort, ...(minRemainingPercent !== undefined ? { minRemainingPercent } : {}) }, { allowStaleRefresh: true, maxWaitMs: 2500 }).catch(() => {});
+  const scope = await preflightScope(pool, { routeId, modelId, effort, workspace, capabilities, readPaths }, { minRemainingPercent });
   const decision = admission(pool, scope);
   if (!decision.ready) throw new PoolError(decision.code, decision.message);
   return pool.submit({ ...input, profile: 'director', kind: 'write', mode: 'execute', modelId: scope.model.id, readPaths: scope.readPaths, capabilities: scope.capabilities }, false, { owner: true, ...options, directorIdentity: identity });
@@ -174,6 +178,7 @@ export async function settlePreflight(pool, taskId, outcome) {
   if (!probe || probe.settled) return;
   probe.settled = true;
   try {
+    if (outcome?.cancelled) return;
     const verdict = await verifyProbe(probe, { python: pool.config.python, remoteBefore: probe.remoteBefore, outcome });
     const entry = savePreflight(pool, probe, verdict);
     pool.store.event(taskId, 'preflight', JSON.stringify(summarize(entry)));

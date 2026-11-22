@@ -1,9 +1,9 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, renameSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -22,7 +22,7 @@ export function ensureInitialized(directory, autoImport = true) {
   initialize(directory);
   if (autoImport) {
     const view = configView(directory);
-    const imported = importDiscoveredRoutes(view.config);
+    const imported = importDiscoveredRoutes(view.config, directory);
     const changed = imported.addedRoutes > 0 || imported.addedModels > 0 || imported.refreshedModels > 0;
     if (changed) {
       saveConfig(directory, imported.config, view.revision);
@@ -40,6 +40,7 @@ export async function managementRequest(directory, config, body) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(4000),
   });
   if (!response.ok) {
     const text = await response.text();
@@ -51,31 +52,40 @@ export async function managementRequest(directory, config, body) {
   return response.json();
 }
 
-export async function ensureDaemon(directory, config = ensureInitialized(directory)) {
-  try {
-    const info = await managementRequest(directory, config, { operation: 'pair_ui' });
-    return { ...info, started: false };
-  } catch (error) {
-    // A responding server may own active writes or even belong to another app.
-    // Startup never kills a PID or an arbitrary listener to claim the port.
-    if (error?.status) throw error;
-  }
-  spawnDetachedHidden([process.execPath, poolBinPath, 'serve'], {
-    cwd: directory,
-    env: { ...process.env, CLI_AGENT_POOL_HOME: directory },
-    python: config.python,
-  });
+const ensuringDaemons = new Map();
 
-  for (let attempt = 0; attempt < 60; attempt++) {
-    await delay(100);
+export async function ensureDaemon(directory, config = ensureInitialized(directory)) {
+  const key = `${path.resolve(directory)}:${config.port}`;
+  if (ensuringDaemons.has(key)) return ensuringDaemons.get(key);
+  const work = (async () => {
     try {
       const info = await managementRequest(directory, config, { operation: 'pair_ui' });
-      return { ...info, started: true };
-    } catch {
-      // Wait until HTTP listener is ready.
+      return { ...info, started: false };
+    } catch (error) {
+      // A responding server may own active writes or even belong to another app.
+      // Startup never kills a PID or an arbitrary listener to claim the port.
+      if (error?.status) throw error;
     }
-  }
-  throw new PoolError('DAEMON_START_TIMEOUT', 'CLI Agent Pool arka plan servisi başlatılamadı.');
+    spawnDetachedHidden([process.execPath, poolBinPath, 'serve'], {
+      cwd: directory,
+      env: { ...process.env, CLI_AGENT_POOL_HOME: directory },
+      python: config.python,
+    });
+
+    for (let attempt = 0; attempt < 60; attempt++) {
+      await delay(100);
+      try {
+        const info = await managementRequest(directory, config, { operation: 'pair_ui' });
+        return { ...info, started: true };
+      } catch (error) {
+        if (error?.status) throw error;
+        // Wait until HTTP listener is ready.
+      }
+    }
+    throw new PoolError('DAEMON_START_TIMEOUT', 'CLI Agent Pool arka plan servisi başlatılamadı.');
+  })();
+  ensuringDaemons.set(key, work);
+  try { return await work; } finally { ensuringDaemons.delete(key); }
 }
 
 export async function remoteManagementRequest(directory, body, port = 43128) {
@@ -98,7 +108,7 @@ export async function remoteManagementRequest(directory, body, port = 43128) {
   return response.json();
 }
 
-export async function ensureRemoteDaemon(directory, { host = 'tailscale', port = 43128, python = undefined } = {}) {
+export async function ensureRemoteDaemon(directory, { host = 'tailscale', port = 43128, python = undefined, wait = true } = {}) {
   const config = ensureInitialized(directory, false);
   try {
     const info = await remoteManagementRequest(directory, { operation: 'pair_local' }, port);
@@ -111,12 +121,14 @@ export async function ensureRemoteDaemon(directory, { host = 'tailscale', port =
     env: { ...process.env, CLI_AGENT_POOL_HOME: directory },
     python: python || config.python,
   });
+  if (!wait) return { started: true, port };
   for (let attempt = 0; attempt < 60; attempt++) {
     await delay(100);
     try {
       const info = await remoteManagementRequest(directory, { operation: 'pair_local' }, port);
       return { ...info, started: true };
-    } catch {
+    } catch (error) {
+      if (error?.status) throw error;
       // Wait until Remote HTTP listener is ready.
     }
   }
@@ -159,7 +171,7 @@ export async function applyWindowsConsoleHostFix(python = 'python', { platform =
   return { supported: true, fixed: true, applied: true, delegationConsole: CONHOST_GUID, delegationTerminal: CONHOST_GUID };
 }
 
-async function dashboardExecutable(directory) {
+async function dashboardExecutable(directory, python = undefined) {
   const source = readFileSync(new URL('./dashboard.cs', import.meta.url));
   const cache = path.join(directory, 'ui');
   const digest = createHash('sha256').update(source).digest('hex').slice(0,16);
@@ -169,8 +181,14 @@ async function dashboardExecutable(directory) {
     const filename = path.join(cache, 'dashboard-' + digest + '.cs');
     writeFileSync(filename,source,{mode:0o600});
     const compiler = path.join(process.env.SystemRoot || 'C:\\Windows','Microsoft.NET','Framework64','v4.0.30319','csc.exe');
-    const result = await capture([compiler,'/nologo','/target:winexe','/out:'+executable,'/reference:System.Web.Extensions.dll','/reference:System.Management.dll','/reference:System.Windows.Forms.dll',filename],directory);
-    if(result.code!==0) throw new PoolError('DASHBOARD_BUILD_FAILED','Windows panel baslaticisi hazirlanamadi.');
+    const tempExe = path.join(cache, `dashboard-${digest}-${randomBytes(6).toString('hex')}.exe`);
+    try {
+      const result = await capture([compiler,'/nologo','/target:winexe','/out:'+tempExe,'/reference:System.Web.Extensions.dll','/reference:System.Management.dll','/reference:System.Windows.Forms.dll',filename],directory,python);
+      if(result.code!==0) throw new PoolError('DASHBOARD_BUILD_FAILED','Windows panel baslaticisi hazirlanamadi.');
+      try { renameSync(tempExe, executable); } catch { if (!existsSync(executable)) throw new PoolError('DASHBOARD_BUILD_FAILED','Windows panel baslaticisi hazirlanamadi.'); }
+    } finally {
+      if (existsSync(tempExe)) { try { unlinkSync(tempExe); } catch { /* ignore */ } }
+    }
   }
   return executable;
 }
@@ -261,7 +279,7 @@ export async function runTaskFromCli(directory, options) {
   if (!Number.isInteger(waitSeconds) || waitSeconds < 0 || waitSeconds > Math.floor(2147483647 / 1000))
     throw new PoolError('INVALID_REQUEST', '--wait 0 (süresiz) veya pozitif saniye olmalı ve native timer aralığında kalmalı.');
   const workspace = allowedWorkspace(options.workspace || process.cwd());
-  const config = loadConfig(directory);
+  const config = ensureInitialized(directory, !existsSync(path.join(directory, 'config.json')));
   await ensureDaemon(directory, config);
 
   return withMcpClient(directory, async client => {
@@ -405,43 +423,49 @@ export async function installDesktopAndSkills(directory, installedRoot = null, {
   };
 
   if (process.platform === 'win32') {
-    const launcher = await dashboardExecutable(directory);
-    const psScript = `
-$ErrorActionPreference = 'Stop'
-$sh = New-Object -ComObject WScript.Shell
-$desktop = [Environment]::GetFolderPath('Desktop')
-$startMenu = Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs'
-$launcher = '${launcher.replace(/'/g, "''")}'
-$node = '${process.execPath.replace(/'/g, "''")}'
-$pool = '${activePoolBin.replace(/'/g, "''")}'
-$workDir = '${directory.replace(/'/g, "''")}'
-$edgeExe = Join-Path $\{env:ProgramFiles(x86)} 'Microsoft\\Edge\\Application\\msedge.exe'
-$icon = if (Test-Path $edgeExe) { "$edgeExe,0" } else { "$env:SystemRoot\\System32\\shell32.dll,13" }
-
-foreach ($targetDir in @($desktop, $startMenu)) {
-  if ($targetDir -and (Test-Path $targetDir)) {
-    $lnkPath = Join-Path $targetDir 'CLI Agent Pool.lnk'
-    $sc = $sh.CreateShortcut($lnkPath)
-    $sc.TargetPath = $launcher
-    $sc.Arguments = '"' + $workDir + '" "' + $node + '" "' + $pool + '"'
-    $sc.WorkingDirectory = $workDir
-    $sc.Description = 'CLI Agent Pool - Yerel AI CLI ve Model Havuzu'
-    $sc.IconLocation = $icon
-    $sc.Save()
-
-    $remoteLnk = Join-Path $targetDir 'CLI Agent Remote.lnk'
-    $rsc = $sh.CreateShortcut($remoteLnk)
-    $rsc.TargetPath = $launcher
-    $rsc.Arguments = '"' + $workDir + '" "' + $node + '" "' + $pool + '" "remote"'
-    $rsc.WorkingDirectory = $workDir
-    $rsc.Description = 'CLI Agent Remote - Mobil ve Masaustu Ajan Sohbeti'
-    $rsc.IconLocation = $icon
-    $rsc.Save()
-  }
-}
-Write-Output (ConvertTo-Json @{ desktop = (Join-Path $desktop 'CLI Agent Pool.lnk'); startMenu = (Join-Path $startMenu 'CLI Agent Pool.lnk'); remoteDesktop = (Join-Path $desktop 'CLI Agent Remote.lnk'); remoteStartMenu = (Join-Path $startMenu 'CLI Agent Remote.lnk'); runtimeDirectory = [IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName($sc.TargetPath)) })
-`;
-    const shortcutRes = await capture(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', psScript], directory, config.python);
+    const launcher = await dashboardExecutable(directory, config.python);
+    const quoteArg = value => `"${String(value).replace(/\\+$/, m => m + m)}"`;
+    const psScript = [
+      "$ErrorActionPreference = 'Stop'",
+      '$sh = New-Object -ComObject WScript.Shell',
+      "$desktop = [Environment]::GetFolderPath('Desktop')",
+      "$startMenu = Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs'",
+      '$launcher = $env:POOL_SHORTCUT_LAUNCHER',
+      '$workDir = $env:POOL_SHORTCUT_WORKDIR',
+      '$poolArgs = $env:POOL_SHORTCUT_ARGS',
+      '$remoteArgs = $env:POOL_SHORTCUT_REMOTE_ARGS',
+      "$edgeExe = Join-Path ${env:ProgramFiles(x86)} 'Microsoft\\Edge\\Application\\msedge.exe'",
+      '$icon = if (Test-Path $edgeExe) { "$edgeExe,0" } else { "$env:SystemRoot\\System32\\shell32.dll,13" }',
+      'foreach ($targetDir in @($desktop, $startMenu)) {',
+      '  if ($targetDir -and (Test-Path $targetDir)) {',
+      "    $lnkPath = Join-Path $targetDir 'CLI Agent Pool.lnk'",
+      '    $sc = $sh.CreateShortcut($lnkPath)',
+      '    $sc.TargetPath = $launcher',
+      '    $sc.Arguments = $poolArgs',
+      '    $sc.WorkingDirectory = $workDir',
+      "    $sc.Description = 'CLI Agent Pool - Yerel AI CLI ve Model Havuzu'",
+      '    $sc.IconLocation = $icon',
+      '    $sc.Save()',
+      "    $remoteLnk = Join-Path $targetDir 'CLI Agent Remote.lnk'",
+      '    $rsc = $sh.CreateShortcut($remoteLnk)',
+      '    $rsc.TargetPath = $launcher',
+      '    $rsc.Arguments = $remoteArgs',
+      '    $rsc.WorkingDirectory = $workDir',
+      "    $rsc.Description = 'CLI Agent Remote - Mobil ve Masaustu Ajan Sohbeti'",
+      '    $rsc.IconLocation = $icon',
+      '    $rsc.Save()',
+      '  }',
+      '}',
+      '$runtimeDir = [IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName($launcher))',
+      "Write-Output (ConvertTo-Json @{ desktop = (Join-Path $desktop 'CLI Agent Pool.lnk'); startMenu = (Join-Path $startMenu 'CLI Agent Pool.lnk'); remoteDesktop = (Join-Path $desktop 'CLI Agent Remote.lnk'); remoteStartMenu = (Join-Path $startMenu 'CLI Agent Remote.lnk'); runtimeDirectory = $runtimeDir })",
+    ].join('\n');
+    const shortcutEnv = {
+      POOL_SHORTCUT_LAUNCHER: launcher,
+      POOL_SHORTCUT_WORKDIR: directory,
+      POOL_SHORTCUT_ARGS: `${quoteArg(directory)} ${quoteArg(process.execPath)} ${quoteArg(activePoolBin)}`,
+      POOL_SHORTCUT_REMOTE_ARGS: `${quoteArg(directory)} ${quoteArg(process.execPath)} ${quoteArg(activePoolBin)} "remote"`,
+    };
+    const shortcutRes = await capture(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', psScript], directory, config.python, shortcutEnv);
     if (shortcutRes.code !== 0) throw new PoolError('SHORTCUT_FAILED', 'Windows kisayollari olusturulamadi.');
     if (shortcutRes.code === 0) {
       try {
@@ -450,7 +474,7 @@ Write-Output (ConvertTo-Json @{ desktop = (Join-Path $desktop 'CLI Agent Pool.ln
         results.startMenuShortcut = parsed.startMenu;
         results.remoteDesktopShortcut = parsed.remoteDesktop;
         results.remoteStartMenuShortcut = parsed.remoteStartMenu;
-        if (parsed.runtimeDirectory) {
+        if (parsed.runtimeDirectory && !process.env.CLI_AGENT_POOL_HOME) {
           const locator = path.join(homedir(),'.cli-agent-pool');
           mkdirSync(locator,{recursive:true,mode:0o700});
           writeFileSync(path.join(locator,'runtime-path'),parsed.runtimeDirectory+'\n',{mode:0o600});

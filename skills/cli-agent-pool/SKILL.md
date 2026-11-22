@@ -15,7 +15,7 @@ If connection is refused, run `cli-agent-pool ensure` once to auto-start the dae
 - `GET /api` — short endpoint map (`GET /api/health` for liveness/counts)
 - `GET /api/catalog` — sources/providers; add `?billing=free`, `?adapter=qoder`, `?q=flash`, `?kind=write`, or `?view=models` for model pages (limit 12, max 40; pass `nextOffset` as `offset`)
 - `GET /api/pools` — category IDs/names/counts; `GET /api/pools/<id>` returns that category's model page
-- `GET /api/quotas` — cached quota & remaining% for all enabled connections in one call (no CLI spawn); `GET /api/quotas/<routeId>` for windows; `?live=1` queries the vendor CLI live
+- `GET /api/quotas` — cached quota & remaining% for all enabled connections in one call (no CLI spawn); `GET /api/quotas/<routeId>` for cached windows (add `?live=1` with `Authorization: Bearer <access-token>` to query the vendor CLI live)
 - `GET /api/model?route=<routeId>&model=<modelId>` — one model with cached quota, efforts, and tool kinds
 - `GET /api/select?kind=write&mode=execute[&group=<id>]` — recommend an allowed model without starting a task
 - `GET /api/help` or `GET /api/help?code=AUTH_REQUIRED` — short map or error recovery
@@ -41,7 +41,7 @@ Poll `pool_get_task {taskId}` (or `GET /api/tasks/<id>`); results default to `co
 Lost response: reuse identical content/key; `queued`/`running` means resume, never duplicate a started write.
 Problems: `GET /api/help?code=<CODE>` or `pool_help {code}`; load `compact:false` only when compact diagnostics are insufficient.
 
-Native CLI tools/permissions, billing, quota reserves, and workspace locks apply. No paid API fallback, copied credentials, or native permission bypass. Parallel writers use distinct caller-prepared worktrees. Inspect `needs_review` before owner resolution; do not clear unrelated locks or recursively delegate into Pool.
-Execute reports use JSON: `status(completed|partial|blocked)`, `summary`, `files`, `checks`, `research`, `blockers`; target 200 words, max 6000 chars.
+Native CLI tools/permissions, billing, and quota reserves apply. No paid API fallback, copied credentials, or native permission bypass. Pool does not impose workspace locks or `needs_review` quarantine; callers coordinate concurrent writers (e.g. distinct worktrees) and avoid recursive Pool delegation.
+Execute reports use JSON: `status(completed|partial|blocked)`, `summary`, `files`, `checks`, `research`, `blockers`; prompt target 200 words / 6000 chars (parser ceiling 32,768 chars).
 
 For unattended directors, read `pool_capabilities` (or `GET /api/capabilities`) and follow the caller's relay contract (`profile:director` requires verified preflight). See [operations](references/operations.md) ONLY for setup, director internals, or provider limitations.

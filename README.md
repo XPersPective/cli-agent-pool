@@ -4,10 +4,11 @@ Yerel AI CLI aboneliklerini, token planlarını, ücretsiz modelleri ve özel AP
 MCP üzerinden ortak bir görev havuzunda kullanın. Kendi yerel web ekranı ve standart MCP
 arayüzü vardır. DeepSeek Harness, Hermes veya Project Brain bağımlılığı yoktur.
 
-**Kapsam:** Bu proje yalnızca yerel model/CLI havuzunu hazır ve kullanılabilir tutar.
-Uzaktan erişim (mobil/VPN/tünel) bu projenin kapsamı dışındadır; uzaktan çalışma
-ihtiyacı Codex veya Antigravity gibi ana geliştirme araçlarının kendi uzak erişim
-özellikleriyle karşılanır. Gemini CLI desteği kaldırılmıştır.
+**Kapsam:** Çekirdek havuz servisi yalnızca yerel `127.0.0.1:43127` üzerinde
+çalışır ve yerel CLI/model havuzunu yönetir. İsteğe bağlı **`CLI Agent Remote`**
+(`remote/`, varsayılan `127.0.0.1:43128`, Tailscale için `--host tailscale`)
+eşleştirilmiş tarayıcı/mobil istemciler için yerel havuza köprü kuran yardımcı
+PWA sunucusudur. Gemini CLI desteği kaldırılmıştır.
 
 ### Ajanlar için kısa kullanım
 
@@ -135,15 +136,16 @@ dosyasında saklanır ve tarayıcıya veya MCP istemcilerine hiçbir zaman geri 
 | **LM Studio / Ollama** (`lmstudio`, `ollama`) | `free` (yerel) | `lms ls --json` ve `~/.ollama/models` yerel model keşfi | `lms status` / `ollama list` |
 | **Aider / Kilo / Hermes / Custom** (`aider`, `kilocode`, `hermes`, `custom`) | `subscription`, `token_plan`, `free` | Otomatik ikili keşfi ve şablon tabanlı (`argsTemplate`) güvenli yürütme | İlgili CLI komutu |
 
-### Çoklu hesap (Codex, Claude, Antigravity)
+### Çoklu hesap (Codex, Claude, Antigravity, Qoder, Qwen, ZCode, MiniMax, Kimi)
 
 Her hesap ayrı bir bağlantıdır (`route`): kendi girişi, kendi kotası, kendi model
-ve efor listesi vardır. Ayarlar ekranında bir Codex/Claude/Antigravity bağlantısının
-**Yeni Antigravity hesabı ekle / Yeni hesap ekle** düğmesi `codex-acc2`, `claude-acc2`, `agy-acc2` gibi yeni
-bir profil açar. Açılan resmî CLI penceresinde hesaba bir kez giriş yapılır ve **Girişi tamamladım, ekle**
-düğmesine basılır; aynı e-posta ile eklenmiş bir bağlantı zaten varsa (`DUPLICATE_ACCOUNT`) kopya bağlantı
-eklenmez. Bağlantı kartlarında ve model kartlarında her hesabın e-posta adresi (`email`) gösterilir ve
-istenmeyen bağlantılar **Bağlantıyı kaldır** düğmesiyle silinebilir.
+ve efor listesi vardır. Ayarlar ekranındaki **Yeni hesap ekle** düğmesi `codex-acc2`,
+`claude-acc2`, `agy-acc2` gibi yeni bir izole profil açar. Açılan resmî CLI
+penceresinde hesaba bir kez giriş yapılır ve **Girişi tamamladım, ekle** düğmesine
+basılır; aynı e-posta ile eklenmiş bir bağlantı zaten varsa (`DUPLICATE_ACCOUNT`)
+kopya bağlantı eklenmez. Bağlantı kartlarında ve model kartlarında her hesabın
+e-posta adresi (`email`) gösterilir ve istenmeyen bağlantılar **Bağlantıyı sil**
+düğmesiyle kaldırılabilir.
 
 | CLI | Hesap izolasyonu | Profil yeri |
 |---|---|---|
@@ -262,10 +264,10 @@ kimlikleri gösterilir. Sağlayıcı sürüm bildirmiyorsa numara uydurulmaz. G�
 ayrıntısı istenen kimlik, havuz ve eforu, CLI olaylarında bildirilmişse gerçek
 çalışan model kimliğini ayrı gösterir.
 
-Kotalar varsayılan açık başlar. Büyük kalan yüzdesi, kalan miktarı gösteren çubuk,
-kullanım ve yenilenme zamanı görünür. **Kotaları gizle / göster** tümünü; her modelin
-Kota başlığı yalnızca o modeli açar/kapatır. Kullanım yüzdeleri hesap kotasıdır; hesap ortak kotası
-model başına ayrı bakiye gibi sunulmaz. Kota, kapalı bağlantılar için de okunabilir.
+Kotalar Normal ve Mini görünümlerde her zaman açık görünür: büyük kalan yüzdesi,
+ince ilerleme çubuğu, kullanım ve yenilenme zamanı gösterilir. Kullanım yüzdeleri
+hesap kotasıdır; hesap ortak kotası model başına ayrı bakiye gibi sunulmaz. Kota,
+kapalı bağlantılar için de okunabilir.
 Kotalar harici bir araç olmadan havuzun kendi `src/quotas.js` katmanında okunur: Codex
 native app-server; Claude, Z.AI, Antigravity, Kimi, MiniMax ve OpenRouter kendi resmî
 kullanım uç noktalarından. Kimlik bilgisi resmî CLI'ın kendi deposundan yalnızca bellekte
@@ -330,7 +332,7 @@ Başarısız yazma görevi otomatik tekrarlanmaz. Ek bir Project Brain bağıml�
 Qwen için giriş terminal TUI’sidir: `qwen` açın, `/auth` → QwenCloud → Token Plan → International seçin ([resmî giriş kılavuzu](https://github.com/QwenLM/qwen-code/blob/main/docs/users/configuration/auth.md)). Qwen anahtarı ve sağlayıcı ayarını kendi `~/.qwen/settings.json` dosyasına kaydeder; Pool’a geri token göndermez. Pool seçili sağlayıcıda anahtar yapılandırmasını gösterir; bu, girişin veya kotanın doğrulandığı anlamına gelmez. Gerçek erişim kısa model yanıtıyla doğrulanır. Hesap değiştirince Pool’daki **Hesabı değiştir** ile `/auth` akışını yeniden açıp **Kontrol et** ile yerel durumu yenileyin. Güncel Qwen CLI’da `qwen auth status` kaldırılmıştır.
 
 `cli-agent-pool rpc`, stdin üzerinden `{tool, arguments}` JSON alır; editörden bağımsız
-11 ajan aracına erişim sağlar. `cli-agent-pool mcp-config` ise tokensız stdio bağlantı
+19 ajan aracına erişim sağlar. `cli-agent-pool mcp-config` ise tokensız stdio bağlantı
 ayarını üretir. Freebuff Desktop/CLI bunu `~/.agents/mcp.json` üzerinden kullanabilir.
 Freebuff burada istemcidir; desteklenmeyen otomatik model yürütmesi uydurulmaz.
 Tencent WorkBuddy de Settings → MCP/Connectors üzerinden aynı Pool MCP sunucusunu
@@ -344,12 +346,11 @@ Uygulama sürümü üst çubukta görünür; MCP ve CLI aynı paket sürümünü
 
 ## Güvenli Çalışma
 
-- Yalnızca yerel `127.0.0.1` loopback bağlantısı; yabancı Origin ve Host başlıkları reddedilir.
+- Yalnızca yerel `127.0.0.1` loopback bağlantısı; yabancı Origin ve Host başlıkları reddedilir (isteğe bağlı `remote/` PWA ayrı eşleştirme kodu ve CSRF koruması kullanır).
 - Agent token'ı `/manage` yönetim arayüzünü kullanamaz ve API anahtarlarını okuyamaz.
-- Subprocess oluşturma shell kullanmaz; prompt stdin üzerinden taşınır.
-- Python supervisor Windows Job Object veya POSIX process group kullanır.
-- Belirsiz yeniden başlatma ve başarısız/kesilen yazma işleri `needs_review` olur;
-  elle incelendikten sonra `node bin/pool.js resolve <task-id>` ile temizlenir.
+- Subprocess oluşturma shell kullanmaz; prompt çoğu adaptörde stdin üzerinden, yalnızca bunu desteklemeyen CLI'larda (`zcode`, `kimi`, `aider` ve özel `argsTemplate`) güvenli argv öğesi olarak taşınır.
+- Python supervisor Windows Job Object (ve arka planda gizli masaüstü izolasyonu) veya POSIX process group kullanır.
+- Pool çalışma klasörü kilidi veya `needs_review` karantinası uygulamaz; başarısız/kesilen yazma işleri doğrudan `failed` olur ve eşzamanlı yazma koordinasyonu çağıran orkestratöre aittir.
 - Otomatik tekrar ve yürütme başladıktan sonra otomatik fallback yoktur.
 
 ## Kontroller
@@ -369,9 +370,10 @@ Gizlilik ve güvenlik: [SECURITY.md](SECURITY.md).
 
 Model kartındaki **Gizle** ile yalnızca o bağlantıdaki tam modeli, aynı modelin tüm
 bağlantılardaki efor varyantlarını veya bir model ailesini gizleyebilirsiniz.
-**Gizlenenler → Göster** işlemi kuralı kaldırır. Filtreler Kaydet ile kalıcılaşır;
-ajan listeleri/seçimi ve yeniden tarama da bu kurallara uyar. Model üyelikleri
-silinmez; filtre kaldırıldığında tekrar görünür. Örnek modeller otomatik kara listeye alınmaz.
+**Gizlenenler → Göster** işlemi kuralı kaldırır. Filtreler diğer taslak ayarlardan
+bağımsız olarak anında kaydedilir; ajan listeleri/seçimi ve yeniden tarama da bu
+kurallara uyar. Model üyelikleri silinmez; filtre kaldırıldığında tekrar görünür.
+Örnek modeller otomatik kara listeye alınmaz.
 
 Katalog **Araçlara göre / Model ailesine göre** ve **A → Z / Z → A** görünür.
 Aynı modelin farklı abonelikleri ayrı bağlantı kartlarıdır. Havuzlarım da araç veya
@@ -388,10 +390,7 @@ beklemeden durumu yeniden sorgular. API bağlantıları anahtar ayarlarına yön
 Bilinmeyen oturum bilgisi giriş yapılmış gibi sunulmaz; Ayarlar'da giriş eylemi de vardır.
 
 Kartlar katalogdan üyelik gerektirmeden test edilebilir; kategori eforu varsayılandır.
-Daha sonra elle seçilen havuz korunur. Proje yolu giriş kutusunda, görev/model/efor
-seçenekleri altındadır. Gönderilemiyorsa eksik proje, boş havuz veya gerekli giriş
-kutunun yanında açıklanır. Tema Ayarlar'dadır; bağlantı noktası ve simgeli işlemler
-üst çubuğu sade tutar.
+Tema Ayarlar'dadır; bağlantı noktası ve simgeli işlemler üst çubuğu sade tutar.
 
 ### Kartlar ve çağrı izleme (1.5.0)
 
@@ -419,10 +418,10 @@ Kodlama işlerinde `--kind write --mode execute` (MCP: `kind: "write", mode: "ex
 kullanın. Alt ajan çağıran projenin `--workspace` yolunda araçlarla değişikliği yapar,
 kontrolleri çalıştırır ve kısa dosya/test/engel raporu döndürür. Native CLI izinleri,
 kota ve ödeme kuralları korunur. `pool_get_task` için `compact: true` token tüketimini
-azaltır. Okumalar aynı projede paralel; yazmalar sırayladır. Paralel yazma için ayrı
-Git worktree, ardından tek entegrasyon görevi kullanılır. `--wait` kuyruk bekleme
-bütçesini, `--timeout` çalışan CLI süresini belirler. Ayrıntılar:
-[Ajan protokolü](docs/agent-api.md#uygulayan-alt-ajan-protokolü-v1).
+azaltır. Pool çalışma klasörü kilidi koymaz; paralel yazma için ayrı Git worktree ve
+ardından tek entegrasyon görevi kullanmak çağıranın sorumluluğundadır. `--wait` bekleme
+bütçesini, `--timeout` çalışan CLI süresini belirler (varsayılan `0` = süresiz). Ayrıntılar:
+[Ajan protokolü](docs/agent-api.md).
 
 ### Dosya kapsamı (1.8)
 

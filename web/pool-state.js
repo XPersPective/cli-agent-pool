@@ -16,11 +16,20 @@ export function settingsViewSignature(config, quotas = {}, ui = '') {
     route.enabled ? 1 : 0,
     route.billing,
     route.profile || '',
+    route.priority ?? '',
+    route.minRemainingPercent ?? '',
+    route.toolPolicy || '',
+    route.trustedSettings ? 1 : 0,
+    route.autoSelect ?? '',
+    route.api?.baseUrl || '',
     (route.models || []).map(model => `${model.id}:${model.enabled ? 1 : 0}:${(model.memberships || []).map(item => item.group).join('+')}`).join(','),
   ].join('~')).join('|');
   const quotaSig = Object.keys(quotas || {}).sort().map(id => {
     const q = quotas[id];
-    return `${id}:${q?.status || ''}:${q?.remaining ?? ''}:${q?.used ?? ''}`;
+    const wins = Array.isArray(q?.windows)
+      ? q.windows.map(w => `${w.name || ''}:${w.remainingPercent ?? ''}`).join(';')
+      : '';
+    return `${id}:${q?.status || ''}:${q?.auth || ''}:${q?.subscription || ''}:${q?.email || ''}:${q?.informational ? 1 : 0}:${q?.remaining ?? ''}:${q?.used ?? ''}:${wins}`;
   }).join(',');
   return `${JSON.stringify(rest)}|${routeSig}|${quotaSig}|${ui}`;
 }
@@ -117,12 +126,12 @@ export function quotaWindowPercent(snapshot, modelId = '', kind = 'min') {
   const wins = quotaWindows(snapshot, modelId);
   if (!wins.length) return null;
   if (kind === '5h') {
-    const matched = wins.filter(w => ['five_hour', '5h', 'primary'].includes(w.name) || (Number.isFinite(w.windowMinutes) && w.windowMinutes <= 360));
-    return Math.min(...(matched.length ? matched : wins).map(w => w.remaining));
+    const matched = wins.filter(w => ['five_hour', '5h', 'primary'].includes(w.name) || /:5h$/i.test(w.name || '') || (Number.isFinite(w.windowMinutes) && w.windowMinutes <= 360));
+    return matched.length ? Math.min(...matched.map(w => w.remaining)) : null;
   }
   if (kind === 'weekly') {
-    const matched = wins.filter(w => ['seven_day', '7d', 'weekly', 'opus', 'secondary'].includes(w.name) || (Number.isFinite(w.windowMinutes) && w.windowMinutes >= 1440));
-    return Math.min(...(matched.length ? matched : wins).map(w => w.remaining));
+    const matched = wins.filter(w => ['seven_day', '7d', 'weekly', 'opus', 'secondary'].includes(w.name) || /:(?:7d|weekly)$/i.test(w.name || '') || (Number.isFinite(w.windowMinutes) && w.windowMinutes >= 1440 && w.windowMinutes <= 14_400));
+    return matched.length ? Math.min(...matched.map(w => w.remaining)) : null;
   }
   return Math.min(...wins.map(w => w.remaining));
 }
@@ -161,9 +170,9 @@ export function quotaMatches(snapshot, modelId, mode = 'all', route = null, mode
   if (mode === 'all') return true;
   const known = quotaWindows(snapshot, modelId).length > 0;
   if (mode === 'known') return known;
-  if (mode === 'unknown') return !known;
   const issue = modelIssueInfo(route, model || { id: modelId }, snapshot, quotaError);
-  if (mode === 'healthy') return known && !issue.isError && !issue.isDisabled;
+  if (mode === 'unknown') return issue.isUnknown;
+  if (mode === 'healthy') return issue.state === 'healthy';
   if (mode === 'issues') return issue.isError;
   if (mode === 'auth_error') return ['auth_error', 'subscription_error', 'billing_unconfirmed', 'connection_error'].includes(issue.state);
   if (mode === 'enabled') return !issue.isDisabled;

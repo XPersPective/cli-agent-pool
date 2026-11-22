@@ -21,7 +21,7 @@ export async function setup({ run = spec => runProcess(spec).done, install = ins
   try {
     const pack = await invoke(['pack', '--quiet', '--pack-destination', releaseDirectory]);
     if (pack.code !== 0 || pack.stopReason) throw new PoolError('PACKAGE_BUILD_FAILED', 'Paket oluşturulamadı; Windows kurulumu uygulanmadı.');
-    const filename = pack.output.trim();
+    const filename = pack.output.trim().split(/\r?\n/).map(line => line.trim()).filter(Boolean).at(-1) || '';
     if (!/^cli-agent-pool-[a-zA-Z0-9.-]+\.tgz$/.test(filename)) throw new PoolError('PACKAGE_BUILD_FAILED', 'Paket adı doğrulanamadı.');
     tarball = path.join(releaseDirectory, filename);
     const installed = await invoke(['install', '-g', tarball, '--ignore-scripts', '--no-audit', '--no-fund']);
@@ -42,7 +42,9 @@ export async function setup({ run = spec => runProcess(spec).done, install = ins
   }
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+let isDirectEntry = false;
+try { isDirectEntry = Boolean(process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))); } catch { isDirectEntry = false; }
+if (isDirectEntry) {
   setup().then(result => console.log(JSON.stringify(result, null, 2))).catch(error => {
     console.error(error);
     process.exitCode = 1;

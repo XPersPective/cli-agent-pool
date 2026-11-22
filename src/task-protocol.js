@@ -1,4 +1,4 @@
-import { PoolError, overlaps } from './config.js';
+import { PoolError } from './config.js';
 import { z } from 'zod';
 
 export const executionReportSchema = z.object({
@@ -55,8 +55,11 @@ export function parseExecutionReport(result) {
   const candidates = [trimmed.replace(/^```(?:json)?\s*\r?\n?/, '').replace(/\r?\n?```$/, '')];
   const lines = trimmed.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
   if (lines.length > 1) candidates.push(lines.at(-1));
-  const trailingFence = trimmed.match(/```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]*$/);
-  if (trailingFence) candidates.push(trailingFence[1].trim());
+  const fences = [...trimmed.matchAll(/```[^\r\n]*\r?\n([\s\S]*?)\r?\n```/g)];
+  if (fences.length) {
+    const lastFence = fences.at(-1);
+    if (!trimmed.slice(lastFence.index + lastFence[0].length).trim()) candidates.push(lastFence[1].trim());
+  }
   const trailingObject = extractTrailingJsonObject(trimmed);
   if (trailingObject) candidates.push(trailingObject);
   for (const candidate of candidates) {

@@ -57,8 +57,8 @@ test('ayarlarda bağlantı açma anahtarı anında kaydedilir', () => {
   assert.match(app, /makeSwitch/);
   assert.match(app, /role', 'switch'/);
   assert.match(app, /onLabel = 'Etkin', offLabel = 'Kapalı'/);
-  // Anahtar değişimi kaydeder (yalnız taslakta bırakılmaz).
-  assert.match(app, /route\.enabled = value;[\s\S]{0,400}call\('save', settings\)/);
+  // Anahtar değişimi kaydeder (yalnız taslakta bırakılmaz) ve diğer taslakları bozmadan izole kaydeder.
+  assert.match(app, /(?:route|targetBase)\.enabled = value;[\s\S]{0,400}call\('save',/);
   assert.match(css, /\.switch-track/);
   assert.match(css, /\.switch-state/);
 });

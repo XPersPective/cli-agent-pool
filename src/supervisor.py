@@ -36,13 +36,19 @@ def windows_job():
     kernel.GetCurrentProcess.restype = wintypes.HANDLE
     kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
     kernel.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
     job = kernel.CreateJobObjectW(None, None)
+    if not job:
+        raise OSError("Job setup failed")
     info = EXTENDED()
     info.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-    if not job or not kernel.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info)):
+    if not kernel.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info)):
+        kernel.CloseHandle(job)
         raise OSError("Job setup failed")
     # Join before spawning: descendants inherit the job without a spawn/assignment race.
     if not kernel.AssignProcessToJobObject(job, kernel.GetCurrentProcess()):
+        kernel.CloseHandle(job)
         raise OSError("Job assignment failed")
     return job  # Deliberately held until this process exits; never inherited by children.
 
@@ -177,6 +183,12 @@ def main():
                 child = spawn_windows_hidden(request["argv"], request["cwd"], desktop[1])
             except OSError:
                 child = None
+                if desktop[0] and desktop[2]:
+                    try:
+                        desktop[2].CloseDesktop(desktop[0])
+                    except Exception:
+                        pass
+                    desktop = (None, None, None)
     if child is None:
         startupinfo = None
         creationflags = 0
@@ -189,6 +201,7 @@ def main():
                                  start_new_session=os.name != "nt", startupinfo=startupinfo,
                                  creationflags=creationflags)
     finished = threading.Event()
+    stdin_lock = threading.Lock()
 
     def cancel():
         if finished.is_set():
@@ -197,7 +210,7 @@ def main():
             os._exit(125)  # Closing the sole job handle kills every descendant.
         try:
             os.killpg(child.pid, signal.SIGKILL)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             pass
 
     def watch_parent():
@@ -205,24 +218,32 @@ def main():
             if request.get("relay"):
                 for line in sys.stdin.buffer:
                     message = json.loads(line)
-                    if message.get("close"):
-                        child.stdin.close()
-                    else:
-                        child.stdin.write(message.get("input", "").encode("utf-8"))
-                        child.stdin.flush()
+                    with stdin_lock:
+                        try:
+                            if message.get("close"):
+                                child.stdin.close()
+                            else:
+                                child.stdin.write(message.get("input", "").encode("utf-8"))
+                                child.stdin.flush()
+                        except OSError:
+                            # Child already closed stdin/exited; let main thread collect its exit code.
+                            return
             else:
                 sys.stdin.buffer.read()
         finally:
             cancel()
 
-    threading.Thread(target=watch_parent, daemon=True).start()
     try:
-        child.stdin.write(request.get("input", "").encode("utf-8"))
-        child.stdin.flush()
-        if not request.get("relay"):
-            child.stdin.close()
-    except BrokenPipeError:
+        with stdin_lock:
+            initial = request.get("input", "")
+            if initial:
+                child.stdin.write(initial.encode("utf-8"))
+                child.stdin.flush()
+            if not request.get("relay"):
+                child.stdin.close()
+    except OSError:
         pass
+    threading.Thread(target=watch_parent, daemon=True).start()
     code = child.wait()
     # POSIX: also retire background descendants after the product exits.
     if os.name != "nt":

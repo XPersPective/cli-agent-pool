@@ -28,10 +28,14 @@ export async function stdioBridge(directory, config) {
   }
   const server = new Server({ name: 'cli-agent-pool', version }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, () => client.listTools());
-  server.setRequestHandler(CallToolRequestSchema, request => client.callTool(request.params));
+  server.setRequestHandler(CallToolRequestSchema, request => client.callTool(request.params, undefined, { timeout: 600_000 }));
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  const close = async () => { await server.close(); await client.close(); };
+  let closing = null;
+  const close = () => {
+    if (!closing) closing = Promise.allSettled([server.close(), client.close()]).then(() => {});
+    return closing;
+  };
   process.stdin.once('end', () => { void close(); });
   process.once('SIGTERM', () => { void close(); });
   return close;

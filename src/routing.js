@@ -9,7 +9,8 @@ export function rejectionReason(model, route, snapshot, request, inFlightCount =
   if (!model.kinds.includes(request.kind)) return 'KIND_UNSUPPORTED';
   if (request.mode === 'execute' && !supportsExecution(route)) return 'EXECUTION_UNSUPPORTED';
   if (request.effort && !model.efforts.includes(request.effort)) return 'EFFORT_UNSUPPORTED';
-  if (snapshot && Date.now() - Date.parse(snapshot.observedAt) < 60_000) {
+  const observed = snapshot ? Date.parse(snapshot.observedAt) : NaN;
+  if (snapshot && !snapshot.stale && !snapshot.networkError && Number.isFinite(observed) && Date.now() - observed < 60_000) {
     if (snapshot.status === 'auth_required') return 'AUTH_REQUIRED';
     if (snapshot.subscription === 'none' && ['subscription', 'token_plan'].includes(route.billing)) return 'SUBSCRIPTION_REQUIRED';
     const baseReserve = Math.max(route.minRemainingPercent, request.minRemainingPercent ?? 0);

@@ -15,11 +15,17 @@ Hatanın/task ID'sini koruyun; normal sorgularda bütün bu dosyayı yüklemeyin
 | BILLING_UNCONFIRMED / SETTINGS_NOT_TRUSTED | Sahibi UI bağlantı/native plan ayarlarını doğrular. |
 | INVALID_REQUEST | Araç şeması, alanlar, desteklenen kind/effort kontrol edilir. |
 | IDEMPOTENCY_CONFLICT | Anahtar farklı içerikte kullanılmış; eski göreve dönün veya yeni görev için yeni anahtar seçin. |
-| WORKSPACE_REVIEW_REQUIRED / WORK_INCOMPLETE | Önce task raporu ve gerçek dosyalar incelenir. |
+| MODEL_NOT_FOUND / ROUTE_DISABLED | İstenen model/rota katalogda yok veya kapalı; `pool_catalog` / `pool_list_connections` ile güncel durumu kontrol edin. |
+| WORK_INCOMPLETE | Önce task raporu ve gerçek dosyalar incelenir. |
 | INVALID_REPORT | Çıktı/dosyaları inceleyin; rapor formatını düzeltmek için işi yeniden koşturmayın. |
 | CONFIG_CONFLICT | Owner UI güncel revizyonu alıp kendi değişikliğini yeniden uygular. |
-| TIMEOUT / CANCELLED | Mevcut task incelenir; started write otomatik tekrarlanmaz. |
+| TIMEOUT / CANCELLED / INTERRUPTED | Mevcut task ve dosya değişiklikleri incelenir; started write otomatik tekrarlanmaz. |
+| NETWORK_UNAVAILABLE / PROVIDER_OVERLOADED | Geçici ağ/sağlayıcı hatası; kısa bekleme sonrası yeniden deneyin veya başka sağlayıcı seçin. |
+| OWNER_ONLY / PAID_ROUTE_DENIED / WORKSPACE_DENIED | Yetki, ücretli rota veya çalışma klasörü sınırını kontrol edin. |
+| PREFLIGHT_REQUIRED / PREFLIGHT_FAILED / PREFLIGHT_EXPIRED | Director öncesi `cli-agent-pool preflight` çalıştırıp başarısız yetenekleri düzeltin. |
+| QUOTA_BARRIER / SUPERSEDED_BY_HANDOFF | Director kota bariyeri veya halef devralması ile durduruldu; görevi ve kotayı inceleyin. |
 
-İncelenmiş durmuş görev için sahibi cli-agent-pool resolve <task-id> --note
-ile kilidi kaldırabilir. Diğer projelerin karantinaları kaldırılmaz. Gizlenen,
+CLI Agent Pool çalışma klasörü kilidi veya karantina (`needs_review`) uygulamaz;
+eşzamanlı yazma koordinasyonu çağıran orkestratöre aittir. Eski kayıtlar için
+`cli-agent-pool resolve <task-id> --note` uyumluluk amacıyla durur. Gizlenen,
 kapalı ve dışarı sunulmayan modellerin erişimi bu hata yollarıyla açılmaz.

@@ -4,7 +4,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import { compactCatalog, catalogSchema, categoryQuerySchema, compactModel, quotaOverview, quotaOverviewSchema } from './catalog.js';
-import { PoolError, configView } from './config.js';
+import { PoolError } from './config.js';
 import { routeAccountEmail } from './adapters.js';
 import { browserUI, managementOperation } from './web.js';
 import { taskSchema } from './pool.js';
@@ -43,11 +43,12 @@ export function poolTools(pool, caller = {}) {
   register('pool_list_models', 'Compatibility paginated catalog. Prefer pool_catalog.', catalogSchema.shape, input => compactCatalog(pool, {...input, view:'models'}));
   register('pool_help', 'Short service map, or recovery guidance for one error code.', {code:z.string().max(100).optional()}, ({code}) => serviceHelp(code));
   register('pool_get_policy', 'Compatibility service map; no selection or authority modes. Prefer pool_help.', {}, () => serviceHelp());
-  register('pool_select', 'Recommend an allowed model without starting a task. mode: execute requires write and native tool support. minRemainingPercent can raise the owner quota reserve, never lower it.', { kind: z.enum(['text', 'read', 'write']), mode: z.enum(['response', 'execute']).optional(), routeId: z.string().optional(), modelId: z.string().optional(), group: z.string().optional(), effort: z.string().optional(), minRemainingPercent: z.number().min(0).max(100).optional() }, async input => { const result = await pool.selectLive(input, { allowStaleRefresh: true, maxWaitMs: 2500 }); return {selected:compactModel(pool,result.selected),alternatives:result.alternatives.length}; });
+  register('pool_select', 'Recommend an allowed model without starting a task. mode: execute requires write and native tool support. minRemainingPercent can raise the owner quota reserve, never lower it.', { kind: z.enum(['text', 'read', 'write']), mode: z.enum(['response', 'execute']).optional(), routeId: z.string().max(100).optional(), modelId: z.string().max(100).optional(), group: z.string().max(100).optional(), effort: z.string().max(100).optional(), minRemainingPercent: z.number().min(0).max(100).optional() }, async input => { const result = caller.cachedOnly ? pool.select(input) : await pool.selectLive(input, { allowStaleRefresh: true, maxWaitMs: 2500 }); return {selected:compactModel(pool,result.selected),alternatives:result.alternatives.length}; });
   register('pool_submit', 'Start one bounded CLI task. For implementation use kind: write, mode: execute and the calling project/worktree absolute workspace. Native tools perform edits and checks, then return a short report. Reuse the same idempotency key for a lost response; poll the returned ID, never replay a started write.', taskSchema.extend({ compact: z.boolean().default(true) }).shape, async ({ compact, ...input }) => { let task;
     if (input.profile === 'director') {
       if (caller.taskToken && !directing()) throw new PoolError('OWNER_ONLY', 'Workers cannot submit directors.');
       if (caller.worker && !directing()) owner();
+      if ((caller.taskToken || caller.worker) && (input.onExit || input.secretEnv)) throw new PoolError('OWNER_ONLY', 'Only an owner session can attach onExit hooks or secretEnv.');
       task = await pool.submitDirector(input);
     } else task = await pool.submitLive(input, false, { taskToken: caller.taskToken }); return compact ? compactTask(task) : task; }, false);
   register('pool_catalog', 'Sources only by default; billing/adapter/query filters return short model pages. No category required; no CLI discovery.', catalogSchema.shape, input => compactCatalog(pool, input));
@@ -72,7 +73,7 @@ export function poolTools(pool, caller = {}) {
 export async function invokeTool(tools, name, input = {}) {
   const tool = tools.get(name);
   if (!tool) throw new PoolError('UNKNOWN_TOOL', 'Bilinmeyen araç. GET /api veya pool_help {} araç listesini verir.');
-  return tool.callback(z.object(tool.inputSchema).parse(input ?? {}));
+  return tool.callback(z.object(tool.inputSchema).strict().parse(input ?? {}));
 }
 
 export function mcpServer(pool, caller = {}) {
@@ -113,10 +114,18 @@ export function createServer(pool, token, port = pool.config.port, management) {
     if (probe) {
       if (req.method !== 'POST') return fail(405, 'METHOD_NOT_ALLOWED', 'POST only.');
       if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) return fail(415, 'CONTENT_TYPE', 'JSON required.');
-      let raw = '';
-      try { for await (const chunk of req) { raw += chunk; if (Buffer.byteLength(raw) > 1024) { req.resume(); return fail(413, 'REQUEST_TOO_LARGE', 'Too large.'); } } }
-      catch { return fail(400, 'INVALID_JSON', 'Incomplete probe request.'); }
-      let secret = null; try { secret = JSON.parse(raw).secret; } catch { /* invalid */ }
+      if (inflight >= 128) return fail(429, 'BUSY', 'Too many concurrent requests.');
+      inflight++;
+      res.once('close', () => { inflight--; });
+      let size = 0; const parts = [];
+      try {
+        for await (const chunk of req) {
+          size += chunk.length;
+          if (size > 1024) { req.resume(); return fail(413, 'REQUEST_TOO_LARGE', 'Too large.'); }
+          parts.push(chunk);
+        }
+      } catch { return fail(400, 'INVALID_JSON', 'Incomplete probe request.'); }
+      let secret = null; try { secret = JSON.parse(Buffer.concat(parts).toString('utf8')).secret; } catch { /* invalid */ }
       const accepted = pool.serviceAck(probe[1], secret);
       res.writeHead(accepted ? 204 : 404, { 'Cache-Control': 'no-store' });
       return res.end();
@@ -141,13 +150,18 @@ export function createServer(pool, token, port = pool.config.port, management) {
         try { return JSON.parse(text); } catch { throw new PoolError('INVALID_JSON', 'Geçerli JSON gönderin.'); }
       };
       const taskHeader = req.headers['x-pool-task'];
-      const tools = poolTools(pool, { worker: req.headers['x-pool-worker'] === '1', taskToken: typeof taskHeader === 'string' && /^[a-f0-9]{64}$/.test(taskHeader) ? taskHeader : null });
+      const tools = poolTools(pool, { worker: req.headers['x-pool-worker'] === '1', taskToken: typeof taskHeader === 'string' && /^[a-f0-9]{64}$/.test(taskHeader) ? taskHeader : null, cachedOnly: !authorization });
       let status, body;
       try { ({ status, body } = await handleApi({ pool, tools, invoke: invokeTool, method: req.method, url, authorized: Boolean(authorization), readBody, port: actualPort })); }
       catch (error) {
         const envelope = errorEnvelope(error);
         const code = envelope.error.code;
-        status = code === 'INVALID_REQUEST' || code === 'INVALID_JSON' ? 400 : code === 'REQUEST_TOO_LARGE' ? 413 : /NOT_FOUND|UNKNOWN_TOOL/.test(code) ? 404 : code === 'OWNER_ONLY' ? 403 : code === 'INTERNAL_ERROR' ? 500 : 409;
+        status = code === 'INVALID_REQUEST' || code === 'INVALID_JSON' || code === 'INVALID_URL' || code === 'INVALID_WORKSPACE' ? 400
+          : code === 'REQUEST_TOO_LARGE' ? 413
+          : /NOT_FOUND|UNKNOWN_TOOL/.test(code) ? 404
+          : code === 'OWNER_ONLY' || code === 'WORKSPACE_DENIED' || code === 'PAID_ROUTE_DENIED' || code === 'READ_PATH_DENIED' ? 403
+          : code === 'SHUTTING_DOWN' ? 503
+          : code === 'INTERNAL_ERROR' ? 500 : 409;
         body = envelope;
       }
       if (res.writableEnded) return;
@@ -174,15 +188,17 @@ export function createServer(pool, token, port = pool.config.port, management) {
       let body;
       try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return fail(400, 'INVALID_JSON', 'Geçerli JSON gönderin.'); }
       if (manage || browser) {
+        if (!body || typeof body !== 'object' || Array.isArray(body)) return fail(400, 'INVALID_JSON', 'JSON nesnesi gönderin.');
         try {
           const value = browser
             ? await ui.operation(body)
             : body.operation === 'pair_ui'
               ? { status: 'listening', version, endpoint: `http://127.0.0.1:${actualPort}/mcp`, dashboard: ui?.launchURL(actualPort), ...(ui?.needsReauth() ? { reauthNeeded: true } : {}) }
               : await managementOperation(pool, management, body);
+          const serialized = JSON.stringify(value);
           const renewed = browser ? ui.refreshCookie(req, actualPort) : null;
           res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...(renewed ? { 'Set-Cookie': renewed } : {}) });
-          res.end(JSON.stringify(value));
+          res.end(serialized);
         } catch (error) { fail(error instanceof PoolError ? 409 : 400, error instanceof PoolError ? error.code : 'INVALID_CONFIG', error instanceof PoolError ? error.message : 'Ayarlar geçersiz. Girdiğiniz değerleri kontrol edin.'); }
         return;
       }

@@ -19,6 +19,16 @@ jobs:
           python-version: '3.12'
       - run: npm ci --ignore-scripts
       - run: npm run check
+      - name: Compile Windows C# helpers
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          & $csc /nologo /target:winexe /out:"$env:TEMP\ci-dashboard.exe" /reference:System.dll,System.Windows.Forms.dll,System.Management.dll src\dashboard.cs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $csc /nologo /target:winexe /out:"$env:TEMP\ci-folder-picker.exe" /reference:System.dll,System.Windows.Forms.dll src\folder-picker.cs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item -Force "$env:TEMP\ci-dashboard.exe","$env:TEMP\ci-folder-picker.exe"
       - run: npm test
       - run: npm run secrets
       - run: npm audit --audit-level=moderate

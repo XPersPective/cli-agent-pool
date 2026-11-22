@@ -90,7 +90,26 @@ function parseCookies(header = '') {
 
 function pathWithinRoot(candidate, root) {
   const rel = path.relative(root, candidate);
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  return rel === '' || (!rel.startsWith(`..${path.sep}`) && rel !== '..' && !path.isAbsolute(rel));
+}
+
+function isSensitiveSystemPath(targetPath, dataDir) {
+  const sensitive = [];
+  if (dataDir) sensitive.push(dataDir);
+  const home = homedir();
+  for (const sub of ['.ssh', '.aws', '.gnupg', path.join('.config', 'gh')]) {
+    sensitive.push(path.join(home, sub));
+  }
+  for (const raw of sensitive) {
+    try {
+      const real = realpathSync(raw);
+      if (pathWithinRoot(targetPath, real)) return true;
+    } catch {
+      const resolved = path.resolve(raw);
+      if (pathWithinRoot(targetPath, resolved)) return true;
+    }
+  }
+  return false;
 }
 
 function canonicalRoots(workspaceRoots = []) {
@@ -163,11 +182,12 @@ export function listDirectoriesSafe(requestedPath = '', workspaceRoots = []) {
   const entries = [];
   try {
     for (const dirent of readdirSync(real, { withFileTypes: true })) {
-      if (!dirent.isDirectory()) continue;
+      if (!dirent.isDirectory() && !dirent.isSymbolicLink()) continue;
       if (SKIP_DIRS.has(dirent.name) || dirent.name.startsWith('.')) continue;
       const full = path.join(real, dirent.name);
       try {
         const target = realpathSync(full);
+        if (!statSync(target).isDirectory()) continue;
         if (allowedRoots.length && !allowedRoots.some(root => pathWithinRoot(target, root))) continue;
         entries.push({
           name: dirent.name,
@@ -257,11 +277,18 @@ function sortModelsAlpha(list = []) {
 }
 
 async function readJsonBody(req, limitBytes = 262_144) {
+  const ct = String(req.headers['content-type'] || '');
+  if (!/^application\/json(?:\s*;|$)/i.test(ct)) {
+    throw new PoolError('CONTENT_TYPE', 'application/json Content-Type başlığı gerekli.');
+  }
   let size = 0;
   const chunks = [];
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > limitBytes) throw new PoolError('REQUEST_TOO_LARGE', 'İstek boyutu sınırı aşıldı.');
+    if (size > limitBytes) {
+      req.resume();
+      throw new PoolError('REQUEST_TOO_LARGE', 'İstek boyutu sınırı aşıldı.');
+    }
     chunks.push(chunk);
   }
   const text = Buffer.concat(chunks).toString('utf8').trim();
@@ -304,7 +331,19 @@ function createPoolBridge(directory, customFetch = fetch) {
       catch { return { status: 'stopped', version: null, connections: 0, models: 0, active: 0 }; }
     },
     pools: () => requestPool('/api/pools?limit=40', { auth: true }),
-    poolModels: group => requestPool(`/api/pools/${encodeURIComponent(group)}?limit=40`, { auth: true }),
+    poolModels: async group => {
+      const models = [];
+      let offset = 0;
+      let last = null;
+      for (let page = 0; page < 15; page++) {
+        const res = await requestPool(`/api/pools/${encodeURIComponent(group)}?limit=40&offset=${offset}`, { auth: true });
+        last = res;
+        if (Array.isArray(res.models)) models.push(...res.models);
+        if (res.nextOffset == null || !res.models?.length) break;
+        offset = res.nextOffset;
+      }
+      return { ...(last || {}), models };
+    },
     catalogModels: async () => {
       const all = [];
       let offset = 0;
@@ -415,17 +454,55 @@ export function createRemoteServer({
   const initialPairing = createPairingCode('Ana Cihaz');
 
   const allowedHostSet = new Set(allowHosts.map(h => String(h).toLowerCase()));
+  const isLoopbackAddr = req => {
+    const remoteAddr = req.socket?.remoteAddress || '';
+    return remoteAddr === '127.0.0.1' || remoteAddr === '::1' || remoteAddr === '::ffff:127.0.0.1';
+  };
+  const isDirectLoopback = (req, listenPort) => {
+    if (!isLoopbackAddr(req)) return false;
+    if ('x-forwarded-for' in req.headers || 'x-forwarded-host' in req.headers || 'x-forwarded-proto' in req.headers || 'tailscale-user-login' in req.headers) return false;
+    const h = String(req.headers.host || '').toLowerCase();
+    return h === `127.0.0.1:${listenPort}` || h === `localhost:${listenPort}`;
+  };
   const hostAllowed = (reqHost, listenPort) => {
     if (!reqHost) return false;
     const lower = String(reqHost).toLowerCase();
+    if (!/^[a-z0-9._:\[\]-]+$/.test(lower)) return false;
     if (lower === `127.0.0.1:${listenPort}` || lower === `localhost:${listenPort}`) return true;
     if (tailscaleIp && lower === `${tailscaleIp}:${listenPort}`) return true;
     if (host && host !== '0.0.0.0' && host !== 'tailscale' && lower === `${host.toLowerCase()}:${listenPort}`) return true;
     if (host === '0.0.0.0') return true;
     if (allowedHostSet.has(lower) || allowedHostSet.has(lower.split(':')[0])) return true;
-    // Allow Tailscale MagicDNS (*.ts.net) when tailscale mode or detected Tailscale IP is active
-    if ((host === 'tailscale' || tailscaleIp) && /^[a-z0-9-]+\.[a-z0-9-]+\.ts\.net(?::\d+)?$/.test(lower)) return true;
+    // Allow Tailscale MagicDNS (*.ts.net) only in tailscale mode; pin to detected Tailscale HTTPS host when known.
+    if (host === 'tailscale') {
+      if (tailscaleHttpsUrl) {
+        try {
+          const expectedHost = new URL(tailscaleHttpsUrl).host.toLowerCase();
+          if (lower === expectedHost || lower === `${expectedHost.split(':')[0]}:${listenPort}`) return true;
+        } catch { /* ignore */ }
+      }
+      if (/^[a-z0-9-]+\.[a-z0-9-]+\.ts\.net(?::\d+)?$/.test(lower)) return true;
+    }
     return false;
+  };
+  const originAllowed = req => {
+    const sfs = String(req.headers['sec-fetch-site'] || '').toLowerCase();
+    if (sfs === 'cross-site') return false;
+    const origin = req.headers.origin;
+    if (!origin) return true;
+    try {
+      const parsed = new URL(origin);
+      return parsed.host.toLowerCase() === String(req.headers.host || '').toLowerCase();
+    } catch { return false; }
+  };
+  const activeStreams = new Set();
+  const MAX_STREAMS = 24;
+  const securityHtmlHeaders = {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer',
+    'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
   };
 
   const sendJson = (res, status, body) => {
@@ -468,6 +545,7 @@ export function createRemoteServer({
   };
 
   const handler = async (req, res) => {
+    try {
     const actualPort = req.socket?.localPort || port;
     if (!hostAllowed(req.headers.host, actualPort)) {
       return sendJson(res, 403, { error: { code: 'HOST_DENIED', message: 'Bu host adresine erişim izni yok.' } });
@@ -480,9 +558,7 @@ export function createRemoteServer({
 
     // Loopback-only management endpoint (authenticated with management-token)
     if (req.method === 'POST' && pathname === '/r/manage') {
-      const remoteAddr = req.socket?.remoteAddress || '';
-      const isLoopback = remoteAddr === '127.0.0.1' || remoteAddr === '::1' || remoteAddr === '::ffff:127.0.0.1';
-      if (!isLoopback || req.headers.host !== `127.0.0.1:${actualPort}` || 'origin' in req.headers || 'sec-fetch-site' in req.headers) {
+      if (!isDirectLoopback(req, actualPort) || req.headers.host !== `127.0.0.1:${actualPort}` || 'origin' in req.headers || 'sec-fetch-site' in req.headers) {
         return sendJson(res, 403, { error: { code: 'ORIGIN_DENIED', message: 'Yönetim ucu yalnızca yerel makineden çağrılabilir.' } });
       }
       const authHeader = String(req.headers.authorization || '');
@@ -546,7 +622,7 @@ export function createRemoteServer({
       prunePairings();
       const code = url.searchParams.get('pair') || '';
       if (!/^[a-f0-9]{16,128}$/.test(code) || !pendingPairings.has(code)) {
-        res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.writeHead(401, securityHtmlHeaders);
         return res.end(unauthHtml);
       }
       const redeemHtml = `<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CLI Agent Remote — Bağlanıyor</title><style>body{margin:0;min-height:100dvh;display:grid;place-items:center;padding:24px;background:#0b0d12;color:#edf1f7;font:15px/1.6 system-ui,sans-serif}.box{max-width:400px;width:100%;padding:24px;border:1px solid #262d3d;border-radius:16px;background:#141821;text-align:center}h1{margin:0 0 8px;font-size:19px}p{margin:0 0 16px;color:#9aa6bd;font-size:14px}button{min-height:44px;padding:0 18px;border:0;border-radius:10px;background:#0ea5e9;color:#fff;font:600 15px system-ui,sans-serif;cursor:pointer}</style></head><body><div class="box"><h1>Cihaz Eşleştiriliyor…</h1><p id="msg">Güvenli oturum hazırlanıyor, birkaç saniye içinde açılacak.</p><form method="post" action="/r/redeem"><input type="hidden" name="code" value="${code}"><button type="submit">Manuel Devam Et</button></form></div><script>(function(){fetch('/r/redeem',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({code:'${code}'})}).then(function(r){if(r.ok){location.replace('/');}else{document.getElementById('msg').textContent='Eşleştirme kodu geçersiz veya süresi dolmuş. Bilgisayardan yeni QR oluşturun.';}}).catch(function(){document.getElementById('msg').textContent='Sunucuya ulaşılamadı. Aşağıdaki düğmeye dokunarak tekrar deneyin.';});})();</script></body></html>`;
@@ -561,14 +637,23 @@ export function createRemoteServer({
 
     // One-time pairing redemption: POST /r/redeem (same-origin POST commits SameSite=Lax cookie reliably on iOS/Android)
     if (req.method === 'POST' && pathname === '/r/redeem') {
+      if (!originAllowed(req)) {
+        return sendJson(res, 403, { error: { code: 'ORIGIN_DENIED', message: 'Çapraz kaynak eşleştirme isteği reddedildi.' } });
+      }
       prunePairings();
       let code = '';
       const ct = String(req.headers['content-type'] || '').toLowerCase();
-      let raw = '';
+      const parts = [];
+      let totalBytes = 0;
       for await (const chunk of req) {
-        raw += chunk.toString('utf8');
-        if (raw.length > 4096) return sendJson(res, 413, { error: { code: 'REQUEST_TOO_LARGE', message: 'İstek çok büyük.' } });
+        totalBytes += chunk.length;
+        if (totalBytes > 4096) {
+          req.resume();
+          return sendJson(res, 413, { error: { code: 'REQUEST_TOO_LARGE', message: 'İstek çok büyük.' } });
+        }
+        parts.push(chunk);
       }
+      const raw = Buffer.concat(parts).toString('utf8');
       if (ct.includes('application/json')) {
         try { code = String(JSON.parse(raw).code || ''); } catch { code = ''; }
       } else {
@@ -577,14 +662,14 @@ export function createRemoteServer({
       const pending = pendingPairings.get(code);
       if (!pending) {
         if (ct.includes('application/json')) return sendJson(res, 401, { error: { code: 'INVALID_PAIR_CODE', message: 'Eşleştirme kodu geçersiz veya daha önce kullanılmış.' } });
-        res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.writeHead(401, securityHtmlHeaders);
         return res.end(unauthHtml);
       }
       pendingPairings.delete(code);
       const ua = String(req.headers['user-agent'] || '');
       const deviceHint = /android/i.test(ua) ? 'Android Telefon' : /iphone|ipad/i.test(ua) ? 'iPhone / iPad' : pending.label || 'Tarayıcı';
       const paired = remoteStore.pairDevice(deviceHint);
-      const isHttps = req.headers['x-forwarded-proto'] === 'https' || Boolean(req.socket?.encrypted);
+      const isHttps = (isLoopbackAddr(req) && req.headers['x-forwarded-proto'] === 'https') || Boolean(req.socket?.encrypted);
       // 1 yıl kalıcı oturum çerezi; QR kodu yalnız ilk eşleştirme için 5 dk geçerlidir, eşleşen cihaz ağdan düşmez.
       const cookie = `pool_remote=${paired.cookieValue}; HttpOnly; SameSite=Lax; Path=/; Max-Age=31536000${isHttps ? '; Secure' : ''}`;
       if (ct.includes('application/json')) {
@@ -606,8 +691,13 @@ export function createRemoteServer({
       if (pathname.startsWith('/r/')) {
         return sendJson(res, 401, { error: { code: 'UNAUTHORIZED', message: 'Cihaz oturumu geçersiz. QR kodla yeniden eşleştirin.' } });
       }
-      res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.writeHead(401, securityHtmlHeaders);
       return res.end(unauthHtml);
+    }
+
+    // Enforce same-origin CSRF protection on all state-changing authenticated /r/* routes
+    if (pathname.startsWith('/r/') && !['GET', 'HEAD'].includes(req.method) && !originAllowed(req)) {
+      return sendJson(res, 403, { error: { code: 'ORIGIN_DENIED', message: 'Çapraz kaynak isteğine izin verilmiyor.' } });
     }
 
     // Authenticated static assets
@@ -629,6 +719,9 @@ export function createRemoteServer({
       const taskId = url.searchParams.get('taskId') || '';
       const chatId = url.searchParams.get('chatId') || '';
       if (!taskId) return sendJson(res, 400, { error: { code: 'INVALID_REQUEST', message: 'taskId gerekli.' } });
+      if (activeStreams.size >= MAX_STREAMS) {
+        return sendJson(res, 429, { error: { code: 'BUSY', message: 'Çok fazla canlı akış açık.' } });
+      }
       req.setTimeout?.(0);
       res.setTimeout?.(0);
       res.writeHead(200, {
@@ -638,19 +731,25 @@ export function createRemoteServer({
         'X-Accel-Buffering': 'no',
       });
       res.write('retry: 2000\n\n');
-      let closed = false;
-      req.once('close', () => { closed = true; });
+      let streamClosed = false;
+      const closeStream = () => { streamClosed = true; activeStreams.delete(res); };
+      activeStreams.add(res);
+      req.once('close', closeStream);
+      res.once('close', closeStream);
+      res.on('error', closeStream);
       let lastStamp = '';
       let lastWriteAt = Date.now();
       const push = (event, data) => {
-        if (closed || res.writableEnded) return;
-        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-        lastWriteAt = Date.now();
+        if (streamClosed || res.writableEnded) return;
+        try {
+          res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+          lastWriteAt = Date.now();
+        } catch { closeStream(); }
       };
       const loop = async () => {
         let consecutiveErrors = 0;
         let tick = 0;
-        while (!closed) {
+        while (!streamClosed && !closed) {
           tick++;
           try {
             const task = await pool.task(taskId, false);
@@ -662,10 +761,9 @@ export function createRemoteServer({
               lastStamp = stamp;
               if (chatId) syncTaskIntoChat(chatId, taskId, task);
               push('update', { task });
-            } else if (Date.now() - lastWriteAt >= 15_000 && !closed && !res.writableEnded) {
+            } else if (Date.now() - lastWriteAt >= 15_000 && !streamClosed && !res.writableEnded) {
               // Keep Tailscale HTTPS proxy & mobile carrier NAT alive during long silent tool steps.
-              res.write(': keepalive\n\n');
-              lastWriteAt = Date.now();
+              try { res.write(': keepalive\n\n'); lastWriteAt = Date.now(); } catch { closeStream(); break; }
             }
             if (TERMINAL_STATES.has(task.state)) {
               push('done', { task });
@@ -673,8 +771,9 @@ export function createRemoteServer({
             }
           } catch (err) {
             consecutiveErrors++;
-            if (consecutiveErrors >= 6 || (err instanceof PoolError && err.code === 'NOT_FOUND')) {
-              push('error', { message: err instanceof PoolError ? err.message : 'Görev durumu okunamadı.' });
+            const errCode = err instanceof PoolError ? err.code : 'STREAM_ERROR';
+            if (consecutiveErrors >= 6 || errCode === 'NOT_FOUND' || errCode === 'UNAUTHORIZED') {
+              push('stream_error', { code: errCode, message: err instanceof PoolError ? err.message : 'Görev durumu okunamadı.' });
               break;
             }
             await new Promise(resolve => setTimeout(resolve, 1000));
@@ -683,6 +782,7 @@ export function createRemoteServer({
           const delayMs = tick < 60 ? 250 : 500;
           await new Promise(resolve => setTimeout(resolve, delayMs));
         }
+        closeStream();
         if (!res.writableEnded) res.end();
       };
       void loop();
@@ -749,11 +849,14 @@ export function createRemoteServer({
             const perPool = await Promise.allSettled(pools.map(p => pool.poolModels(p.id)));
             pools = pools.map((p, idx) => ({
               ...p,
+              label: p.label || p.name || p.id,
               models: sortModelsAlpha(
                 (perPool[idx]?.status === 'fulfilled' ? (perPool[idx].value?.models || []) : [])
                   .map(m => enrichModel(m, routeWindowsByRoute, routeMetaByRoute)),
               ),
             }));
+          } else {
+            pools = pools.map(p => ({ ...p, label: p.label || p.name || p.id }));
           }
           // Enrich active tasks (queued/starting/running/cancelling) with live progress events, queueReason & blockedBy
           const activeTaskIds = tasks.filter(t => !TERMINAL_STATES.has(t.state)).slice(0, 10);
@@ -798,7 +901,7 @@ export function createRemoteServer({
           favoriteFolders: remoteStore.state.favoriteFolders,
           recentFolders: remoteStore.state.recentFolders,
           workspaceRoots: cfg.workspaceRoots || [],
-          canPickNativeFolder: process.platform === 'win32' && (req.socket?.remoteAddress === '127.0.0.1' || req.socket?.remoteAddress === '::1' || req.socket?.remoteAddress === '::ffff:127.0.0.1'),
+          canPickNativeFolder: process.platform === 'win32' && isDirectLoopback(req, actualPort),
           devices: remoteStore.listDevices(),
           tailscaleIp,
           tailscaleHttpsUrl,
@@ -889,11 +992,9 @@ export function createRemoteServer({
         });
       }
 
-      // POST /r/folders/pick — native Windows folder dialog (loopback desktop only)
+      // POST /r/folders/pick — native Windows folder dialog (direct loopback desktop only; never via Tailscale Serve proxy)
       if (req.method === 'POST' && pathname === '/r/folders/pick') {
-        const remoteAddr = req.socket?.remoteAddress || '';
-        const isLoopback = remoteAddr === '127.0.0.1' || remoteAddr === '::1' || remoteAddr === '::ffff:127.0.0.1';
-        if (!isLoopback) {
+        if (!isDirectLoopback(req, actualPort)) {
           throw new PoolError('PICKER_UNAVAILABLE', 'Yerel Windows klasör seçicisi yalnızca bilgisayar ekranında açılabilir; telefonda web klasör gezginini kullanın.');
         }
         const body = await readJsonBody(req);
@@ -908,17 +1009,29 @@ export function createRemoteServer({
         const rel = url.searchParams.get('file') || '';
         if (!ws || !rel) throw new PoolError('INVALID_REQUEST', 'workspace ve file parametreleri gerekli.');
         const cfg = pool.getConfig();
-        const checkedWs = listDirectoriesSafe(ws, cfg.workspaceRoots || []);
+        const chatWorkspaces = remoteStore.state.chats.map(c => c.workspace).filter(Boolean);
+        const allowedRoots = [...new Set([...(cfg.workspaceRoots || []), ...remoteStore.state.sharedFolders, ...chatWorkspaces])];
+        if (!allowedRoots.length) {
+          throw new PoolError('WORKSPACE_DENIED', 'Dosya önizleme için önce bir proje klasörü paylaşın veya sohbet çalışma klasörü seçin.');
+        }
+        const checkedWs = listDirectoriesSafe(ws, allowedRoots);
+        if (isSensitiveSystemPath(checkedWs.current, directory)) {
+          throw new PoolError('WORKSPACE_DENIED', 'Hassas sistem veya uygulama veri klasörleri okunamaz.');
+        }
         const candidate = path.isAbsolute(rel) ? rel : path.resolve(checkedWs.current, rel);
         let realFile;
         try { realFile = realpathSync(candidate); } catch { throw new PoolError('NOT_FOUND', 'Dosya bulunamadı.'); }
-        if (!pathWithinRoot(realFile, checkedWs.current)) {
+        if (!pathWithinRoot(realFile, checkedWs.current) || isSensitiveSystemPath(realFile, directory)) {
           throw new PoolError('WORKSPACE_DENIED', 'Dosya seçili proje klasörünün dışında.');
         }
         const st = statSync(realFile);
         if (!st.isFile()) throw new PoolError('INVALID_REQUEST', 'Seçilen yol bir dosya değil.');
         if (st.size > 524_288) throw new PoolError('REQUEST_TOO_LARGE', 'Dosya önizleme için çok büyük (en fazla 512 KB).');
-        const content = readFileSync(realFile, 'utf8');
+        const buf = readFileSync(realFile);
+        if (buf.subarray(0, Math.min(buf.length, 8192)).includes(0)) {
+          throw new PoolError('INVALID_REQUEST', 'İkili (binary) dosyalar metin önizleyicide açılamaz.');
+        }
+        const content = buf.toString('utf8');
         return sendJson(res, 200, { name: path.basename(realFile), path: realFile, size: st.size, content });
       }
 
@@ -1006,17 +1119,19 @@ export function createRemoteServer({
         if (req.method === 'POST' && sub === 'send') {
           const chat = remoteStore.getChat(chatId);
           if (!chat) throw new PoolError('NOT_FOUND', 'Sohbet bulunamadı.');
-          const body = await readJsonBody(req, 1_500_000);
+          const body = await readJsonBody(req, 240_000);
           const rawPrompt = String(body.prompt || '').trim();
           const rawAttachments = Array.isArray(body.attachments) ? body.attachments.slice(0, 5) : [];
           const cleanAttachments = [];
+          let totalAttachmentChars = 0;
           for (const att of rawAttachments) {
             const name = String(att?.name || 'dokuman.txt').replace(/[\u0000-\u001f\u007f\\/]/g, '_').trim().slice(0, 120) || 'dokuman.txt';
             const content = String(att?.content || '');
             if (!content.trim()) continue;
-            if (Buffer.byteLength(content, 'utf8') > 220_000) {
-              throw new PoolError('REQUEST_TOO_LARGE', `"${name}" dosyası çok büyük (dosya başına en fazla 200 KB).`);
+            if (content.length > 80_000 || totalAttachmentChars + content.length > 85_000) {
+              throw new PoolError('REQUEST_TOO_LARGE', `"${name}" dahil toplam doküman boyutu 85.000 karakter sınırını aşıyor.`);
             }
+            totalAttachmentChars += content.length;
             cleanAttachments.push({ name, size: Buffer.byteLength(content, 'utf8'), content });
           }
           if (!rawPrompt && !cleanAttachments.length) {
@@ -1030,15 +1145,16 @@ export function createRemoteServer({
 
           if (requestedWorkspace) {
             const checkedDir = listDirectoriesSafe(requestedWorkspace, cfg.workspaceRoots || []);
+            if (isSensitiveSystemPath(checkedDir.current, directory)) {
+              throw new PoolError('WORKSPACE_DENIED', 'Hassas sistem veya uygulama veri klasöründe görev çalıştırılamaz.');
+            }
             canonicalWorkspace = cfg.workspaceRoots?.length ? allowedWorkspace(checkedDir.current, cfg.workspaceRoots) : checkedDir.current;
             hasProject = true;
-            remoteStore.updateChat(chatId, { workspace: canonicalWorkspace });
           } else {
             // Projesiz (Sohbet) modu: izole boş sohbet sandbox klasörü kullan; hiçbir proje klasörüne veya kilidine temas etme.
             const sandbox = path.join(directory, 'remote-chat-sandbox');
             mkdirSync(sandbox, { recursive: true, mode: 0o700 });
             canonicalWorkspace = realpathSync(sandbox);
-            if (chat.workspace) remoteStore.updateChat(chatId, { workspace: '' });
           }
 
           const kind = hasProject
@@ -1059,26 +1175,13 @@ export function createRemoteServer({
           const combinedUserPrompt = [rawPrompt, docBlocks].filter(Boolean).join('\n\n');
 
           // Native CLI session continuity:
-          // If the user continues chatting in the same chat with the same route+model+workspace,
-          // resume the existing native CLI session directly instead of opening a fresh session.
-          // If the user switches model/route/workspace (or no prior session exists), start a new
-          // persistent CLI session and pass the compact conversation summary as context handoff.
+          // chat.nativeSession is the sole source of truth so clearChatNativeSession()
+          // actually prevents resurrecting broken/expired CLI sessions.
           const chatWsKey = hasProject ? canonicalWorkspace : '';
           const reqRouteId = body.routeId ? String(body.routeId) : '';
           const reqModelId = body.modelId ? String(body.modelId) : '';
           const reqGroup = body.group ? String(body.group) : '';
-          const lastAssistantWithSession = [...(chat.messages || [])].reverse().find(m => m.role === 'assistant' && m.sessionId);
-          const candidateSession = chat.nativeSession?.sessionId
-            ? chat.nativeSession
-            : (lastAssistantWithSession
-                ? {
-                    sessionId: lastAssistantWithSession.sessionId,
-                    routeId: lastAssistantWithSession.routeId || '',
-                    modelId: lastAssistantWithSession.modelId || '',
-                    group: lastAssistantWithSession.group || '',
-                    workspace: lastAssistantWithSession.workspace || '',
-                  }
-                : null);
+          const candidateSession = chat.nativeSession?.sessionId ? chat.nativeSession : null;
 
           let resumeSession = null;
           if (includeContext && candidateSession?.sessionId && (candidateSession.workspace || '') === chatWsKey) {
@@ -1099,6 +1202,9 @@ export function createRemoteServer({
                   ? builtPrompt
                   : `[Genel sohbet modu: Şu an bir proje klasörüne veya git deposuna bağlı değilsin. Dosya/repo arama veya repo uyarısı yapma; doğrudan kullanıcının mesajına doğal yanıt ver.]\n\n${builtPrompt}`;
               })();
+          if (finalPrompt.length > 98_000) {
+            throw new PoolError('REQUEST_TOO_LARGE', 'Toplam mesaj ve ek boyutu 98.000 karakter sınırını aşıyor.');
+          }
 
           // Sessions run until completion or explicit cancellation (0 = no timeout).
           const timeoutSeconds = 0;
@@ -1121,6 +1227,8 @@ export function createRemoteServer({
           };
 
           const submitted = await pool.submit(taskReq);
+          if (hasProject) remoteStore.updateChat(chatId, { workspace: canonicalWorkspace });
+          else if (chat.workspace) remoteStore.updateChat(chatId, { workspace: '' });
           // Resolve toolLabel & subscription/email metadata from cache (zero extra HTTP roundtrip on hot path)
           let routeMeta = routeMetaCache.get(submitted.routeId) || { adapter: '', toolLabel: '', email: '', account: '', billing: '' };
           if (!routeMeta.toolLabel) {
@@ -1234,7 +1342,9 @@ export function createRemoteServer({
       }
       const routeActionMatch = /^\/r\/routes\/([^/]+)\/(refresh-auth|login)$/.exec(pathname);
       if (routeActionMatch && req.method === 'POST') {
-        const routeId = decodeURIComponent(routeActionMatch[1]);
+        let routeId;
+        try { routeId = decodeURIComponent(routeActionMatch[1]); }
+        catch { throw new PoolError('INVALID_REQUEST', 'Geçersiz bağlantı kimliği.'); }
         const action = routeActionMatch[2];
         if (action === 'refresh-auth') {
           const snapshot = typeof pool.refreshRouteAuth === 'function'
@@ -1270,7 +1380,7 @@ export function createRemoteServer({
           pairUrl = `${tailscaleHttpsUrl.replace(/\/$/, '')}/?pair=${created.code}`;
         } else {
           const preferredHost = useTs && tailscaleIp ? `${tailscaleIp}:${actualPort}` : req.headers.host;
-          const proto = req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+          const proto = (isLoopbackAddr(req) && req.headers['x-forwarded-proto'] === 'https') || Boolean(req.socket?.encrypted) ? 'https' : 'http';
           pairUrl = `${proto}://${preferredHost}/?pair=${created.code}`;
         }
         return sendJson(res, 200, {
@@ -1288,6 +1398,16 @@ export function createRemoteServer({
       if (req.method === 'POST' && pathname === '/r/devices/revoke') {
         const body = await readJsonBody(req);
         const removed = remoteStore.revokeDevice(body.deviceId);
+        const selfRevoked = removed && body.deviceId === device.id;
+        if (selfRevoked && !res.writableEnded) {
+          res.writeHead(200, {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Cache-Control': 'no-store',
+            'X-Content-Type-Options': 'nosniff',
+            'Set-Cookie': 'pool_remote=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0',
+          });
+          return res.end(JSON.stringify({ revoked: removed, selfRevoked: true, devices: remoteStore.listDevices() }));
+        }
         return sendJson(res, 200, { revoked: removed, devices: remoteStore.listDevices() });
       }
 
@@ -1295,11 +1415,15 @@ export function createRemoteServer({
     } catch (error) {
       const code = error instanceof PoolError ? error.code : 'INTERNAL_ERROR';
       const status = code === 'INVALID_REQUEST' || code === 'INVALID_JSON' || code === 'INVALID_WORKSPACE' ? 400
-        : code === 'WORKSPACE_DENIED' || code === 'HOST_DENIED' ? 403
+        : code === 'WORKSPACE_DENIED' || code === 'HOST_DENIED' || code === 'ORIGIN_DENIED' ? 403
         : code === 'NOT_FOUND' ? 404
         : code === 'REQUEST_TOO_LARGE' ? 413
+        : code === 'CONTENT_TYPE' ? 415
         : code === 'INTERNAL_ERROR' ? 500 : 409;
       return sendJson(res, status, { error: { code, message: error instanceof PoolError ? error.message : 'İşlem tamamlanamadı.' } });
+    }
+    } catch (outerErr) {
+      return sendJson(res, 500, { error: { code: 'INTERNAL_ERROR', message: 'İşlem tamamlanamadı.' } });
     }
   };
 
@@ -1313,8 +1437,14 @@ export function createRemoteServer({
 
   const bindHostServer = async bindHost => {
     if (servers.has(bindHost) || closed) return;
-    const srv = http.createServer((req, res) => { void handler(req, res); });
+    const srv = http.createServer((req, res) => {
+      void handler(req, res).catch(() => {
+        if (!res.writableEnded) sendJson(res, 500, { error: { code: 'INTERNAL_ERROR', message: 'İşlem tamamlanamadı.' } });
+      });
+    });
     srv.keepAliveTimeout = 65_000;
+    srv.headersTimeout = 15_000;
+    srv.maxHeadersCount = 48;
     await new Promise((resolve, reject) => {
       srv.once('error', reject);
       srv.listen(activePort, bindHost, () => {

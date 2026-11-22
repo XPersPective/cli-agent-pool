@@ -16,7 +16,7 @@ export function agyProjectMatches(workspace, home = homedir(), resolveUri = file
   for (const file of files) {
     if (!file.endsWith('.json')) continue;
     try {
-      const project = JSON.parse(readFileSync(path.join(directory, file), 'utf8'));
+      const project = JSON.parse(readFileSync(path.join(directory, file), 'utf8').replace(/^\uFEFF/, ''));
       if (typeof project.id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(project.id)) continue;
       const resources = project.projectResources?.resources;
       if (!Array.isArray(resources)) continue;

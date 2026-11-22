@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, lstatSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, lstatSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { allowedWorkspace, PoolError, nonMeteredBillings, dataDirectory, configView, saveConfig } from './config.js';
+import { allowedWorkspace, PoolError, nonMeteredBillings, dataDirectory, redact } from './config.js';
+import { loadSecret } from './secrets-store.js';
 import { checkAuth, execute, quota, loginCommands, routeAccountEmail } from './adapters.js';
 import { modelFiltered, quotaApplies } from '../web/pool-state.js';
 import { categoryPage } from './catalog.js';
@@ -31,7 +32,7 @@ export const taskSchema = z.object({
   clientLabel: z.string().trim().min(1).max(100).refine(value=>!/[\u0000-\u001f]/.test(value)).optional(),
   minRemainingPercent: z.number().min(0).max(100).optional(),
   timeoutSeconds: z.number().int().min(0).max(Math.floor(2147483647 / 1000)).default(0),
-  sessionId: z.string().trim().min(1).max(200).refine(value => !/[\u0000-\u001f]/.test(value)).optional(),
+  sessionId: z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/, 'sessionId alfanümerik başlamalı ve geçerli karakterler içermeli.').optional(),
   persistSession: z.boolean().optional(),
   idempotencyKey: z.string().min(8).max(128).regex(/^[a-zA-Z0-9_.:-]+$/),
   // Director profile (owner surface only) and its declared capabilities.
@@ -67,7 +68,7 @@ export class Pool {
     this.pumping = false;
     this.historyTimer=setInterval(()=>{try{this.store.pruneHistory();}catch{/* Retain evidence and retry at the next interval. */}},3600_000);
     this.historyTimer.unref();
-    this.reconciled = this.reconcileInterrupted(dependencies.settleMs ?? 60_000).then(() => { this.reconciliationComplete = true; void this.watchdog.tick().catch(() => {}); }).catch(() => {});
+    this.reconciled = this.reconcileInterrupted().catch(() => {}).finally(() => { this.reconciliationComplete = true; void this.watchdog.tick().catch(() => {}); });
   }
   // Director context configures MCP; every native task also receives its own run token.
   taskContext(request) {
@@ -108,7 +109,7 @@ export class Pool {
       account: route.profile || 'default',
       enabled: route.enabled && model.enabled,
       billing,
-      autoSelect: route.autoSelect ?? (billing !== 'paid_api'),
+      autoSelect: billing === 'paid_api' ? (route.billing === 'paid_api' && route.autoSelect === true) : (route.autoSelect ?? true),
       priority: route.priority,
       protocol: route.api?.protocol || null,
       executionModes: supportsExecution(route) && taskKinds(route, model).includes('write') ? ['execute'] : [],
@@ -132,12 +133,14 @@ export class Pool {
     if (request.group && !this.config.categories.some(category => category.id === request.group))
       throw new PoolError('CATEGORY_NOT_FOUND', 'Kategori bulunamadı. pool_list_pools ile kategorileri sorgulayın.');
     const activeByRoute = new Map();
-    for (const handle of this.active.values()) {
+    for (const [taskId, handle] of this.active) {
+      if (options.excludeTaskId && taskId === options.excludeTaskId) continue;
       if (handle?.routeId) activeByRoute.set(handle.routeId, (activeByRoute.get(handle.routeId) || 0) + 1);
     }
     const effectiveRemaining = model => {
       const snap = this.store.quota(model.routeId);
-      if (!snap || Date.now() - Date.parse(snap.observedAt) >= 60_000) return null;
+      const observed = snap ? Date.parse(snap.observedAt) : NaN;
+      if (!snap || snap.stale || snap.networkError || !Number.isFinite(observed) || Date.now() - observed >= 60_000) return null;
       const wins = (snap.windows || []).filter(w => quotaApplies(w, model.id) && Number.isFinite(w.remainingPercent));
       if (!wins.length) return null;
       return Math.max(0, Math.min(...wins.map(w => w.remainingPercent)) - (activeByRoute.get(model.routeId) || 0) * 3);
@@ -150,22 +153,25 @@ export class Pool {
       const reason = rejectionReason(model, route, snapshot, request, activeByRoute.get(model.routeId) || 0);
       if (reason) rejected.set(reason, (rejected.get(reason) || 0) + 1);
       return !reason; })
+      .map(model => {
+        const rem = effectiveRemaining(model);
+        return {
+          model,
+          tier: nonMeteredBillings.has(model.billing) ? 0 : 1,
+          remBucket: rem === null ? -1 : Math.floor(rem),
+          load: activeByRoute.get(model.routeId) || 0,
+          order: Number.isInteger(model.order) ? model.order : 999999,
+        };
+      })
       .sort((a, b) => {
-        const tierA = nonMeteredBillings.has(a.billing) ? 0 : 1;
-        const tierB = nonMeteredBillings.has(b.billing) ? 0 : 1;
-        if (tierA !== tierB) return tierA - tierB;
-        if (a.priority !== b.priority) return a.priority - b.priority;
-        const remA = effectiveRemaining(a);
-        const remB = effectiveRemaining(b);
-        if (remA !== null && remB !== null && Math.abs(remA - remB) >= 1) return remB - remA;
-        const loadA = activeByRoute.get(a.routeId) || 0;
-        const loadB = activeByRoute.get(b.routeId) || 0;
-        if (loadA !== loadB) return loadA - loadB;
-        const orderA = Number.isInteger(a.order) ? a.order : 999999;
-        const orderB = Number.isInteger(b.order) ? b.order : 999999;
-        if (orderA !== orderB) return orderA - orderB;
-        return a.routeId.localeCompare(b.routeId) || a.id.localeCompare(b.id);
-      });
+        if (a.tier !== b.tier) return a.tier - b.tier;
+        if (a.model.priority !== b.model.priority) return a.model.priority - b.model.priority;
+        if (a.remBucket !== b.remBucket) return b.remBucket - a.remBucket;
+        if (a.load !== b.load) return a.load - b.load;
+        if (a.order !== b.order) return a.order - b.order;
+        return a.model.routeId.localeCompare(b.model.routeId) || a.model.id.localeCompare(b.model.id);
+      })
+      .map(entry => entry.model);
     if (!matches.length) throw new PoolError('NO_ROUTE', noRouteMessage(request, rejected));
     return { selected: matches[0], alternatives: matches.slice(1), reason: 'Önce abonelik, token planı ve ücretsiz modeller tercih edilir; ücretli API yalnızca açıkça seçildiğinde veya otomatik seçime izin verildiğinde kullanılır.' };
   }
@@ -194,7 +200,7 @@ export class Pool {
       if (snapshot.networkError && !snapshot.windows?.length && cached?.windows?.length) {
         snapshot = {
           ...cached,
-          observedAt: snapshot.observedAt || new Date().toISOString(),
+          observedAt: cached.observedAt,
           stale: true,
           networkError: true,
           note: snapshot.note || cached.note,
@@ -346,9 +352,19 @@ export class Pool {
     queueMicrotask(() => {
       this.pumping = false;
       if (this.closed) return;
-      try {
-        for (const task of this.store.queued()) {
-          const request = JSON.parse(task.request);
+      let queued;
+      try { queued = this.store.queued(); } catch {
+        this.closed = true; // A storage fault stops admission; never claim an unpersisted success.
+        for (const handle of this.active.values()) handle.run?.cancel('STORAGE_FAILED');
+        return;
+      }
+      for (const task of queued) {
+        let request;
+        try { request = JSON.parse(task.request); } catch {
+          try { this.store.update(task.id, 'failed', null, 'INVALID_REQUEST'); } catch { /* ignore */ }
+          continue;
+        }
+        try {
           const route = this.config.routes.find(r => r.id === request.routeId);
           if (!route || !route.enabled) { director.failQueuedPreflight(this, task.id, 'ROUTE_DISABLED'); this.store.update(task.id, 'failed', null, 'ROUTE_DISABLED'); void this.watchdog.tick().catch(() => {}); continue; }
           if (request.startDeadlineSeconds && this.watchdog.now() - Date.parse(task.created) >= request.startDeadlineSeconds * 1000) { this.cancel(task.id, 'START_TIMEOUT'); continue; }
@@ -357,10 +373,11 @@ export class Pool {
           const handle = { routeId: route.id, cancelled: false, run: null };
           this.active.set(task.id, handle);
           handle.done = this.run(task, request, route, handle);
+        } catch {
+          this.closed = true; // A storage fault stops admission; never claim an unpersisted success.
+          for (const handle of this.active.values()) handle.run?.cancel('STORAGE_FAILED');
+          break;
         }
-      } catch {
-        this.closed = true; // A storage fault stops admission; never claim an unpersisted success.
-        for (const handle of this.active.values()) handle.run?.cancel('STORAGE_FAILED');
       }
     });
   }
@@ -383,7 +400,7 @@ export class Pool {
   async run(task, request, route, handle) {
     try {
       request.workspace = allowedWorkspace(request.workspace, request.probe?[path.join(this.directory,'probes')]:undefined);
-      const model = this.select(request).selected;
+      const model = this.select(request, { excludeTaskId: task.id }).selected;
       await this.verifyRouteAuth(route, request.workspace, model);
       if (handle.cancelled || this.closed) { director.failQueuedPreflight(this, task.id, handle.cancelReason || 'CANCELLED'); this.store.update(task.id, 'cancelled', null, handle.cancelReason || 'CANCELLED'); return; }
       const context = this.taskContext(request) || { directory: this.directory };
@@ -392,9 +409,12 @@ export class Pool {
       context.onActivity = () => { handle.activity = this.watchdog.now(); };
       await director.beforeRun(this, task.id, request, context, handle);
       const redactToken = handle.redact;
-      const secrets = Object.values(context.secretEnv);
-      handle.redact = text => typeof text === 'string' ? secrets.reduce((value, secret) => value.split(secret).join('[SECRET]'), redactToken(text)) : text;
-      if (handle.cancelled || this.closed) throw new PoolError('CANCELLED', 'Görev başlamadan iptal edildi.');
+      const secrets = Object.values(context.secretEnv).filter(secret => typeof secret === 'string' && secret.length >= 6);
+      if (route.api?.secretRef) {
+        try { const apiKey = loadSecret(this.directory, route.api.secretRef); if (apiKey && apiKey.length >= 6) secrets.push(apiKey); } catch { /* validated later by adapter */ }
+      }
+      handle.redact = text => typeof text === 'string' ? redact(secrets.reduce((value, secret) => value.split(secret).join('[SECRET]'), redactToken(text))) : text;
+      if (handle.cancelled || this.closed) throw new PoolError(handle.cancelReason || 'CANCELLED', 'Görev başlamadan iptal edildi.');
       this.store.update(task.id, 'running');
       handle.startedAt = this.watchdog.now();
       handle.activity = handle.startedAt;
@@ -403,7 +423,7 @@ export class Pool {
         handle.activity = this.watchdog.now();
         if (typeof detail === 'string' && detail.startsWith('session:')) {
           const sid = detail.slice(8).trim();
-          if (sid && sid.length <= 200 && !/[\u0000-\u001f]/.test(sid)) this.store.event(task.id, 'session', sid);
+          if (sid && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(sid)) this.store.event(task.id, 'session', handle.redact ? handle.redact(sid) : sid);
           return;
         }
         if (events++ < 400) this.store.event(task.id, 'progress', handle.redact ? handle.redact(detail) : detail);
@@ -459,7 +479,7 @@ export class Pool {
           observedAt: new Date().toISOString(), note: 'Son gerçek CLI çağrısı başarılı; Qwen kalan kota yüzdesi bildirmiyor.',
         });
       }
-      await handle.beforeSettle?.(outcome);
+      await handle.beforeSettle?.({ ...outcome, cancelled: handle.cancelled });
       if (handle.cancelled) this.store.update(task.id, 'cancelled', null, handle.cancelReason || 'CANCELLED');
       else if (outcome.error) this.store.update(task.id, outcome.error === 'TIMEOUT' ? 'timed_out' : 'failed', outcome.result || null, outcome.error);
       else if (request.mode === 'execute') {
@@ -479,8 +499,9 @@ export class Pool {
             note: error.message || 'CLI oturumu gerekli.',
           });
         }
-        await director.settlePreflight(this, task.id, { error: error instanceof PoolError ? error.code : 'INTERNAL_ERROR', message: error instanceof PoolError ? error.message : null }).catch(() => {});
-        this.store.update(task.id, handle.cancelled ? 'cancelled' : 'failed', null, error instanceof PoolError ? error.code : 'INTERNAL_ERROR');
+        await director.settlePreflight(this, task.id, { cancelled: handle.cancelled, error: error instanceof PoolError ? error.code : 'INTERNAL_ERROR', message: error instanceof PoolError ? error.message : null }).catch(() => {});
+        const finalCode = handle.cancelled ? (handle.cancelReason || 'CANCELLED') : (error instanceof PoolError ? error.code : 'INTERNAL_ERROR');
+        this.store.update(task.id, handle.cancelled ? 'cancelled' : 'failed', null, finalCode);
         if (error instanceof PoolError && error.message) this.store.event(task.id, 'error_detail', (handle.redact ? handle.redact(error.message) : error.message).slice(0, 600));
       }
       catch { this.closed = true; handle.run?.cancel('STORAGE_FAILED'); }
@@ -488,17 +509,23 @@ export class Pool {
       handle.release?.();
       this.active.delete(task.id);
       this.secrets.delete(task.id);
+      if (request.probe && request.workspace) { try { rmSync(request.workspace, { recursive: true, force: true }); } catch { /* best-effort */ } }
       void this.watchdog.tick().catch(() => {});
       this.schedule();
     }
   }
   routeFor(request) { return this.config.routes.find(route => route.id === request.routeId); }
   async reconcileInterrupted() {
-    for (const task of this.store.interrupted()) {
+    const startup = this.store.startupInterrupted || [];
+    this.store.startupInterrupted = [];
+    const seen = new Set();
+    for (const task of [...startup, ...this.store.interrupted()]) {
+      if (seen.has(task.id)) continue;
+      seen.add(task.id);
       try {
         const request = JSON.parse(task.request);
         director.cleanupInterrupted(request, task.id);
-        this.store.update(task.id, 'failed', task.result, 'INTERRUPTED');
+        if (task.state === 'needs_review') this.store.update(task.id, 'failed', task.result, 'INTERRUPTED');
       } catch { /* ignore cleanup error */ }
     }
     this.schedule();

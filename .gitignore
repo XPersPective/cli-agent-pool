@@ -15,4 +15,7 @@ artifacts/
 *.pfx
 auth.json
 credentials.json
+.freebuff/
+__pycache__/
+*.pyc
 .DS_Store

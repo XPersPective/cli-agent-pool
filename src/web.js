@@ -4,12 +4,12 @@ import { readFileSync, realpathSync, statSync, existsSync, mkdirSync, writeFileS
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { configView, saveConfig, PoolError, dataDirectory } from './config.js';
+import { configView, saveConfig, configSchema, PoolError, dataDirectory } from './config.js';
 import { discover, routeCatalog, importDiscoveredRoutes, loginCommands, mergeCatalogModels, migrateFilterAliases, routeCommand, accountLoggedIn, routeAccountEmail, quota } from './adapters.js';
 import { nextAccountRoute, isolatedLoginRoute, prepareWslProfile, prepareNativeAgyProfile } from './accounts.js';
 import { accountProfileAdapters, clearProfileAuth, clearProfileDirectory, wslPrefix, wslLoginPath } from './profiles.js';
 import { codexControl } from './codex-control.js';
-import { saveSecret, hasSecret } from './secrets-store.js';
+import { saveSecret, hasSecret, deleteSecret } from './secrets-store.js';
 import { childEnvironment, runProcess } from './process.js';
 import { installDesktopAndSkills, scheduleServiceRestart, checkUpdateStatus, readInstalledVersion, updateNeedsRestart, ensureRemoteDaemon, openRemoteWindow, windowsConsoleHostStatus, applyWindowsConsoleHostFix } from './daemon.js';
 
@@ -94,13 +94,14 @@ function annotateView(view, directory) {
 }
 
 // Private management operations; caller relay state lives outside Pool.
-const ownerDirectorOperations = {
+const ownerDirectorOperations = Object.assign(Object.create(null), {
   preflight: (pool, body) => pool.preflight(body.input || {}),
   submit_director: (pool, body) => pool.submitDirector(body.input || {}),
-};
+});
 
 export function managementOperation(pool, management, body) {
-  if (ownerDirectorOperations[body.operation]) return ownerDirectorOperations[body.operation](pool, body);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new PoolError('INVALID_OPERATION', 'Geçersiz yönetim işlemi.');
+  if (typeof body.operation === 'string' && Object.hasOwn(ownerDirectorOperations, body.operation)) return ownerDirectorOperations[body.operation](pool, body);
   if (body.operation === 'clear_history') return pool.store.clearHistory();
   if (body.operation === 'delete_task') {
     const hook = pool.store.hook?.(body.taskId);
@@ -134,6 +135,9 @@ export function managementOperation(pool, management, body) {
   }
   if (body.operation === 'save') {
     if (body.config?.port !== pool.config.port || body.config?.python !== pool.config.python) throw new PoolError('RESTART_REQUIRED', 'Port veya Python yolunu değiştirmek için servisi durdurup yerel ayarları değiştirin.');
+    // Validate config and revision before mutating secrets on disk.
+    configSchema.parse(body.config);
+    if (configView(management.directory).revision !== body.revision) throw new PoolError('CONFIG_CONFLICT', 'Ayarlar başka bir yerde değişti. Yenileyip tekrar kaydedin.');
     if (body.secrets && typeof body.secrets === 'object') {
       for (const [secretRef, value] of Object.entries(body.secrets)) {
         if (typeof value === 'string' && value.trim()) saveSecret(management.directory, secretRef, value);
@@ -413,6 +417,9 @@ export function browserUI(pool, management, { openLogin = openCliLogin, refreshI
         pendingAccounts.delete(routeId);
         pendingSwitches.delete(routeId);
         cleanupUnusedProfile(nextRoutes, deletedRoute);
+        if (deletedRoute.api?.secretRef && !nextRoutes.some(item => item.api?.secretRef === deletedRoute.api.secretRef)) {
+          try { deleteSecret(management.directory, deletedRoute.api.secretRef); } catch { /* best-effort */ }
+        }
         pool.schedule();
         return { ...annotateView(configView(management.directory), management.directory), deletedRoute: routeId };
       }
@@ -492,7 +499,11 @@ export function browserUI(pool, management, { openLogin = openCliLogin, refreshI
       if (operation === 'add_account') {
         const view = configView(management.directory);
         // Step 1: open the official sign-in for a new profile. Nothing is saved yet.
-        const { route } = nextAccountRoute(view.config, payload.routeId, 'native');
+        const baseRoute = view.config.routes.find(item => item.id === payload.routeId);
+        const extraUsed = baseRoute ? [...pendingAccounts.values(), ...pendingSwitches.values()]
+          .filter(item => item.adapter === baseRoute.adapter)
+          .map(item => item.profile) : [];
+        const { route } = nextAccountRoute(view.config, payload.routeId, 'native', extraUsed);
         cleanupUnusedProfile(view.config.routes, route);
         if (route.adapter === 'agy' && route.runtime !== 'wsl') prepareNativeAgyProfile(route, management.directory);
         else if (route.runtime === 'wsl') await prepareWslProfile(route, pool.config.python, management.directory);
@@ -645,6 +656,7 @@ export function browserUI(pool, management, { openLogin = openCliLogin, refreshI
         if (operation === 'catalog') return catalog;
         const view = configView(management.directory);
         const targetRoute = view.config.routes.find(item => item.id === route.id);
+        if (!targetRoute) throw new PoolError('NOT_FOUND', 'Bağlantı yenileme sırasında kaldırıldı.');
         migrateFilterAliases(view.config.modelFilters, targetRoute.id, catalog);
         const addedModels = mergeCatalogModels(targetRoute, catalog, []);
         pool.config = saveConfig(management.directory, view.config, view.revision);

@@ -28,7 +28,8 @@ export function routeAccountEmail(route, directory = dataDirectory(), home = hom
     return codexAccountEmail(route.profile ? profileDirectory(route, directory) : process.env.CODEX_HOME || path.join(home, '.codex'));
   }
   if (route.adapter === 'claude') {
-    return claudeAccountEmail(home, route.profile ? profileDirectory(route, directory) : null);
+    const dir = route.profile ? profileDirectory(route, directory) : (home === homedir() && process.env.CLAUDE_CONFIG_DIR ? process.env.CLAUDE_CONFIG_DIR : null);
+    return claudeAccountEmail(home, dir);
   }
   return null;
 }
@@ -84,8 +85,9 @@ function qwenEnvValue(filePath, envKey) {
 function qwenProjectEnvValue(cwd, home, envKey) {
   let current = path.resolve(cwd);
   const homeDir = path.resolve(home);
+  const realHome = path.resolve(homedir());
   for (let depth = 0; depth < 32; depth++) {
-    if (current === homeDir) break;
+    if (current === homeDir || (homeDir !== realHome && current === realHome)) break;
     const value = qwenEnvValue(path.join(current, '.qwen', '.env'), envKey) || qwenEnvValue(path.join(current, '.env'), envKey);
     if (value) return value;
     const parent = path.dirname(current);
@@ -350,7 +352,8 @@ export function localModelsFor(adapter, home = homedir()) {
       }
     }
   } else if (adapter === 'claude') {
-    const cfg = readJsonSafe(path.join(home, '.claude', 'settings.json'));
+    const directSettings = path.join(home, 'settings.json');
+    const cfg = readJsonSafe(existsSync(directSettings) ? directSettings : path.join(home, '.claude', 'settings.json'));
     const envModel = cfg.env?.ANTHROPIC_MODEL || cfg.model;
     if (typeof envModel === 'string' && envModel.trim()) add(envModel.trim(), `${envModel.trim()} (Ayarlı)`, 'claude', ['low', 'medium', 'high']);
     for (const family of ['OPUS', 'SONNET', 'HAIKU']) {
@@ -364,10 +367,10 @@ export function localModelsFor(adapter, home = homedir()) {
     try {
       const yaml = readFileSync(path.join(home, '.minimax', 'config.yaml'), 'utf8');
       const m = /^defaultModel:\s*([^\r\n]+)/m.exec(yaml);
-      if (m?.[1]?.trim()) add(m[1].trim(), `${m[1].trim()} (MiniMax Code)`, 'minimax');
+      if (m?.[1]?.trim()) add(m[1].trim(), `${m[1].trim()} (MiniMax Code)`, 'minimax', [], ['text', 'write']);
     } catch {}
-    add('minimax/MiniMax-M3', 'MiniMax-M3 (MiniMax Code)', 'minimax');
-    add('minimax/MiniMax-M2.7', 'MiniMax-M2.7 (MiniMax Code)', 'minimax');
+    add('minimax/MiniMax-M3', 'MiniMax-M3 (MiniMax Code)', 'minimax', [], ['text', 'write']);
+    add('minimax/MiniMax-M2.7', 'MiniMax-M2.7 (MiniMax Code)', 'minimax', [], ['text', 'write']);
   } else if (adapter === 'mmx') {
     add('MiniMax-M2.7', 'MiniMax-M2.7', 'minimax', [], ['text']);
   } else if (adapter === 'kimi') {
@@ -434,7 +437,10 @@ export function importDiscoveredRoutes(config, directory = dataDirectory()) {
   let refreshedModels = 0;
   for (const cli of discovered) {
     for (const route of cloned.routes.filter(r => r.adapter === cli.adapter && !r.api)) {
-      const profileModels = route.profile ? localModelsFor(cli.adapter, profileHome(route, directory)) : [];
+      const routeHome = route.profile
+        ? (route.adapter === 'codex' || route.adapter === 'claude' ? profileDirectory(route, directory) : profileHome(route, directory))
+        : null;
+      const profileModels = routeHome ? localModelsFor(cli.adapter, routeHome) : [];
       const models = profileModels.length ? profileModels : (cli.discoveredModels || []);
       const result = applyDiscoveredModels(route, models, cli.adapter);
       addedModels += result.added;
@@ -512,7 +518,17 @@ export function opencodeModelId(route, modelId) {
   return `${providerId}/${rawId}`;
 }
 
-export function routeEnvironment(route, directory = dataDirectory(), taskKind = 'read') {
+function opencodePermission(taskKind = 'read', taskMode = null) {
+  if (taskKind === 'text') return { '*': 'deny' };
+  if (taskKind === 'write') {
+    return taskMode === 'execute'
+      ? { question: 'deny', external_directory: 'deny' }
+      : { bash: 'deny', question: 'deny', external_directory: 'deny' };
+  }
+  return { bash: 'deny', edit: 'deny', write: 'deny', patch: 'deny', apply_patch: 'deny', webfetch: 'deny', websearch: 'deny', question: 'deny', external_directory: 'deny' };
+}
+
+export function routeEnvironment(route, directory = dataDirectory(), taskKind = 'read', taskMode = null) {
   const extra = {};
   if (route.api) {
     const secret = route.api.secretRef ? loadSecret(directory, route.api.secretRef) : null;
@@ -525,9 +541,7 @@ export function routeEnvironment(route, directory = dataDirectory(), taskKind = 
         const rawId = m.id.includes('/') ? m.id.slice(m.id.indexOf('/') + 1) : m.id;
         return [rawId, { name: m.alias || rawId, tool_call: true }];
       }));
-      const permission = taskKind === 'write'
-        ? { question: 'deny', external_directory: 'deny' }
-        : { bash: 'deny', edit: 'deny', write: 'deny', question: 'deny', external_directory: 'deny' };
+      const permission = opencodePermission(taskKind, taskMode);
       extra.OPENCODE_CONFIG_CONTENT = JSON.stringify({
         permission,
         provider: {
@@ -544,9 +558,7 @@ export function routeEnvironment(route, directory = dataDirectory(), taskKind = 
     Object.assign(extra, zcodeEnvironment(route.executable, home));
     if (['token_plan', 'subscription'].includes(route.billing)) extra.ZCODE_PERSONAL_PROVIDER_CONFIG_FILE = zcodePlanFile(directory, zcodeSelection(home));
   } else if (route.adapter === 'opencode' || route.adapter === 'mimo') {
-    const permission = taskKind === 'write'
-      ? { question: 'deny', external_directory: 'deny' }
-      : { bash: 'deny', edit: 'deny', write: 'deny', question: 'deny', external_directory: 'deny' };
+    const permission = opencodePermission(taskKind, taskMode);
     extra.OPENCODE_CONFIG_CONTENT = JSON.stringify({ permission });
   }
   return extra;
@@ -628,6 +640,15 @@ export function watchEvent(context, event) {
   }
 }
 
+const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
+function sanitizeSessionId(value) {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  if (!SESSION_ID_PATTERN.test(trimmed)) throw new PoolError('INVALID_REQUEST', 'sessionId geçersiz karakter veya önek içeriyor.');
+  return trimmed;
+}
+
 export function buildArguments(route, model, task, context = null) {
   const directorRun = context?.profile === 'director';
   const argv = commandArgv(route);
@@ -636,7 +657,7 @@ export function buildArguments(route, model, task, context = null) {
     ? rawEffort
     : (route.adapter === 'agy' && model.variants?.[rawEffort] ? rawEffort : undefined);
   const keepSession = Boolean(task.persistSession || task.sessionId);
-  const sessionId = typeof task.sessionId === 'string' && task.sessionId.trim() ? task.sessionId.trim() : '';
+  const sessionId = sanitizeSessionId(task.sessionId);
   if (Array.isArray(route.argsTemplate) && route.argsTemplate.length > 0) {
     const values = { model: model.id, effort: effort || '', workspace: task.workspace, prompt: task.prompt, kind: task.kind };
     // No effort chosen: drop the effort token (and its `-c`/flag lead-in) instead of sending a bogus "default".
@@ -652,7 +673,7 @@ export function buildArguments(route, model, task, context = null) {
     return [...argv, ...built];
   }
   if (route.adapter === 'codex') {
-    if (sessionId) return [...argv, '-a', 'never', ...(task.mode === 'execute' ? ['--search'] : []), 'exec', 'resume', '--ignore-user-config', '--skip-git-repo-check', '--json', '-c', `sandbox_mode=${JSON.stringify(task.kind === 'write' ? 'workspace-write' : 'read-only')}`, ...(process.platform === 'win32' ? ['-c', 'windows.sandbox="elevated"'] : []), ...(route.profile ? ['-c', 'cli_auth_credentials_store="file"'] : []), '-c', 'model_provider="openai"', ...(directorRun ? codexDirectorArguments(route, context) : []), '-m', model.id, ...(effort ? ['-c', `model_reasoning_effort=${JSON.stringify(effort)}`] : []), sessionId, '-'];
+    if (sessionId) return [...argv, '-a', 'never', ...(task.mode === 'execute' ? ['--search'] : []), 'exec', 'resume', '--ignore-user-config', '--skip-git-repo-check', '--json', '-c', `sandbox_mode=${JSON.stringify(task.kind === 'write' ? 'workspace-write' : 'read-only')}`, ...(process.platform === 'win32' ? ['-c', 'windows.sandbox="elevated"'] : []), ...(route.profile ? ['-c', 'cli_auth_credentials_store="file"'] : []), '-c', 'model_provider="openai"', ...(directorRun ? codexDirectorArguments(route, context) : []), '-m', model.id, ...(effort ? ['-c', `model_reasoning_effort=${JSON.stringify(effort)}`] : []), '--', sessionId, '-'];
     return [...argv, '-a', 'never', ...(task.mode === 'execute' ? ['--search'] : []), 'exec', '--ignore-user-config', ...(keepSession ? [] : ['--ephemeral']), '--skip-git-repo-check', '--json', '--sandbox', task.kind === 'write' ? 'workspace-write' : 'read-only', '-C', task.workspace, ...(process.platform === 'win32' ? ['-c', 'windows.sandbox="elevated"'] : []), ...(route.profile ? ['-c', 'cli_auth_credentials_store="file"'] : []), '-c', 'model_provider="openai"', ...(directorRun ? codexDirectorArguments(route, context) : []), '-m', model.id, ...(effort ? ['-c', `model_reasoning_effort=${JSON.stringify(effort)}`] : []), '-'];
   }
   if (route.adapter === 'claude') return [...argv, '-p', '--output-format', 'stream-json', '--verbose', ...(keepSession ? [] : ['--no-session-persistence']), ...(sessionId ? ['--resume', sessionId] : []), '--permission-mode', task.kind === 'write' ? 'acceptEdits' : 'dontAsk', '--permission-prompts', 'none', '--strict-mcp-config', '--mcp-config', directorRun ? JSON.stringify({ mcpServers: { 'cli-agent-pool': poolMcpServer(context) } }) : '{"mcpServers":{}}', '--disable-slash-commands', ...claudeSettingSources(route), '--tools', task.kind === 'text' ? '' : task.kind === 'read' ? 'Read,Glob,Grep' : task.mode === 'execute' ? 'default' : 'Read,Glob,Grep,Edit,Write', ...(directorRun && context.readPaths?.length ? ['--allowedTools', ...context.readPaths.map(claudeReadRule)] : []), '--model', model.id, ...(effort ? ['--effort', effort] : [])];
@@ -660,13 +681,17 @@ export function buildArguments(route, model, task, context = null) {
   // ZCode -p has no model flag: it runs the default model selected in ZCode itself.
   if (route.adapter === 'zcode') {
     if (model.id !== 'zcode-default') throw new PoolError('MODEL_UNAVAILABLE', 'ZCode headless yalnızca ZCode içinde seçilen varsayılan modeli çalıştırır. GLM/free sağlayıcısını ZCode içinde seçin; Pool modeli zcode-default olmalı.');
-    return [...argv, '--cwd', task.workspace, '--mode', task.kind === 'write' ? 'edit' : 'plan', ...(sessionId ? ['--resume', sessionId] : []), ...(task.mode === 'execute' ? [] : ['--disallowed-tools', task.kind === 'write' ? 'Bash' : 'Bash,Edit,Write']), '--json', '--no-color', '-p', task.prompt];
+    const safePrompt = typeof task.prompt === 'string' && task.prompt.startsWith('-') ? ` ${task.prompt}` : task.prompt;
+    return [...argv, '--cwd', task.workspace, '--mode', task.kind === 'write' ? 'edit' : 'plan', ...(sessionId ? ['--resume', sessionId] : []), ...(task.mode === 'execute' ? [] : ['--disallowed-tools', task.kind === 'write' ? 'Bash' : 'Bash,Edit,Write']), '--json', '--no-color', '-p', safePrompt];
   }
   if (route.adapter === 'mcode') {
     if (task.kind === 'read') throw new PoolError('UNSUPPORTED_TASK_KIND', 'MiniMax Code standard modu dosya araçları sunar; smart salt okunur sınırı sağlamaz. Dosya görevleri write, araçsız yanıtlar text kullanmalı.');
     return [...argv, 'exec', '--input', '-', '--cwd', task.workspace, ...(sessionId ? ['--session', sessionId] : []), '--model', model.id, '--prompt-mode', 'coding', '--permission', task.kind === 'write' ? 'full' : 'smart', '--mode', task.kind === 'write' ? 'standard' : 'lightweight', '--output-format', 'stream-json', ...(effort ? ['--effort', effort] : [])];
   }
-  if (route.adapter === 'kimi') return [...argv, '-m', model.id, '--output-format', 'stream-json', ...(task.kind === 'write' ? ['--auto'] : []), '-p', task.prompt];
+  if (route.adapter === 'kimi') {
+    const safePrompt = typeof task.prompt === 'string' && task.prompt.startsWith('-') ? ` ${task.prompt}` : task.prompt;
+    return [...argv, '-m', model.id, '--output-format', 'stream-json', ...(task.kind === 'write' && task.mode === 'execute' ? ['--auto'] : []), '-p', safePrompt];
+  }
   if (route.adapter === 'agy') {
     const selectedEffort = effort || model.defaultEffort || Object.keys(model.variants || {})[0];
     if (model.variants && !model.variants[selectedEffort]) throw new PoolError('INVALID_EFFORT', 'Bu model için desteklenen bir efor seçin.');
@@ -689,7 +714,7 @@ export function buildArguments(route, model, task, context = null) {
     return [...argv, '--cwd', task.workspace, '--tools', tools, ...grants, '-p', '--model', model.id, '--output-format', 'stream-json', ...(keepSession ? [] : ['--no-session-persistence']), ...(sessionId ? ['--resume', sessionId] : []), '--max-model-request-retries', '0', '--permission-mode', task.kind === 'write' ? 'accept_edits' : 'dont_ask', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', ...(effort ? ['--reasoning-effort', effort] : [])];
   }
   if (route.adapter === 'ollama') return [...argv, 'run', model.id];
-  if (route.adapter === 'aider') return [...argv, '--model', model.id, '--yes-always', '--no-auto-commits', '--message', task.prompt];
+  if (route.adapter === 'aider') return [...argv, '--model', model.id, ...(task.kind === 'write' ? [] : ['--chat-mode', 'ask']), '--no-auto-commits', '--message', task.prompt];
   throw new PoolError('UNSUPPORTED_ADAPTER', 'Bu CLI için çalıştırma şablonu (argsTemplate) tanımlanmalı.');
 }
 
@@ -794,12 +819,12 @@ export async function accountLoggedIn(route, cwd, python, directory = dataDirect
 
 export function classifyFailure(message) {
   if (/requires? usage credits|usage credits (?:are )?(?:required|exhausted)|no (?:remaining )?usage credits/i.test(message)) return 'CREDITS_REQUIRED';
-  if (/current subscription does not have access|active subscription (?:is )?required|no resource package|\b1113\b/i.test(message)) return 'SUBSCRIPTION_REQUIRED';
-  if (/only (?:available|usable|supported) (?:within|in official)|only use official|unsupported client|client.*not allowed/i.test(message)) return 'PROVIDER_RESTRICTION';
-  if (/unauthorized|unauthenticated|not logged|login required|failed to authenticate|oauth session expired|session expired|token expired|invalid_grant|refresh_token_expired|invalid.{0,20}(?:api.?key|token)|(?:http|status|code|error)\s*[:=]?\s*401\b/i.test(message)) return 'AUTH_REQUIRED';
-  if (/rate.?limit|quota|resource_exhausted|insufficient_quota|usage_limit_reached|credit balance is too low|insufficient.{0,20}(?:credit|balance)|(?:http|status|code|error)\s*[:=]?\s*429\b/i.test(message)) return 'QUOTA_EXHAUSTED';
+  if (/current subscription does not have access|active subscription (?:is )?required|no resource package|(?:code|err|status)\D{0,10}1113\b/i.test(message)) return 'SUBSCRIPTION_REQUIRED';
+  if (/only (?:available|usable|supported) (?:within|in official)|only use official|unsupported client|client.{0,40}not allowed/i.test(message)) return 'PROVIDER_RESTRICTION';
+  if (/unauthorized|unauthenticated|not logged in|login required|failed to authenticate|oauth session expired|session expired|token expired|invalid_grant|refresh_token_expired|invalid.{0,20}(?:api.?key|token)|(?:http|status|code|error)\s*[:=]?\s*401\b/i.test(message)) return 'AUTH_REQUIRED';
+  if (/rate.?limit|quota.{0,20}(?:exceeded|exhausted|limit|reached)|exceeded.{0,20}quota|resource_exhausted|insufficient_quota|usage_limit_reached|credit balance is too low|insufficient.{0,20}(?:credit|balance)|(?:http|status|code|error)\s*[:=]?\s*429\b/i.test(message)) return 'QUOTA_EXHAUSTED';
   if (/model.{0,30}(?:not found|unavailable|not exist|not supported)|unknown model|unrecognized[_ ]model|select a model/i.test(message)) return 'MODEL_UNAVAILABLE';
-  if (/workspace.{0,20}trust|permission denied|permission check failed/i.test(message)) return 'PERMISSION_REQUIRED';
+  if (/workspace.{0,20}trust|permission check failed|native permission denied|tool permission denied/i.test(message)) return 'PERMISSION_REQUIRED';
   if (/\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT)\b|fetch failed|socket hang up|tls handshake timeout|(?:dial|read|write) tcp\b|wsarecv|wsasend|i\/o timeout|connection reset by peer|broken pipe|network issue connecting to the server|network (?:is )?(?:unreachable|unavailable)|Post "https?:\/\/[^"]+": EOF/i.test(message)) return 'NETWORK_UNAVAILABLE';
   if (/overloaded_error|service_unavailable|temporarily unavailable|server is overloaded|(?:http|status|code)\s*[:=]?\s*(?:502|503|504|529)\b/i.test(message)) return 'PROVIDER_OVERLOADED';
   return 'CLI_FAILED';
@@ -941,7 +966,7 @@ export function extractSessionId(adapter, event) {
   else raw = event.session_id || event.sessionId || event.conversation_id || '';
   if (typeof raw !== 'string') return '';
   const trimmed = raw.trim();
-  return trimmed && trimmed.length <= 200 && !/[\u0000-\u001f]/.test(trimmed) ? trimmed : '';
+  return trimmed && SESSION_ID_PATTERN.test(trimmed) ? trimmed : '';
 }
 
 export function execute(route, model, task, python, progress, directory = dataDirectory(), context = null) {
@@ -958,8 +983,8 @@ export function execute(route, model, task, python, progress, directory = dataDi
   let failureText = '';
   let permissionDenied = false;
   let permissionDetail = '';
-  const argv = buildArguments(route, model, task, context);
-  const extraEnv = { ...profileEnvironment(route, directory), ...routeEnvironment(route, directory, task.kind), ...(context ? directorEnvironment(context) : {}), CLI_AGENT_POOL_WORKER: '1' };
+  const argv = buildArguments(route, model, task, context ? { directory, ...context } : { directory });
+  const extraEnv = { ...profileEnvironment(route, directory), ...routeEnvironment(route, directory, task.kind, task.mode), ...(context ? directorEnvironment(context) : {}), CLI_AGENT_POOL_WORKER: '1' };
   const usesStdin = route.promptStdin ?? !promptArgAdapters.has(route.adapter);
   const input = !usesStdin ? '' : route.adapter === 'mmx' ? JSON.stringify([{ role: 'user', content: task.prompt }]) : route.adapter === 'agy' ? `${JSON.stringify({ event: 'user', message: { content: task.prompt } })}\n` : task.prompt;
   const timeoutMs = Number(task.timeoutSeconds) > 0 ? task.timeoutSeconds * 1000 : 0;
@@ -1016,7 +1041,7 @@ export function execute(route, model, task, python, progress, directory = dataDi
         }
         return;
       }
-      if (event.error || event.is_error || event.type === 'error') failureText = JSON.stringify(event.error || event.message || event.result || '');
+      if (event.error || event.is_error || event.type === 'error') failureText = JSON.stringify(event.error || event.errors || event.message || event.result || '');
       if (route.adapter === 'codex') {
         if (event.type === 'item.completed' && event.item?.type === 'agent_message') answer = event.item.text || '';
         if (event.type === 'turn.completed') sawResult = true;
@@ -1045,9 +1070,10 @@ export function execute(route, model, task, python, progress, directory = dataDi
         if (event.type === 'error') productError = true;
       } else {
         if (event.type === 'result') {
-          if (route.adapter === 'qoder' && Array.isArray(event.permission_denials) && event.permission_denials.length) {
+          if ((route.adapter === 'qoder' || route.adapter === 'claude') && Array.isArray(event.permission_denials) && event.permission_denials.length) {
             permissionDenied = true;
-            permissionDetail = redact(`Qoder native permission denied: ${event.permission_denials.slice(0, 5).map(item => item.tool_name || 'native tool').join(', ')}`).slice(0, 600);
+            const label = route.adapter === 'claude' ? 'Claude' : 'Qoder';
+            permissionDetail = redact(`${label} native permission denied: ${event.permission_denials.slice(0, 5).map(item => item.tool_name || 'native tool').join(', ')}`).slice(0, 600);
           }
           answer = event.result || event.response || event.text || answer;
           productError ||= Boolean(event.is_error || event.error);
@@ -1080,12 +1106,17 @@ export function execute(route, model, task, python, progress, directory = dataDi
           answer = (body.content || []).filter(block => block.type === 'text').map(block => block.text).join('\n');
           sawResult = Boolean(answer);
           productError = Boolean(json.error || body.base_resp?.status_code);
+          if (productError && !failureText) failureText = JSON.stringify(json.error || body.base_resp || json);
         } catch { productError = true; }
       } else if (route.adapter === 'zcode' && result.code === 0) {
         try {
           const body = JSON.parse(result.output);
           const zSid = extractSessionId('zcode', body);
           if (zSid && zSid !== reportedSessionId) { reportedSessionId = zSid; progress(`session:${zSid}`); }
+          if (body.error || body.is_error) {
+            productError = true;
+            failureText = JSON.stringify(body.error || body.message || body);
+          }
           answer = typeof body.response === 'string' ? body.response : '';
           sawResult = Boolean(answer);
         } catch { productError = true; }
@@ -1166,8 +1197,10 @@ export async function claudeCatalog(route, cwd, python, directory = dataDirector
   const command = routeCommand(route, directory);
   const handle = runProcess({ extraEnv: command.env, argv: [...command.argv, '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--tools', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--settings', '{"disableAllHooks":true}', ...claudeSettingSources(route)], cwd, python, relay: true, timeoutMs: 20_000,
     onLine(line) {
-      const message = JSON.parse(line);
-      if (message.type === 'control_response' && message.response?.request_id === 'pool-catalog') {
+      if (!line || !line.trim()) return;
+      let message;
+      try { message = JSON.parse(line); } catch { return; }
+      if (message?.type === 'control_response' && message.response?.request_id === 'pool-catalog') {
         response = message.response;
         handle.cancel('CONTROL_COMPLETE');
       }
@@ -1313,10 +1346,16 @@ export async function routeCatalog(route, cwd, python, directory = dataDirectory
     if (!models.length) throw new PoolError('DISCOVERY_FAILED', 'Antigravity model listesi boş veya biçimi tanınmadı.');
     const grouped = new Map();
     for (const model of models) {
-      const effort=model.efforts[0], id=effort?model.id.slice(0,-effort.length-1):model.id;
-      const entry=grouped.get(id) || {id,name:id,efforts:[],free:false,...(effort?{variants:{},aliases:[]}: {})};
-      if(effort){entry.efforts.push(effort);entry.variants[effort]=model.id;entry.aliases.push(model.id);}
-      grouped.set(id,entry);
+      const effort = model.efforts[0], id = effort ? model.id.slice(0, -effort.length - 1) : model.id;
+      const entry = grouped.get(id) || { id, name: model.name || id, efforts: [], free: false };
+      if (effort) {
+        entry.variants ||= {};
+        entry.aliases ||= [];
+        if (!entry.efforts.includes(effort)) entry.efforts.push(effort);
+        entry.variants[effort] = model.id;
+        if (!entry.aliases.includes(model.id)) entry.aliases.push(model.id);
+      }
+      grouped.set(id, entry);
     }
     return { connection: route.id, models: [...grouped.values()].slice(0, MAX_ROUTE_MODELS), nextCursor: null };
   }
@@ -1350,7 +1389,8 @@ export async function routeCatalog(route, cwd, python, directory = dataDirectory
       return { connection: route.id, models: fallback.map(m => ({ id: m.id, name: m.alias, free: Boolean(m.free), efforts: m.efforts || [], defaultEffort: null })), nextCursor: null };
     }
   }
-  const discovered = localModelsFor(route.adapter, profileHome(route, directory));
+  const routeHome = route.profile && (route.adapter === 'codex' || route.adapter === 'claude') ? profileDirectory(route, directory) : profileHome(route, directory);
+  const discovered = localModelsFor(route.adapter, routeHome);
   return {
     connection: route.id,
     models: discovered.map(m => ({ id: m.id, name: m.alias, free: Boolean(m.free), efforts: m.efforts || [], defaultEffort: null })),
@@ -1367,16 +1407,16 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
     const configured = !route.api.secretRef || hasSecret(directory, route.api.secretRef);
     const fallback = { ...base, status: configured ? 'available' : 'auth_required', auth: configured ? 'api_key' : 'missing', endpoint: route.api.baseUrl, protocol: route.api.protocol, windows: [], source: 'custom-api' };
     const vendor = configured && route.api.secretRef ? await apiRouteQuota(route.api.baseUrl, loadSecret(directory, route.api.secretRef)) : null;
-    return vendor ? { ...fallback, ...vendor, auth: 'api_key' } : fallback;
+    return vendor ? { ...fallback, ...vendor, auth: vendor.auth || 'api_key' } : fallback;
   }
   const { argv, env } = routeCommand(route, directory);
   if (route.adapter === 'agy') {
     const isWsl = route.runtime === 'wsl';
-    const agyHome = profileHome(route, directory);
+    const agyHome = isWsl ? wslWindowsPath(route, wslProfileHome(route)) : profileHome(route, directory);
     const tokenFile = isWsl
       ? wslWindowsPath(route, `${wslProfileHome(route)}/.gemini/antigravity-cli/antigravity-oauth-token`)
       : (route.profile ? path.join(agyHome, '.gemini', 'antigravity-cli', 'antigravity-oauth-token') : undefined);
-    const result = await antigravityQuota(agyHome, { tokenFile, credentialStore: !route.profile && !isWsl });
+    const result = await antigravityQuota(agyHome, { tokenFile, credentialStore: !route.profile && !isWsl, python });
     if (result.status === 'auth_required') {
       return { ...base, account: route.profile || 'default', ...result };
     }
@@ -1444,14 +1484,19 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
       const statsNote = opencodeStatsNote(stats);
       if (statsNote) notes.push(statsNote);
       if (!goWindows.length) notes.push('Zen bakiyesi konsolda: opencode.ai/console');
+      const goLimited = goWindows.length > 0 && goWindows.some(w => w.remainingPercent <= 0);
+      const nextStatus = snapshot.status === 'auth_required'
+        ? 'auth_required'
+        : goLimited ? 'rate_limited'
+          : (goWindows.length || snapshot.auth === 'credentials_present' || openrouter?.auth === 'api_key' || stats || route.billing === 'free') ? 'available' : 'unknown';
       snapshot = {
         ...snapshot,
-        status: snapshot.status === 'auth_required' ? 'auth_required' : 'available',
+        status: nextStatus,
         ...(goWindows.length ? { scope: 'account', windows: goWindows } : { windows: [], informational: true }),
         ...(openrouter?.balanceUsd != null ? { balanceUsd: openrouter.balanceUsd } : {}),
         note: notes.join(' · '),
       };
-      if (openrouter?.auth === 'missing') snapshot.auth = 'credentials_present';
+      if (openrouter?.auth === 'missing' && snapshot.auth !== 'credentials_present') snapshot.auth = 'missing';
     }
     return { ...base, ...snapshot };
   }

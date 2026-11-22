@@ -42,11 +42,11 @@ function writeHelper(file, content) {
   writeFileSync(file, content, { encoding: 'utf8' });
 }
 
-export function nextAccountRoute(config, baseRouteId, wsl = 'native') {
+export function nextAccountRoute(config, baseRouteId, wsl = 'native', extraUsed = []) {
   const base = config.routes.find(route => route.id === baseRouteId);
   if (!base) throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı.');
   if (base.api || !accountAdapters.has(base.adapter)) throw new PoolError('ACCOUNT_UNSUPPORTED', 'Bu CLI bağlantısına ek hesap eklenemez.');
-  const profile = nextFreeProfile(config.routes, base.adapter, 2);
+  const profile = nextFreeProfile(config.routes, base.adapter, 2, extraUsed);
   const route = structuredClone(base);
   Object.assign(route, { id: `${base.adapter}-${profile}`, profile, enabled: false });
   if (base.adapter === 'agy') {
@@ -55,7 +55,13 @@ export function nextAccountRoute(config, baseRouteId, wsl = 'native') {
     } else if (wsl === 'native' || wsl === false) {
       delete route.runtime;
       delete route.wsl;
-      route.executable = base.executable;
+      if (base.runtime === 'wsl') {
+        const nativeAgy = config.routes.find(item => item.adapter === 'agy' && item.runtime !== 'wsl' && !item.api);
+        if (!nativeAgy) throw new PoolError('ACCOUNT_UNSUPPORTED', 'WSL bağlantısından yerel Windows Antigravity hesabı eklemek için yerel bir agy bağlantısı gerekli.');
+        route.executable = nativeAgy.executable;
+      } else {
+        route.executable = base.executable;
+      }
     } else {
       throw new PoolError('WSL_UNAVAILABLE', 'Ek Antigravity hesabı için WSL içinde agy gerekir.');
     }
@@ -69,7 +75,7 @@ export function nextAccountRoute(config, baseRouteId, wsl = 'native') {
 export function isolatedLoginRoute(config, routeId, extraUsed = []) {
   const base = config.routes.find(route => route.id === routeId);
   if (!base) throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı.');
-  if (base.api || !accountAdapters.has(base.adapter)) throw new PoolError('ACCOUNT_UNSUPPORTED', 'Bu CLI bağlantısı için izole hesap profili kullanılamaz.');
+  if (base.api || base.runtime === 'wsl' || !accountAdapters.has(base.adapter)) throw new PoolError('ACCOUNT_UNSUPPORTED', 'Bu CLI bağlantısı için izole hesap profili kullanılamaz.');
   const profile = nextFreeProfile(config.routes, base.adapter, 1, extraUsed);
   const route = structuredClone(base);
   Object.assign(route, { profile });

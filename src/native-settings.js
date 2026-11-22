@@ -51,12 +51,15 @@ export function nativeSettingsFiles(route, workspace, directory, home = homedir(
       path.join(claudeConfigDirectory(route, directory, home), 'settings.json'), claudeManagedSettings());
   } else if (route?.adapter === 'codex') {
     const codexHome = route.profile ? profileDirectory(route, directory) : process.env.CODEX_HOME || path.join(home, '.codex');
-    files.push(...listFiles(path.join(codexHome, 'rules')));
+    files.push(path.join(codexHome, 'config.toml'), path.join(workspace, '.codex', 'config.toml'), ...listFiles(path.join(codexHome, 'rules')));
   } else if (route?.adapter === 'agy' && route.runtime !== 'wsl') {
     const agyHome = directory ? profileHome(route, directory, home) : home;
     const matches = agyProjectMatches(workspace, agyHome);
     files.push(...(matches.length ? matches : agyProjectMatches(workspace, home)).map(match => match.file),
-      path.join(agyHome, '.gemini', 'config', 'config.json'), path.join(agyHome, '.gemini', 'config', 'mcp_config.json'));
+      path.join(agyHome, '.gemini', 'config', 'config.json'),
+      path.join(agyHome, '.gemini', 'config', 'mcp_config.json'),
+      path.join(agyHome, '.gemini', 'antigravity-cli', 'settings.json'),
+      path.join(agyHome, '.gemini', 'trustedFolders.json'));
   }
   return [...new Set(files)];
 }

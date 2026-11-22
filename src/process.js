@@ -42,7 +42,7 @@ export function resolveWindowsPython(python = 'python', { platform = process.pla
     let fallback = null;
     for (const rawDir of envPath.split(';')) {
       const dir = rawDir.trim().replace(/^"|"$/g, '');
-      if (!dir) continue;
+      if (!dir || !path.isAbsolute(dir)) continue;
       for (const file of candidates) {
         const full = path.join(dir, file);
         if (!isRealFile(full)) continue;
@@ -94,8 +94,16 @@ export function resolveWindowsPython(python = 'python', { platform = process.pla
 }
 
 export function childEnvironment(extraEnv = {}) {
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => environmentNames.has(key.toUpperCase())));
-  return { ...env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1', NO_COLOR: '1', FORCE_COLOR: '0', ...extraEnv };
+  const defaults = { PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1', NO_COLOR: '1', FORCE_COLOR: '0' };
+  const overrides = { ...defaults, ...extraEnv };
+  const overrideUpper = new Set(Object.keys(overrides).map(key => key.toUpperCase()));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => {
+    const upper = key.toUpperCase();
+    if (!environmentNames.has(upper)) return false;
+    if (process.platform === 'win32' && overrideUpper.has(upper)) return false;
+    return true;
+  }));
+  return { ...env, ...overrides };
 }
 
 export function runProcess({ argv, cwd, input = '', relay = false, extraEnv = {}, python = process.platform === 'win32' ? 'python' : 'python3', timeoutMs = 30_000, onLine = () => {}, maxBytes = 1_048_576, retainBytes = maxBytes, windowsHide = true }) {
@@ -105,13 +113,27 @@ export function runProcess({ argv, cwd, input = '', relay = false, extraEnv = {}
   let stderr = '';
   let settled = false;
   let lineFailure = false;
-  const trimTail = (text, limit) => Buffer.byteLength(text) <= limit ? text : text.slice(-Math.max(1024, Math.floor(limit * 0.75)));
+  const trimTail = (text, limit) => {
+    const byteLen = Buffer.byteLength(text);
+    if (byteLen <= limit) return text;
+    const buf = Buffer.from(text, 'utf8');
+    const target = Math.max(1024, Math.floor(limit * 0.75));
+    let start = Math.max(0, buf.length - target);
+    // Advance past any UTF-8 continuation bytes (10xxxxxx) to avoid splitting characters.
+    while (start < buf.length && (buf[start] & 0xc0) === 0x80) start++;
+    return buf.subarray(start).toString('utf8');
+  };
   const pythonBin = resolveWindowsPython(python, { preferWindowless: windowsHide !== false });
   const child = spawn(pythonBin, ['-u', supervisor], { cwd, env: childEnvironment(extraEnv), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  let killTimer = null;
   const cancel = reason => {
     if (settled || stopReason) return;
     stopReason = reason || 'CANCELLED';
     child.stdin.end();
+    killTimer = setTimeout(() => {
+      if (!settled) { try { child.kill('SIGKILL'); } catch { /* already exited */ } }
+    }, 3000);
+    killTimer.unref?.();
   };
   let timer = null;
   const scheduleTimeout = remaining => {
@@ -140,10 +162,14 @@ export function runProcess({ argv, cwd, input = '', relay = false, extraEnv = {}
   });
   child.stdin.on('error', () => {});
   const done = new Promise(resolve => {
-    child.once('error', () => { stopReason ||= 'SPAWN_FAILED'; });
+    child.once('error', err => {
+      stopReason ||= 'SPAWN_FAILED';
+      if (err?.message) stderr = stderr ? `${stderr}\n${err.message}` : err.message;
+    });
     child.once('close', code => {
       settled = true;
       if (timer) clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
       lines.close();
       resolve({ code, output, stderr, stopReason: stopReason || (lineFailure ? 'PROTOCOL_ERROR' : null) });
     });

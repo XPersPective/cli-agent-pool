@@ -20,7 +20,7 @@ if (!executable) throw new Error('Codex CLI missing');
 const root = mkdtempSync(path.join(tmpdir(), 'pool-live-'));
 const config = configSchema.parse({ workspaceRoots: [process.cwd()], routes: [{ id: 'codex-smoke', adapter: 'codex', executable, enabled: true, billing: 'subscription', models: [{ id: process.argv[3], alias: 'Live verification', group: 'unassigned', efforts: ['low'], kinds: ['text'] }] }] });
 const store = new Store(path.join(root, 'pool.sqlite'));
-const pool = new Pool(config, store);
+const pool = new Pool(config, store, { directory: root });
 const token = randomBytes(32).toString('hex');
 const app = createServer(pool, token, 0);
 const client = new Client({ name: 'cli-agent-pool-live-smoke', version: '0.1.0' });
@@ -29,12 +29,15 @@ try {
   await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
   const response = await client.callTool({ name: 'pool_submit', arguments: { prompt: 'Do not use any tools. Respond with exactly POOL_SMOKE_OK and nothing else.', workspace: process.cwd(), kind: 'text', effort: 'low', timeoutSeconds: 90, idempotencyKey: 'live-verification-' + randomBytes(8).toString('hex') } });
   if (response.isError) throw new Error('Live submission rejected');
-  const id = response.structuredContent.data.id;
+  const id = response.structuredContent?.data?.id;
+  if (!id) throw new Error('Live submission did not return a task ID');
   for (let i = 0; i < 110; i++) {
     const result = await client.callTool({ name: 'pool_get_task', arguments: { taskId: id } });
-    const task = result.structuredContent.data;
+    if (result.isError) throw new Error('Live task poll returned an error');
+    const task = result.structuredContent?.data;
+    if (!task) throw new Error('Live task poll returned empty payload');
     if (task.state === 'succeeded') {
-      if (task.result.trim() !== 'POOL_SMOKE_OK') throw new Error('Unexpected live result; content omitted');
+      if (String(task.result || '').trim() !== 'POOL_SMOKE_OK') throw new Error('Unexpected live result; content omitted');
       console.log('PASS: MCP -> persistent pool -> authenticated Codex CLI -> exact expected result.');
       break;
     }

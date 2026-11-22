@@ -2,7 +2,7 @@
 import path from 'node:path';
 import { lstatSync } from 'node:fs';
 import { z } from 'zod';
-import { PoolError } from './config.js';
+import { PoolError, redact } from './config.js';
 import { runProcess } from './process.js';
 import { quotaApplies } from '../web/pool-state.js';
 
@@ -15,7 +15,7 @@ export const lifecycleShape = {
   supersedesTaskId: z.string().uuid().optional(),
   secretEnv: z.record(z.string().regex(/^PB_[A-Z_]{1,32}$/), z.string().min(1).max(4096)).refine(v => Object.keys(v).length <= 16).optional(),
 };
-export const directorFeatures = { contracts: ['pb-director/1'], features: ['directorProfile', 'preflight', 'onExit', 'ack', 'idle', 'secretEnv', 'resolve', 'releaseLockOnFailure', 'quotaBarrier', 'wakeAt', 'supersede'] };
+export const directorFeatures = { contracts: ['pb-director/1'], features: ['directorProfile', 'preflight', 'onExit', 'ack', 'idle', 'secretEnv', 'quotaBarrier', 'wakeAt', 'supersede'] };
 export const terminal = state => ['succeeded', 'failed', 'timed_out', 'cancelled', 'needs_review'].includes(state);
 export const hasLifecycle = request => Object.keys(lifecycleShape).some(key => request[key] !== undefined);
 
@@ -35,7 +35,9 @@ export class TaskWatchdog {
     this.autoTick = autoTick;
     this.runHook = runHook;
     this.hooks = new Map();
+    this.hookHandles = new Map();
     this.lastBarrierProbe = new Map();
+    this.tickPromise = null;
     this.closed = false;
     if (autoTick) { this.timer = setInterval(() => { void this.tick().catch(() => {}); }, 1000); this.timer.unref(); }
   }
@@ -50,6 +52,8 @@ export class TaskWatchdog {
   async tick() {
     if (this.closed || this.evaluating) return;
     this.evaluating = true;
+    let doneTick;
+    this.tickPromise = new Promise(resolve => { doneTick = resolve; });
     try {
       const now = this.now();
       for (const task of this.pool.store.queued()) {
@@ -91,25 +95,25 @@ export class TaskWatchdog {
       for (const row of this.pool.store.pendingHooks(now)) {
         if (this.pool.active.has(row.task_id) || this.hooks.has(row.task_id)) continue;
         if (!this.pool.store.claimHook(row.task_id)) continue;
-        const pending = this.invoke(row).catch(() => { this.pool.store.finishHook(row.task_id); }).finally(() => this.hooks.delete(row.task_id));
+        const pending = this.invoke(row).catch(() => { try { this.pool.store.finishHook(row.task_id); } catch { /* closing */ } }).finally(() => { this.hooks.delete(row.task_id); this.hookHandles.delete(row.task_id); });
         this.hooks.set(row.task_id, pending);
       }
-    } finally { this.evaluating = false; }
+    } finally { this.evaluating = false; doneTick(); this.tickPromise = null; }
   }
   async invoke(row) {
     const task = this.pool.store.get(row.task_id);
     const request = JSON.parse(row.request);
     try { validateHook(request.onExit); }
     catch { this.pool.store.event(task.id, 'on_exit', 'Hook executable unavailable.'); this.pool.store.finishHook(task.id); return; }
-    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^PB_|^CAP_TASK_|^CLI_AGENT_POOL_(WORKER|TASK_TOKEN|TASK_ID)$/i.test(key)));
     let notices = 0;
     const handle = this.runHook({ argv: request.onExit.argv, cwd: task.workspace, python: this.pool.config.python,
-      extraEnv: { ...env, CLI_AGENT_POOL_HOME: this.pool.directory, CAP_TASK_ID: task.id, CAP_TASK_STATE: task.state, CAP_TASK_ERROR: task.error || '' },
+      extraEnv: { CLI_AGENT_POOL_HOME: this.pool.directory, CAP_TASK_ID: task.id, CAP_TASK_STATE: task.state, CAP_TASK_ERROR: task.error || '' },
       timeoutMs: request.onExit.timeoutSeconds * 1000, maxBytes: 1_048_576,
-      onLine: line => { if (line.startsWith('CAP_NOTIFY ') && notices++ < 10) this.pool.store.event(task.id, 'notification', line.slice(11, 611)); } });
+      onLine: line => { if (line.startsWith('CAP_NOTIFY ') && notices++ < 10) this.pool.store.event(task.id, 'notification', redact(line.slice(11, 611))); } });
+    this.hookHandles.set(task.id, handle);
     const result = await handle.done;
-    const combined = `${result.output || ''}\n${result.stderr || ''}`;
-    const output = Buffer.from(combined).subarray(-2048).toString('utf8');
+    const combined = redact(`${result.output || ''}\n${result.stderr || ''}`);
+    const output = combined.length > 2048 ? combined.slice(-2048) : combined;
     this.pool.store.event(task.id, 'on_exit', JSON.stringify({ attempt: row.attempts + 1, code: result.code, error: result.stopReason, output }));
     let retryAt = null;
     if (!result.stopReason && result.code === 75) {
@@ -126,7 +130,13 @@ export class TaskWatchdog {
         retryAt = now + 30_000;
       }
     }
-    this.pool.store.finishHook(task.id, retryAt);
+    if (!this.closed) this.pool.store.finishHook(task.id, retryAt);
   }
-  async close() { this.closed = true; clearInterval(this.timer); await Promise.allSettled(this.hooks.values()); }
+  async close() {
+    this.closed = true;
+    clearInterval(this.timer);
+    if (this.tickPromise) await this.tickPromise;
+    for (const handle of this.hookHandles.values()) handle.cancel?.('CANCELLED');
+    await Promise.allSettled(this.hooks.values());
+  }
 }

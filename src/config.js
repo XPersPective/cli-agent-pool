@@ -23,9 +23,10 @@ export const activeBillings = new Set(['subscription', 'token_plan', 'free_credi
 const apiBlockSchema = z.object({
   protocol: z.enum(['anthropic', 'openai']),
   baseUrl: z.string().min(1).max(512).refine(value => {
-    try { const parsed = new URL(value); return parsed.protocol === 'https:' || parsed.protocol === 'http:'; }
+    if (/[\u0000-\u001f\u007f]/.test(value)) return false;
+    try { const parsed = new URL(value); return (parsed.protocol === 'https:' || parsed.protocol === 'http:') && !parsed.username && !parsed.password; }
     catch { return false; }
-  }, 'API adresi geçerli bir http/https URL olmalı.'),
+  }, 'API adresi geçerli, kimlik bilgisiz bir http/https URL olmalı.'),
   secretRef: label.regex(/^[a-zA-Z0-9_-]{1,64}$/).optional(),
 }).strict();
 
@@ -140,7 +141,11 @@ export const configSchema = z.object({
 }).transform(migrateCategories);
 
 export function dataDirectory() {
-  if (process.env.CLI_AGENT_POOL_HOME) return process.env.CLI_AGENT_POOL_HOME;
+  if (process.env.CLI_AGENT_POOL_HOME) {
+    const home = process.env.CLI_AGENT_POOL_HOME.trim();
+    if (!path.isAbsolute(home) || home.includes('\0')) throw new PoolError('INVALID_RUNTIME_DIRECTORY', 'CLI_AGENT_POOL_HOME mutlak bir yol olmalı.');
+    return home;
+  }
   const locator = path.join(homedir(), '.cli-agent-pool', 'runtime-path');
   if (existsSync(locator)) {
     const directory = readFileSync(locator,'utf8').trim();
@@ -219,11 +224,14 @@ export function saveConfig(directory, input, revision) {
 
 export function allowedWorkspace(workspace, roots) {
   if (typeof workspace !== 'string' || !path.isAbsolute(workspace) || workspace.includes('\0')) throw new PoolError('INVALID_WORKSPACE', 'Mutlak bir çalışma klasörü yolu gerekli.');
+  if (process.platform === 'win32' && !/^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)/.test(workspace)) throw new PoolError('INVALID_WORKSPACE', 'Windows çalışma klasörü sürücü veya UNC köküyle başlamalı.');
   let actual;
   try { actual = realpathSync(workspace); } catch { throw new PoolError('INVALID_WORKSPACE', 'Çalışma klasörü bulunamadı.'); }
   if (!lstatSync(actual).isDirectory()) throw new PoolError('INVALID_WORKSPACE', 'Çalışma yolu bir klasör olmalı.');
   if (roots && !roots.some(root => {
-    const relative = path.relative(root, actual);
+    let canonicalRoot;
+    try { canonicalRoot = realpathSync(root); } catch { return false; }
+    const relative = path.relative(canonicalRoot, actual);
     return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
   })) throw new PoolError('WORKSPACE_DENIED', 'Bu çalışma klasörü izin listesinde değil.');
   return actual;
@@ -238,6 +246,7 @@ export function overlaps(a, b) {
 
 export function redact(text) {
   return String(text).replace(/\b(?:sk-(?:cp-|api-|ant-)?[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED]')
-    .replace(/(Bearer\s+)[A-Za-z0-9._~+\/-]{16,}/gi, '$1[REDACTED]')
+    .replace(/((?:Bearer|Basic)\s+)[A-Za-z0-9._~+\/=-]{16,}/gi, '$1[REDACTED]')
+    .replace(/((?:x-api-key|anthropic-api-key|api[_-]?key)["']?\s*[:=]\s*)(?:'(?:\\.|[^'\\\r\n])*'|"(?:\\.|[^"\\\r\n])*"|[A-Za-z0-9._~+\/-]{12,})/gi, '$1[REDACTED]')
     .replace(/((?:set-cookie|cookie)["']?\s*:\s*)(?:'(?:\\.|[^'\\\r\n])*'|"(?:\\.|[^"\\\r\n])*"|[^\r\n]+)/gi, '$1[REDACTED]');
 }

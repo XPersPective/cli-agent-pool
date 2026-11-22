@@ -18,7 +18,7 @@ Salt-okunur keşif uç noktaları `127.0.0.1` üzerinde ek anahtar gerektirmeden
 | Kategori modelleri | `GET /api/pools/research` | `pool_list_pools {group:"research"}` / `cli-agent-pool pools --group research` |
 | Tek model + cached kota | `GET /api/model?route=qoder-local&model=Qwen3.8-Flash` | `cli-agent-pool model --route qoder-local --model Qwen3.8-Flash` |
 | Tüm cached kotalar | `GET /api/quotas` | `pool_quota_overview {}` / `cli-agent-pool quotas` |
-| Canlı kota / giriş | `GET /api/quotas/qoder-local?live=1` | `pool_get_quotas {routeId:"qoder-local"}` / `cli-agent-pool quotas --route qoder-local --live` |
+| Canlı kota / giriş | `GET /api/quotas/qoder-local?live=1` (Bearer token) | `pool_get_quotas {routeId:"qoder-local"}` / `cli-agent-pool quotas --route qoder-local --live` |
 | Model önerisi | `GET /api/select?kind=write&mode=execute` | `pool_select` / `cli-agent-pool select --mode execute` |
 | Harita / hata yardımı | `GET /api/help?code=AUTH_REQUIRED` | `pool_help {code:"AUTH_REQUIRED"}` / `cli-agent-pool help-code --code AUTH_REQUIRED` |
 | Görev başlat / izle | `POST /api/tasks` · `GET /api/tasks/<id>` (Bearer token) | `pool_submit` · `pool_get_task` / `cli-agent-pool run` |
@@ -61,31 +61,34 @@ RPC stdin biçimi: {"tool":"pool_catalog","arguments":{"billing":"free"}}.
 
 Hata kısa error.code/message ve pool_help yönlendirmesi verir. Normal keşifte
 hata kılavuzu veya tam görev geçmişi yüklenmez. [Hata başvurusu](errors.md) yalnız
-ilgili sorun için okunur. needs_review dosya incelemesi gerektirir; otomatik replay
-veya başka modele kör tekrar yok. Kapalı/gizli modeller hiçbir girişten verilmez.
-Ücretli API billing, native izinler, model yetenekleri, kota rezervleri ve çalışma
-klasörü kilitleri geçerlidir; seçim/gruplama yetki modu yoktur. Kategoriden çıkarma
-katalog erişimini kaldırmaz. Kategoriler UI'da oluşturulur, adlandırılır, kaldırılır.
+ilgili sorun için okunur. Başarısız veya yarım kalan yazma görevleri doğrudan
+`failed` olur; otomatik replay veya başka modele kör tekrar yok. Kapalı/gizli
+modeller hiçbir girişten verilmez. Ücretli API billing, native izinler, model
+yetenekleri ve kota rezervleri geçerlidir; seçim/gruplama yetki modu yoktur.
+Kategoriden çıkarma katalog erişimini kaldırmaz. Kategoriler UI'da oluşturulur,
+adlandırılır, kaldırılır.
 
-Birden fazla istemci aynı servis/kuyruğu kullanabilir; ayrı projeler paralel,
-çakışan yazmalar seri çalışır. Native CLI dosya/komut araçlarını kullanır.
-Execute raporu JSON status, summary, files, checks, research, blockers alanlarıyla
-maksimum 6000 karakter/tercihen 200 kelimedir. Tam protokol ayrıntısı yalnız gerekirse
-paketli skill references/operations.md dosyasında bulunur.
+Birden fazla istemci aynı servisi kullanabilir; Pool çalışma klasörü kilidi veya
+karantina (`needs_review`) uygulamaz, eşzamanlı yazma koordinasyonu çağırana
+aittir. Native CLI dosya/komut araçlarını kullanır. Execute raporu JSON
+status, summary, files, checks, research, blockers alanlarıyla istemde 6000
+karakter / tercihen 200 kelime hedefler (ayrıştırıcı tavanı 32.768 karakterdir).
+Tam protokol ayrıntısı yalnız gerekirse paketli skill references/operations.md
+dosyasında bulunur.
 
 Paralelliği çağıran gönderdiği iş sayısıyla belirler; worker/kuyruk adet tavanı
 yoktur. Görevler varsayılan olarak zaman aşımı olmadan (`timeoutSeconds: 0`,
 oturum sonuna veya iptale kadar) çalışır; çağıran isterse pozitif `timeoutSeconds`
-belirleyebilir. Çakışan çalışma klasörlerine yazma ve inceleme kilitleri korunur.
+belirleyebilir.
 
-Completed tasks expire after 7 days or the most recent 500 completed tasks. Keep needed reports externally; idempotency keys expire with their records. The UI can clear completed history while preserving active/review tasks.
+Completed tasks expire after 7 days or the most recent 500 completed tasks. Keep needed reports externally; idempotency keys expire with their records. The UI can clear completed history while preserving active tasks.
 
 
 ## Director mechanisms (2.2.0)
 
 `pool_capabilities` discovers `pb-director/1` and optional features. Director
-profile, verified preflight, task linking, deadlines, secret environment delivery,
-owner review resolution and durable exit hooks are described in
+profile, verified preflight, task linking, deadlines, quota-barrier/handoff
+supervision, secret environment delivery and durable exit hooks are described in
 [director design](director-tasks.md) and the packaged skill operations reference.
 Relay decisions stay with the caller; Pool has no relay state machine.
 
@@ -93,12 +96,14 @@ Relay decisions stay with the caller; Pool has no relay state machine.
 readPaths, force; returns a cached result or `{id,taskId,state}`. Task retrieval
 exposes `preflight` and `parentTaskId`, including compact mode. Status results
 carry current, ready, checkedAt, retryAfter, error and capability details.
-`pool_preflight_status` reads without a lock/model call. Worker bridges cannot run
-preflight/resolve or create director lifecycle hooks; a valid running director
-token can submit a preflight-ready successor and acknowledge its own takeover.
+`pool_preflight_status` reads without a model call (requires Bearer token).
+Worker bridges cannot run preflight/resolve or create director lifecycle hooks;
+a valid running director token can submit a preflight-ready successor (without
+attaching new `onExit`/`secretEnv`) and acknowledge its own takeover.
 
 Director optional fields are `onExit`, `ackDeadlineSeconds`,
-`startDeadlineSeconds`, `idleTimeoutSeconds`, `secretEnv` (PB_ names only).
-See the design for limits and restart semantics. The service injects
-CLI_AGENT_POOL_TASK_ID/TOKEN/WORKER and strips/redacts secret values before
-persistence. Never encode a secret in prompt or hook argv.
+`startDeadlineSeconds`, `idleTimeoutSeconds`, `stopOnQuotaBarrierPercent`,
+`supersedesTaskId`, `secretEnv` (PB_ names only). See the design for limits and
+restart semantics. The service injects `CLI_AGENT_POOL_TASK_ID`,
+`CLI_AGENT_POOL_TASK_TOKEN` and `CLI_AGENT_POOL_WORKER` and strips/redacts
+secret values before persistence. Never encode a secret in prompt or hook argv.

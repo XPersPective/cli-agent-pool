@@ -8,11 +8,12 @@ stdio MCP client through its supported `.agents/mcp.json` configuration. It is n
 a provider adapter without a verified headless execution/model-selection contract.
 
 One local Node process owns configuration, the SQLite task database, write-only
-custom API secret files, quota/plan snapshots, admission and its own web dashboard.
-MCP tools are equally available to Codex, Claude, Antigravity or any MCP client.
-Remote access (mobile/VPN/tunnels) is explicitly out of scope: users access their
-coding environments remotely through their host tools' native remote features, while
-CLI Agent Pool strictly manages the local model and CLI pool on `127.0.0.1`.
+custom API secret files, quota/plan snapshots, admission and its own web dashboard
+on `127.0.0.1:43127`. MCP tools are equally available to Codex, Claude, Antigravity
+or any MCP client. An optional companion Remote PWA (`remote/`, default `127.0.0.1:43128`,
+opt-in Tailscale bind via `cli-agent-pool remote --host tailscale`) bridges paired
+mobile/desktop browsers to the local Pool over loopback without exposing the core
+Pool port directly.
 
 ## Decisions
 
@@ -27,7 +28,7 @@ CLI Agent Pool strictly manages the local model and CLI pool on `127.0.0.1`.
 4. Support custom API providers through two protocol slots without building a custom HTTP agent loop:
    - **Anthropic-compatible (`api.protocol = 'anthropic'`)**: executed via Claude Code (`claude`) with per-process `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` injected from the write-only local secret store (`<CLI_AGENT_POOL_HOME>/secrets/<secretRef>.key`).
    - **OpenAI-compatible (`api.protocol = 'openai'`)**: executed via OpenCode (`opencode`) with per-process `OPENCODE_CONFIG_CONTENT` configuring `@ai-sdk/openai-compatible` and enforcing read/write tool permissions.
-5. Keep provider credentials out of `config.json`, MCP responses and browser responses. Custom API keys are write-only via `/api/secrets`.
+5. Keep provider credentials out of `config.json`, MCP responses and browser responses. Custom API keys are write-only via owner management operations (`/ui` `secret` / `/manage` `save`).
 6. Use one Streamable HTTP MCP owner and a lightweight `stdio` proxy so every coding tool shares one SQLite task owner.
 7. CLI Agent Pool routes and runs CLI tasks without imposing workspace locks or review quarantines; callers and orchestrators decide when multiple agents share a project folder.
 
@@ -78,7 +79,7 @@ existing explicit memberships and free-category membership are preserved once.
 The caller chooses category or catalog. A category request filters by its members;
 a catalog request needs no membership/group. A supported requested effort overrides
 the category default. Hidden models, disabled routes/models, native permissions,
-capabilities, explicit paid billing, quota reserves and workspace locks still apply.
+capabilities, explicit paid billing and quota reserves still apply.
 Legacy non-paid autoSelect flags do not act as a caller selection authority.
 
 pool_help provides a short map and per-error recovery. pool_list_pools without a
@@ -164,7 +165,7 @@ Only owner probe_model can mark an internal runtime probe workspace; agent reque
 cannot forge that flag. The normal policy, quota and CLI
 permission checks still apply. Client labels are self-reported metadata, not identity.
 Completed records and events expire after seven days or 500 completed entries;
-admission keys expire with history. Cleanup runs on completion and hourly; owner UI can clear terminal records. Active tasks and quarantine survive cleanup. Active jobs are prioritized in snapshots.
+admission keys expire with history. Cleanup runs on completion and hourly; owner UI can clear terminal records. Active tasks survive cleanup. Active jobs are prioritized in snapshots.
 Antigravity effort variants are canonical catalog entries with exact native ID maps;
 merges stage changes atomically and reject conflicting memberships. Provider-declared
 quota scopes apply identically in the UI and selector, including explicit Argon groups.
@@ -172,7 +173,7 @@ quota scopes apply identically in the UI and selector, including explicit Argon 
 
 Local project admission accepts any existing absolute directory through CLI and MCP
 without registration or configuration writes. Canonical paths preserve workspace
-overlap locks and quarantine across junction aliases. Legacy workspaceRoots is
+containment across junction aliases. Legacy workspaceRoots is
 accepted for compatibility only; deleted entries do not prevent startup. Internal
 model probes retain explicit containment. Project skill discovery still rejects
 paths escaping the selected project. Native CLI sandbox and task scopes remain.
@@ -190,9 +191,9 @@ The installed runtime locator in the user profile binds CLI and desktop to one
 physical runtime across MSIX file virtualization. Explicit CLI_AGENT_POOL_HOME
 still overrides it. Antigravity native event/result envelopes are parsed directly;
 structured permission failures override a conversational SUCCESS. No prose-only
-completion heuristic or automatic write replay is used. Non-paid autoSelect:false
-is honored as well as paid_api policy. Queued task details expose workspace review
-locks through queueReason and blockedBy. A text probe does not certify write tools.
+completion heuristic or automatic write replay is used. Explicit `paid_api` policy
+prevents metered models from leaking into automatic selection. A text probe does
+not certify write tools.
 
 Execution subagent protocol v1 is opt-in per write task (`mode: execute`), separate
 from billing and strength grouping. It injects implementation/check/report
@@ -203,12 +204,11 @@ their write sandbox/mode. Catalog executionModes uses effective native kinds; co
 Compact retrieval omits prompt/events and explicitly marks bounded report truncation.
 Reports remain untrusted and require the caller to inspect artifacts.
 
-Workspace reservations use shared read/text locks and exclusive write/review locks.
-FIFO conflicting queued tasks prevent a later reader from starving a writer.
-Parallel writes use caller-prepared distinct worktrees; integration is a separate
-serialized task with no implicit merge or replay. Independent CLI wait budgets
-return resumable queued/running state instead of inventing a failed task. Worker
-promise failures after write execution begins retain needs_review quarantine.
+Parallel writes are not blocked by Pool workspace locks; callers coordinate
+isolation (e.g. caller-prepared distinct worktrees and separate integration tasks
+with no implicit merge or replay). Independent CLI wait budgets return resumable
+queued/running state instead of inventing a failed task. Worker failures end
+directly in `failed` without workspace quarantine.
 
 1.8 separates adapter capabilities from historical model inventory: native coding
 CLIs default to text/read/write, and toolPolicy configured preserves explicit owner
@@ -251,8 +251,8 @@ selection is configured through native login/default-model selection; the native
 CLI must still provision that account. Credentials remain in the official store.
 
 2.1.0 removes global/per-route worker count and queued-job caps. The caller
-controls parallelism through submissions; workspace reader/writer fairness and
-review locks remain. Retired concurrency/maxConcurrent inputs migrate away.
+controls parallelism through submissions without Pool-imposed workspace locks or
+review quarantines. Retired concurrency/maxConcurrent inputs migrate away.
 Tasks run without a timeout by default (`timeoutSeconds: 0` = unlimited, continuing until the session finishes or is explicitly cancelled) and without an output byte ceiling while keeping retained memory bounded at 2 MB; callers may still pass an explicit positive `timeoutSeconds` when desired. Waiting expiry still returns a durable task ID when a positive `--wait` budget is supplied.
 
 Account profiles let one official CLI account live in each route. Codex and
@@ -278,9 +278,8 @@ Account choice and switching thresholds belong to the caller; routes expose
 2.2.0 adds optional pb-director/1 mechanisms, with no Project Brain dependency.
 The caller alone owns relay records and successor selection. Pool owns a native
 non-paid director profile, HMAC/tool-event verified cached preflight, task-token
-worker linking, ack/start/idle deadlines, memory-only PB_ secret environment,
-change-aware failed-write lock release and durable owner exit hooks. Hook claims
-are persisted before shell-free dispatch after final lock state; exit 75 alone
-retries. Interrupted writes require two equal fingerprints 60 seconds apart.
-Unknown/changed/WSL fingerprints preserve quarantine. See director-tasks.md for
-trust boundaries and at-most-once crash limits.
+worker linking, ack/start/idle deadlines, quota-barrier/handoff supervision,
+memory-only PB_ secret environment and durable owner exit hooks. Hook claims
+are persisted before shell-free dispatch after process teardown; exit 75 alone
+retries (with optional `CAP_WAKE_AT`/`CAP_RETRY_AFTER` extended wakeups). See
+director-tasks.md for trust boundaries and at-most-once crash limits.

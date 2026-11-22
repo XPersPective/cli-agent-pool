@@ -1,7 +1,8 @@
 // Account profiles: one official CLI login per route, kept by the CLI itself.
 // The Pool only points each CLI at its own directory; it never reads, copies
 // or moves credential contents between profiles.
-import { mkdirSync, readFileSync, readdirSync, writeFileSync, renameSync, existsSync, rmSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync, renameSync, existsSync, rmSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -58,7 +59,8 @@ export function clearProfileAuth(route, directory) {
     codex: [path.join(target, 'auth.json')],
     claude: [path.join(target, '.credentials.json'), path.join(target, '.claude.json')],
     agy: [path.join(target, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'), path.join(target, '.gemini', 'google_accounts.json')],
-    zcode: [path.join(target, '.zcode', 'v2', 'credentials.json')],
+    zcode: [path.join(target, '.zcode', 'v2', 'credentials.json'), path.join(target, '.zcode', 'v2', 'provider_config.json'), path.join(target, '.zcode', 'v2', 'config.json')],
+    qwen: [path.join(target, '.qwen')],
     mcode: [path.join(target, '.minimax', 'local-runtime.auth.json')],
     kimi: [path.join(target, '.kimi-code', 'credentials')],
     qoder: [path.join(target, '.qoder')],
@@ -86,7 +88,9 @@ export function profileHome(route, directory, home = homedir()) {
 }
 
 export function claudeConfigDirectory(route, directory, home = homedir()) {
-  return route.profile && !route.api ? profileDirectory(route, directory) : path.join(home, '.claude');
+  if (route.profile && !route.api) return profileDirectory(route, directory);
+  if (home === homedir() && process.env.CLAUDE_CONFIG_DIR) return process.env.CLAUDE_CONFIG_DIR;
+  return path.join(home, '.claude');
 }
 
 export const wslExecutable = () => path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'wsl.exe');
@@ -144,9 +148,13 @@ function readJson(file) {
 
 function writeJsonAtomic(file, value) {
   mkdirSync(path.dirname(file), { recursive: true });
-  const temporary = `${file}.pool-${process.pid}.tmp`;
-  writeFileSync(temporary, JSON.stringify(value, null, 2));
-  renameSync(temporary, file);
+  const temporary = `${file}.pool-${process.pid}-${randomBytes(6).toString('hex')}.tmp`;
+  try {
+    writeFileSync(temporary, JSON.stringify(value, null, 2), { mode: 0o600 });
+    renameSync(temporary, file);
+  } finally {
+    if (existsSync(temporary)) { try { unlinkSync(temporary); } catch { /* ignore */ } }
+  }
 }
 
 const mapGrant = grant => {
@@ -160,14 +168,34 @@ const expandProfileHomeGrants = (items, sourceHome, targetHome) => {
   if (!Array.isArray(items) || !sourceHome || !targetHome) return Array.isArray(items) ? items : [];
   const srcFwd = sourceHome.replace(/\\/g, '/').replace(/\/+$/, '');
   const tgtFwd = targetHome.replace(/\\/g, '/').replace(/\/+$/, '');
+  const srcLower = srcFwd.toLowerCase();
   const out = [...items];
   for (const item of items) {
     if (typeof item !== 'string') continue;
     const norm = item.replace(/\\/g, '/');
-    if (norm.includes(srcFwd)) out.push(norm.split(srcFwd).join(tgtFwd));
+    if (process.platform === 'win32') {
+      const idx = norm.toLowerCase().indexOf(srcLower);
+      if (idx >= 0) out.push(norm.slice(0, idx) + tgtFwd + norm.slice(idx + srcFwd.length));
+    } else if (norm.includes(srcFwd)) {
+      out.push(norm.split(srcFwd).join(tgtFwd));
+    }
   }
   return [...new Set(out)];
 };
+
+function sanitizeMcpServers(servers) {
+  if (!servers || typeof servers !== 'object' || Array.isArray(servers)) return {};
+  const clean = {};
+  for (const [name, entry] of Object.entries(servers)) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const copy = { ...entry };
+    // Never copy credential contents (env tokens, API keys, auth headers) between profiles.
+    delete copy.env;
+    delete copy.headers;
+    clean[name] = copy;
+  }
+  return clean;
+}
 
 // Mirror the owner's native Antigravity project permissions and trusted folders
 // into a WSL or native profile. Owner actions call this (login, catalog refresh,
@@ -201,7 +229,6 @@ export function mirrorAgyPermissions(targetGeminiDir, sourceHome = homedir(), is
     const mirroredProject = { ...project, projectResources: { ...project.projectResources, resources: mapped } };
     if (!isWslProfile && Array.isArray(project.permissionGrants?.allow)) {
       const expanded = expandProfileHomeGrants(project.permissionGrants.allow, sourceHome, targetHome);
-      if (expanded.length) expanded.push(`read_file(${targetHomeFwd}/.project-brain/*)`, `read_file(${targetHomeFwd}/.project-brain/**)`, `write_file(${targetHomeFwd}/.project-brain/*)`, `write_file(${targetHomeFwd}/.project-brain/**)`);
       mirroredProject.permissionGrants = { ...project.permissionGrants, allow: [...new Set(expanded)] };
     }
     writeJsonAtomic(path.join(targetGeminiDir, 'config', 'projects', file), mirroredProject);
@@ -242,7 +269,11 @@ export function mirrorAgyPermissions(targetGeminiDir, sourceHome = homedir(), is
       try {
         const srcMcp = readJson(mcpSource) || {};
         const tgtMcp = readJson(mcpTarget) || {};
-        writeJsonAtomic(mcpTarget, { ...tgtMcp, ...srcMcp, mcpServers: { ...(tgtMcp.mcpServers || {}), ...(srcMcp.mcpServers || {}) } });
+        writeJsonAtomic(mcpTarget, {
+          ...tgtMcp,
+          ...srcMcp,
+          mcpServers: { ...(tgtMcp.mcpServers || {}), ...sanitizeMcpServers(srcMcp.mcpServers) },
+        });
       } catch {}
     }
     const migratedSource = path.join(sourceGemini, 'config', '.migrated');

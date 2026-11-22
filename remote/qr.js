@@ -156,12 +156,8 @@ export function encodeQrMatrix(text) {
   finder(0, n - 7);
   finder(n - 7, 0);
 
-  for (let i = 8; i < n - 8; i++) {
-    set(6, i, i % 2 === 0);
-    set(i, 6, i % 2 === 0);
-  }
-  set(n - 8, 8, true);
-
+  // Draw alignment patterns BEFORE timing patterns so centers on row/col 6 (V7-V10)
+  // are not skipped by timing reservations; only the 3 finder corners are reserved.
   for (const r of spec.align) {
     for (const c of spec.align) {
       if (reserved[r][c]) continue;
@@ -173,6 +169,12 @@ export function encodeQrMatrix(text) {
       }
     }
   }
+
+  for (let i = 8; i < n - 8; i++) {
+    if (!reserved[6][i]) set(6, i, i % 2 === 0);
+    if (!reserved[i][6]) set(i, 6, i % 2 === 0);
+  }
+  set(n - 8, 8, true);
 
   // Reserve format info areas
   for (let i = 0; i <= 8; i++) {

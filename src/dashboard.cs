@@ -38,14 +38,29 @@ internal static class Dashboard {
         if (value.IndexOf('"') >= 0 || value.IndexOf('\r') >= 0 || value.IndexOf('\n') >= 0) throw new ArgumentException("Invalid launch argument");
         return "\"" + value + new string('\\', value.Length - value.TrimEnd('\\').Length) + "\"";
     }
+    static bool MatchesProfileArg(string command, string profile) {
+        if (string.IsNullOrEmpty(command)) return false;
+        string quoted = "--user-data-dir=\"" + profile + "\"";
+        if (command.IndexOf(quoted, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        string bare = "--user-data-dir=" + profile;
+        int idx = 0;
+        while ((idx = command.IndexOf(bare, idx, StringComparison.OrdinalIgnoreCase)) >= 0) {
+            int end = idx + bare.Length;
+            if (end == command.Length || char.IsWhiteSpace(command[end]) || command[end] == '"') return true;
+            idx = end;
+        }
+        return false;
+    }
     static HashSet<uint> ProfileProcesses(string profile) {
         var ids = new HashSet<uint>();
         using (var search = new ManagementObjectSearcher("SELECT ProcessId, CommandLine FROM Win32_Process WHERE Name='msedge.exe' OR Name='chrome.exe'"))
         using (var processes = search.Get()) {
             foreach (ManagementObject process in processes) {
-                var command = Convert.ToString(process["CommandLine"]);
-                if (command.IndexOf("--user-data-dir=" + profile, StringComparison.OrdinalIgnoreCase) >= 0 || command.IndexOf("--user-data-dir=\"" + profile + "\"", StringComparison.OrdinalIgnoreCase) >= 0)
-                    ids.Add(Convert.ToUInt32(process["ProcessId"]));
+                using (process) {
+                    var command = Convert.ToString(process["CommandLine"]);
+                    if (MatchesProfileArg(command, profile))
+                        ids.Add(Convert.ToUInt32(process["ProcessId"]));
+                }
             }
         }
         return ids;
@@ -107,6 +122,7 @@ internal static class Dashboard {
         foreach (IntPtr w in windows) {
             string title = WindowTitle(w);
             if (title.IndexOf("Oturum doldu", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                title.IndexOf("Yetkilendirme", StringComparison.OrdinalIgnoreCase) >= 0 ||
                 title.IndexOf("127.0.0.1", StringComparison.OrdinalIgnoreCase) >= 0) {
                 return true;
             }
@@ -142,7 +158,7 @@ internal static class Dashboard {
             string dashboard = payload != null && payload.ContainsKey("dashboard") ? Convert.ToString(payload["dashboard"]) : null;
             if (payload != null && payload.ContainsKey("reauthNeeded") && payload["reauthNeeded"] is bool) reauthNeeded = (bool)payload["reauthNeeded"];
             if (string.IsNullOrWhiteSpace(dashboard)) {
-                File.WriteAllText(Path.Combine(directory,"dashboard-start-error.log"), "Exit: 0\r\nStdout: " + text + "\r\nStderr: " + error.Result);
+                File.WriteAllText(Path.Combine(directory,"dashboard-start-error.log"), "Exit: 0 (missing dashboard URL)\r\nStderr: " + error.Result);
                 throw new Exception("Servis pencere baglantisini dondurmedi. Kurulumu (npm run setup) kontrol edin.");
             }
             return dashboard;
@@ -172,7 +188,7 @@ internal static class Dashboard {
                         : EnsureUrl(directory, args[1], args[2], isRemote ? "remote-ensure" : "ensure", out reauthNeeded);
                     var windows = Windows(profile);
                     if (windows.Count > 0) {
-                        if (!isRemote && NeedsSessionReopen(windows, reauthNeeded)) {
+                        if (NeedsSessionReopen(windows, reauthNeeded)) {
                             CloseWindows(profile, windows);
                         } else {
                             Activate(windows); return 0;
@@ -198,8 +214,9 @@ internal static class Dashboard {
                 } finally { mutex.ReleaseMutex(); }
             }
         } catch (Exception error) {
+            string title = (args.Length == 4 && args[3] == "remote") || (args.Length > 1 && args[1] == "--remote-url") ? "CLI Agent Remote" : "CLI Agent Pool";
             if (args.Length>1 && (args[1]=="--url" || args[1]=="--remote-url")) Console.Error.WriteLine(error.Message);
-            else MessageBox.Show(error.Message, "CLI Agent Pool", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            else MessageBox.Show(error.Message, title, MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 1;
         }
     }

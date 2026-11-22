@@ -37,17 +37,18 @@ execution. Removing category membership keeps catalog availability. Effort per
 category is a default. Native supported effort, capability, billing and quota
 validation remain; no agent-selection authority setting is required.
 
-The caller controls concurrency through its submissions; Pool imposes no worker count cap. Overlapping readers
-share; writers exclude other access. needs_review quarantine survives restarts.
-Resolve only an inspected stopped task through cli-agent-pool resolve with a note.
-No automatic worktree creation, merge or cleanup. CLI --timeout bounds the worker;
---wait bounds the caller, preserving task identity and resume information.
+The caller controls concurrency through its submissions; Pool imposes no worker count cap,
+workspace lock, or `needs_review` quarantine. Callers coordinate parallel writers
+(e.g. distinct worktrees). No automatic worktree creation, merge or cleanup. CLI
+`--timeout` bounds the worker (default 0 = unlimited); `--wait` bounds the caller,
+preserving task identity and resume information.
 
 Execute final report has six required fields: status(completed|partial|blocked),
 summary, files:[{path,change}], checks:[{command,outcome:passed|failed|not_run}],
-research:[{source,finding}], blockers:[string]. Use empty arrays when absent,
-maximum 6000 characters, target 200 words. Invalid/partial reports retain evidence.
-Retrieve full task only when compact diagnostics are insufficient.
+research:[{source,finding}], blockers:[string]. Use empty arrays when absent;
+prompt target 200 words / 6000 characters (parser accepts up to 32,768 characters).
+Invalid/partial reports retain evidence. Retrieve full task only when compact
+diagnostics are insufficient.
 
 
 ## Director execution (pb-director/1)
@@ -60,12 +61,11 @@ cli-agent-pool preflight --route ROUTE --model MODEL --workspace "/project" --re
 ~~~
 
 Poll returned id via pool_get_task and inspect preflight.ready, or query
-pool_preflight_status (read-only, lock-free). The key includes effort, CLI version
-and native settings. Missing/expired keys return PREFLIGHT_REQUIRED; failures
-include per-capability fixes. Probes take the ordinary write lock; run them before
-the director, or from owner recovery after the old director stops. Model reports
-alone never prove permission readiness. readOutside requires a native Read tool
-event and exact random line; shell-only readers cannot certify that capability.
+pool_preflight_status (read-only, requires Bearer token). The key includes effort,
+CLI version and native settings. Missing/expired keys return PREFLIGHT_REQUIRED;
+failures include per-capability fixes. Model reports alone never prove permission
+readiness. readOutside requires a native Read tool event and exact random line;
+shell-only readers cannot certify that capability.
 
 Submit profile:director, kind:write, mode:execute, pinned route/model and the same
 readPaths/capabilities/effort. Native Claude/Codex/Antigravity are supported;
@@ -81,30 +81,30 @@ idleTimeoutSeconds:300..86400, stopOnQuotaBarrierPercent:1..50,
 supersedesTaskId:uuid, secretEnv:{PB_RELAY_TOKEN:value}. Values are memory
 only, never stored or included in idempotency content. Queued secret-bearing tasks
 fail SECRET_LOST after restart. Do not place secrets in prompts or hook argv.
-CLI_AGENT_POOL_TASK_ID and the per-run TASK_TOKEN reach native tasks; CLI/stdin
+CLI_AGENT_POOL_TASK_ID and CLI_AGENT_POOL_TASK_TOKEN reach native tasks; CLI/stdin
 MCP bridges forward the token and worker marker automatically. Keep them when
 calling Pool from a wrapper. A running director can ack itself and submit a
-preflight-ready successor; ordinary workers cannot create directors/hooks.
-Owner preflight/resolve are refused inside task bridges. Arbitrary shell access
-under the same OS user remains owner-equivalent; this is no multi-user sandbox.
+preflight-ready successor (without attaching new onExit/secretEnv); ordinary workers
+cannot create directors/hooks. Owner preflight/resolve are refused inside task bridges.
+Arbitrary shell access under the same OS user remains owner-equivalent; this is no
+multi-user sandbox.
 
 pool_ack_task {taskId} is idempotent while running. Linked workers keep idle
-liveness and expose parentTaskId; they cannot overlap the parent workspace or use
-paid_api. Start and ack expiry return START_TIMEOUT/ACK_TIMEOUT; idle returns
-IDLE_TIMEOUT only after process-tree teardown. stopOnQuotaBarrierPercent cancels a
-running director with QUOTA_BARRIER when live remaining quota reaches the barrier;
-supersedesTaskId cancels a predecessor still running 90s after successor admission
-with SUPERSEDED_BY_HANDOFF. A failed write releases its lock
-only if conservative before/after fingerprints match. Unknown or changed state
-and WSL keep needs_review. Owner pool_resolve_task {taskId,reviewed:true,note}
-acknowledges inspection without reverting files and preserves originalError. Never resolve unrelated tasks.
+liveness and expose parentTaskId; they cannot use paid_api routes. Start and ack
+expiry return START_TIMEOUT/ACK_TIMEOUT; idle returns IDLE_TIMEOUT only after
+process-tree teardown. stopOnQuotaBarrierPercent cancels a running director with
+QUOTA_BARRIER when live remaining quota reaches the barrier; supersedesTaskId
+cancels a predecessor still running 90s after successor admission with
+SUPERSEDED_BY_HANDOFF. Failed/interrupted writes end directly in failed/cancelled/
+timed_out without workspace quarantine.
 
-onExit runs from the service environment after the final lock decision, with
-CAP_TASK_ID/STATE/ERROR, closed stdin and no worker/token/secret env. It may call
-Pool. Bare code 75 retries three times (30s apart); code 75 with CAP_WAKE_AT <ISO>
-or CAP_RETRY_AFTER <seconds> schedules extended wakeups (5s..3600s, up to 200 cycles)
-for quota-reset or network-outage recovery. Last 2KB output is retained;
-CAP_NOTIFY lines appear in task notifications. Pending hooks recover at restart;
-a launch interrupted at an uncertain point is not replayed blindly. Relay recover
-should be idempotent and also callable manually. Watchdog works only while the
-service runs; Pool stores no relay record and never selects a successor.
+onExit runs with a sanitized child environment (allowlisted OS vars + CAP_TASK_*
+and CLI_AGENT_POOL_HOME, without daemon secrets or worker/token/secret env) after
+process teardown, with closed stdin. It may call Pool. Bare code 75 retries three
+times (30s apart); code 75 with CAP_WAKE_AT <ISO> or CAP_RETRY_AFTER <seconds>
+schedules extended wakeups (5s..3600s, up to 200 cycles) for quota-reset or
+network-outage recovery. Last 2KB redacted output is retained; CAP_NOTIFY lines
+appear as redacted task notifications. Pending hooks recover at restart; a launch
+interrupted at an uncertain point is not replayed blindly. Relay recover should be
+idempotent and also callable manually. Watchdog works only while the service runs;
+Pool stores no relay record and never selects a successor.

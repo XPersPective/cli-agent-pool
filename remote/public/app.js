@@ -494,14 +494,19 @@
         toast('Tek mesajda en fazla 5 doküman eklenebilir.', true);
         break;
       }
-      if (file.size > 204_800) {
-        toast(`"${file.name}" çok büyük (en fazla 200 KB).`, true);
+      if (file.size > 80_000) {
+        toast(`"${file.name}" çok büyük (dosya başına en fazla 80 KB).`, true);
         continue;
       }
       try {
         const text = await file.text();
         if (text.includes('\u0000')) {
           toast(`"${file.name}" metin tabanlı bir doküman değil.`, true);
+          continue;
+        }
+        const usedChars = state.pendingAttachments.reduce((sum, item) => sum + (item.content?.length || 0), 0);
+        if (usedChars + text.length > 85_000) {
+          toast(`Toplam doküman boyutu 85.000 karakter sınırını aşıyor.`, true);
           continue;
         }
         state.pendingAttachments.push({ name: file.name, size: file.size, content: text });
@@ -639,6 +644,9 @@
     $('topbar-back-btn').hidden = isChat;
     $('topbar-brand-icon').hidden = !isChat;
     if (nextView === 'chats') renderChatGroups($('mobile-chat-list'), true);
+    if (nextView === 'calls') renderCallsView();
+    if (nextView === 'pools') renderPoolsView();
+    if (nextView === 'settings') renderSettingsView();
     if (nextView === 'calls' || nextView === 'pools' || nextView === 'settings') void refreshState(false);
     if (!fromPopstate && nextView !== prev) pushHistoryGuard(`view:${nextView}`);
   }
@@ -662,9 +670,10 @@
         pushHistoryGuard('view:chat');
         return;
       }
-      // 3. If already inside Chat, Back switches cleanly to the Chats list (never kicks out of the app).
-      switchView('chats', { fromPopstate: true });
-      pushHistoryGuard('view:chats');
+      // 3. On mobile layouts (< 860px) inside Chat, switch to Chats once without trapping desktop Back.
+      if (window.innerWidth < 860) {
+        switchView('chats', { fromPopstate: true });
+      }
     });
   }
 
@@ -821,8 +830,13 @@
                 try {
                   await api(`/r/chats/${encodeURIComponent(chat.id)}`, { method: 'DELETE' });
                   if (state.activeChatId === chat.id) {
+                    closeAllStreams();
                     state.activeChatId = null;
                     state.activeChat = null;
+                    try { localStorage.removeItem(ACTIVE_CHAT_KEY); } catch { /* ignore */ }
+                    renderTopbarAndStatus();
+                    renderWorkspaceStrip();
+                    renderMessages(false);
                   }
                   await refreshState(false);
                   toast('Sohbet silindi.');
@@ -1042,7 +1056,7 @@
 
     return el('article', { className: 'msg msg-assistant' }, [
       el('div', { className: 'msg-bubble' }, bodyNodes),
-      el('div', { className: 'msg-meta', text: [toolName, subName, formatTime(msg.at)].filter(Boolean).join(' · ') }),
+      el('div', { className: 'msg-meta', text: [toolName, subName, formatTime(msg.createdAt || msg.at)].filter(Boolean).join(' · ') }),
     ]);
   }
 
@@ -1073,7 +1087,7 @@
           el('div', { className: 'msg-meta', text: [
             msg.workspace ? `📁 ${folderName(msg.workspace)}` : '💬 Sohbet',
             msg.includeContext === false ? 'Sıfır bağlam' : '',
-            formatTime(msg.at),
+            formatTime(msg.createdAt || msg.at),
           ].filter(Boolean).join(' · ') }),
         ]));
       } else {
@@ -1745,7 +1759,7 @@
           type: 'button',
           className: 'chat-item-main',
           title: 'İçine girmek için tıklayın',
-          onClick: () => void loadFolderBrowser(dir, true),
+          onClick: () => void loadFolderBrowser(dir, state.folderDialogPurpose === 'shared'),
         }, [
           el('div', { className: 'picker-item-title', text: `📁 ${folderName(dir)}` }),
           el('div', { className: 'picker-item-sub mono', text: dir }),
@@ -1786,7 +1800,7 @@
           type: 'button',
           className: 'chat-item-main',
           title: 'İçine girmek için tıklayın',
-          onClick: () => void loadFolderBrowser(entry.path, true),
+          onClick: () => void loadFolderBrowser(entry.path, state.folderDialogPurpose === 'shared'),
         }, [
           el('div', { className: 'picker-item-title', text: `📁 ${entry.name}` }),
           el('div', { className: 'picker-item-sub mono', text: entry.path }),
@@ -1822,8 +1836,10 @@
 
   async function selectWorkspace(dir, closeDialog = false) {
     const clean = (typeof dir === 'string' && dir.trim() !== '[object Object]') ? dir.trim() : '';
-    if (!state.activeChatId) await createNewChat(clean);
-    else {
+    if (!state.activeChatId) {
+      const created = await createNewChat(clean);
+      if (!created) return;
+    } else {
       try {
         const res = await api(`/r/chats/${encodeURIComponent(state.activeChatId)}`, {
           method: 'PATCH',
@@ -1858,6 +1874,9 @@
       const parser = new DOMParser();
       const svgDoc = parser.parseFromString(res.qrSvg, 'image/svg+xml');
       const svgEl = svgDoc.documentElement;
+      if (!svgEl || svgEl.tagName.toLowerCase() !== 'svg' || svgDoc.querySelector('parsererror')) {
+        throw new Error('QR kodu ayrıştırılamadı.');
+      }
       $('pair-qr-box').replaceChildren(document.importNode(svgEl, true));
       $('pair-url-input').value = res.url;
       const netBadge = $('pair-net-badge');
@@ -2005,26 +2024,32 @@
         msg.errorDetail = task.errorDetail || '';
         msg.report = task.report || null;
         msg.reportedModel = task.reportedModel || msg.reportedModel;
+        const latestAssistant = [...state.activeChat.messages].reverse().find(m => m.role === 'assistant');
         if (task.sessionId) {
           msg.sessionId = task.sessionId;
-          state.activeChat.nativeSession = {
-            sessionId: task.sessionId,
-            routeId: msg.routeId || '',
-            modelId: msg.modelId || '',
-            adapter: msg.adapter || '',
-            group: msg.group || '',
-            workspace: msg.workspace || '',
-          };
+          if (!latestAssistant || latestAssistant.taskId === taskId) {
+            state.activeChat.nativeSession = {
+              sessionId: task.sessionId,
+              routeId: msg.routeId || '',
+              modelId: msg.modelId || '',
+              adapter: msg.adapter || '',
+              group: msg.group || '',
+              workspace: msg.workspace || '',
+            };
+          }
           renderTopbarAndStatus();
+        }
+        if (task.state === 'failed' && msg.resumedSessionId && ['CLI_FAILED', 'INVALID_RESULT', 'PROTOCOL_ERROR'].includes(task.error)) {
+          if (state.activeChat.nativeSession?.sessionId === msg.resumedSessionId) {
+            state.activeChat.nativeSession = null;
+            renderTopbarAndStatus();
+          }
         }
         msg.events = (task.events || []).slice(-30);
         renderMessages(true);
       }
     };
 
-    es.addEventListener('open', () => {
-      state.streamRetries.set(taskId, 0);
-    });
     es.addEventListener('update', e => {
       state.streamRetries.set(taskId, 0);
       try { applyUpdate(JSON.parse(e.data)); } catch { /* ignore */ }
@@ -2036,6 +2061,16 @@
       clearStreamTimer(taskId);
       state.streamRetries.delete(taskId);
       void refreshState(false);
+    });
+    es.addEventListener('stream_error', e => {
+      es.close();
+      state.streams.delete(taskId);
+      clearStreamTimer(taskId);
+      state.streamRetries.delete(taskId);
+      try {
+        const info = JSON.parse(e.data);
+        if (info?.message) toast(info.message, true);
+      } catch { /* ignore */ }
     });
     es.addEventListener('error', () => {
       es.close();
@@ -2069,6 +2104,7 @@
     renderChatList();
     try {
       const { chat } = await api(`/r/chats/${encodeURIComponent(chatId)}`);
+      if (state.activeChatId !== chatId) return;
       state.activeChat = chat;
       renderTopbarAndStatus();
       renderWorkspaceStrip();
@@ -2079,13 +2115,14 @@
         }
       }
     } catch (err) {
-      toast(err.message, true);
+      if (state.activeChatId === chatId) toast(err.message, true);
     }
   }
 
   async function createNewChat(preferredWorkspace = undefined) {
     const ws = preferredWorkspace !== undefined ? preferredWorkspace : (state.activeChat?.workspace || '');
     try {
+      closeAllStreams();
       const { chat } = await api('/r/chats', { method: 'POST', body: { workspace: ws } });
       state.chats = [{ id: chat.id, title: chat.title, workspace: chat.workspace, updatedAt: chat.updatedAt, messageCount: 0 }, ...state.chats];
       state.activeChatId = chat.id;
@@ -2096,8 +2133,10 @@
       renderWorkspaceStrip();
       renderMessages(false);
       $('prompt-input').focus();
+      return chat;
     } catch (err) {
       toast(err.message, true);
+      return null;
     }
   }
 
@@ -2111,7 +2150,10 @@
       toast('CLI Agent Pool servisi kapalı. Önce servisi başlatın.', true);
       return false;
     }
-    if (!state.activeChatId) await createNewChat('');
+    if (!state.activeChatId) {
+      const created = await createNewChat('');
+      if (!created || !state.activeChatId) return false;
+    }
     const workspace = state.activeChat?.workspace || '';
     const modelObj = findModelObj(state.selection.routeId, state.selection.modelId);
     const modelKinds = Array.isArray(modelObj?.kinds) ? modelObj.kinds : ['text', 'read', 'write'];
@@ -2431,8 +2473,13 @@
     // IME-safe Enter submit (ime-safe-enter-submit)
     const composerForm = $('composer-form');
     const promptInput = $('prompt-input');
+    const autoResizePrompt = () => {
+      if (typeof CSS !== 'undefined' && CSS.supports?.('field-sizing', 'content')) return;
+      promptInput.style.height = 'auto';
+      promptInput.style.height = `${Math.min(180, Math.max(36, promptInput.scrollHeight))}px`;
+    };
     composerForm.addEventListener('submit', sendPrompt);
-    promptInput.addEventListener('input', updateSendButton);
+    promptInput.addEventListener('input', () => { updateSendButton(); autoResizePrompt(); });
     promptInput.addEventListener('keydown', event => {
       if (event.key !== 'Enter' || event.shiftKey) return;
       event.preventDefault();

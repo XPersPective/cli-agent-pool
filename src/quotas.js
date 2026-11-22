@@ -101,9 +101,10 @@ export function antigravityAccountEmail(home = homedir(), tokenFile = null) {
 
 // `configDir` is CLAUDE_CONFIG_DIR for an account profile; it then also holds .claude.json.
 export async function claudeQuota(home = homedir(), configDir = null) {
-  const email = claudeAccountEmail(home, configDir);
+  const effectiveDir = configDir || (home === homedir() && process.env.CLAUDE_CONFIG_DIR ? process.env.CLAUDE_CONFIG_DIR : null);
+  const email = claudeAccountEmail(home, effectiveDir);
   const emailExtra = email ? { email } : {};
-  const oauth = readJson(path.join(configDir || path.join(home, '.claude'), '.credentials.json')).claudeAiOauth;
+  const oauth = readJson(path.join(effectiveDir || path.join(home, '.claude'), '.credentials.json')).claudeAiOauth;
   const live = oauth?.accessToken && (!oauth.expiresAt || oauth.expiresAt > Date.now() + 60_000);
   let sawNetworkError = false;
   if (live) {
@@ -113,7 +114,7 @@ export async function claudeQuota(home = homedir(), configDir = null) {
     if (status === 0 || status >= 500) sawNetworkError = true;
   }
   // Claude Code stores the last server snapshot itself; use it only while fresh.
-  const cached = readJson(configDir ? path.join(configDir, '.claude.json') : path.join(home, '.claude.json')).cachedUsageUtilization;
+  const cached = readJson(effectiveDir ? path.join(effectiveDir, '.claude.json') : path.join(home, '.claude.json')).cachedUsageUtilization;
   const age = Date.now() - Number(cached?.fetchedAtMs);
   if (cached?.utilization && age >= 0 && age < 30 * 60_000) {
     const windows = claudeWindows(cached.utilization);
@@ -150,14 +151,16 @@ const zaiMonitor = (key, origin = 'https://api.z.ai') => request(`${origin}/api/
 export async function zaiQuota(home = homedir(), monitor = zaiMonitor) {
   const keys = zaiKeys(home);
   if (!keys.length) return authRequired('zai-monitor', 'ZCode içinde Z.AI Coding Plan anahtarı yok; zcode login zai çalıştırın.');
+  let sawNetworkError = false;
   for (const [index, key] of keys.entries()) {
     const { status, data } = await monitor(key);
     if (status === 200 && data?.success) {
       const note = `Plan: ${data.data?.level || 'bilinmiyor'}${index ? ' · Uyarı: ZCode CLI anahtarında plan yok, masaüstü anahtarı ölçüldü' : ''}`;
       return withStatus(zaiWindows(data), { auth: `zai (${data.data?.level || 'plan'})`, source: 'zai-monitor', note, ...(index ? { status: 'auth_required' } : {}) });
     }
+    if (status === 0 || status >= 500) sawNetworkError = true;
   }
-  return unknown('zai-monitor', 'Z.AI planı doğrulanamadı; servis erişimi, hesap veya plan durumunu ZCode içinde kontrol edin.', { auth: 'credentials_present' });
+  return unknown('zai-monitor', 'Z.AI planı doğrulanamadı; servis erişimi, hesap veya plan durumunu ZCode içinde kontrol edin.', { auth: 'credentials_present', ...(sawNetworkError ? { networkError: true } : {}) });
 }
 
 // ---- Google Antigravity ----------------------------------------------------
@@ -166,9 +169,9 @@ const ANTIGRAVITY_ENDPOINTS = ['https://daily-cloudcode-pa.googleapis.com', 'htt
 const credentialScript = fileURLToPath(new URL('./wincred.py', import.meta.url));
 const execFileAsync = promisify(execFile);
 
-async function windowsCredential(target) {
+async function windowsCredential(target, python = 'python') {
   try {
-    const pyw = resolveWindowsPython('python', { preferWindowless: true });
+    const pyw = resolveWindowsPython(python, { preferWindowless: true });
     if (/pythonw\.exe$/i.test(pyw)) {
       const { stdout } = await execFileAsync(pyw, [credentialScript, target], {
         cwd: path.dirname(credentialScript),
@@ -182,6 +185,7 @@ async function windowsCredential(target) {
     const res = await runProcess({
       argv: [pyw, credentialScript, target],
       cwd: path.dirname(credentialScript),
+      python,
       timeoutMs: TIMEOUT_MS,
       maxBytes: 65_536,
     }).done;
@@ -191,14 +195,17 @@ async function windowsCredential(target) {
   }
 }
 
-export async function antigravityToken(home, { tokenFile, credentialStore = true, fetchImpl = fetch } = {}) {
+export async function antigravityToken(home, { tokenFile, credentialStore = true, fetchImpl = fetch, python = 'python' } = {}) {
   let stored = readJson(tokenFile || path.join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'));
-  if (!stored.token && credentialStore && process.platform === 'win32') {
-    try { stored = JSON.parse(await windowsCredential('gemini:antigravity') || '{}'); } catch { stored = {}; }
+  if (!stored.token && !stored.access_token && !stored.refresh_token && credentialStore && process.platform === 'win32') {
+    try { stored = JSON.parse(await windowsCredential('gemini:antigravity', python) || '{}'); } catch { stored = {}; }
   }
   const email = extractAntigravityEmail(stored);
   const token = stored.token || (stored.access_token || stored.refresh_token ? stored : {});
-  if (token.access_token && Date.parse(token.expiry) > Date.now() + 60_000) return { token: token.access_token, reason: 'ok', ...(email ? { email } : {}) };
+  const expiryMs = typeof token.expiry === 'number'
+    ? (token.expiry < 1e12 ? token.expiry * 1000 : token.expiry)
+    : Date.parse(token.expiry);
+  if (token.access_token && Number.isFinite(expiryMs) && expiryMs > Date.now() + 60_000) return { token: token.access_token, reason: 'ok', ...(email ? { email } : {}) };
   if (!token.refresh_token) return { token: null, reason: 'auth_required', ...(email ? { email } : {}) };
   // Refresh in memory only; the CLI keeps owning its stored credential.
   try {
@@ -217,9 +224,11 @@ export function antigravityModelWindows(body) {
   const byModel = new Map();
   for (const [name, model] of rows) {
     const fraction = model?.quotaInfo?.remainingFraction;
-    if (typeof name !== 'string' || typeof fraction !== 'number' || /^(tab|chat)_/.test(name)) continue; // internal IDE features, not models
+    if (typeof name !== 'string' || typeof fraction !== 'number' || !Number.isFinite(fraction) || /^(tab|chat)_/.test(name)) continue; // internal IDE features, not models
     const id = name.replace(/-(low|medium|high|xhigh|max)$/, '');
-    const window = { name: id, remainingPercent: percent(fraction * 100), resetsAt: isoTime(model.quotaInfo.resetTime), models: [id] };
+    const remainingPercent = percent(fraction * 100);
+    if (remainingPercent == null) continue;
+    const window = { name: id, remainingPercent, resetsAt: isoTime(model.quotaInfo.resetTime), models: [id] };
     if (!byModel.has(id) || byModel.get(id).remainingPercent > window.remainingPercent) byModel.set(id, window);
   }
   return [...byModel.values()];
@@ -307,10 +316,11 @@ export function agyUsageWindows(report) {
       if (!Number.isFinite(fraction)) continue;
       const kind = bucket.window === '5h' || bucket.window === 'weekly' ? bucket.window : null;
       const isArgon = /argon/i.test(group.name || '');
+      const resetsAt = typeof bucket.reset_time === 'number' ? isoTime(bucket.reset_time) : bucket.reset_time;
       windows.push({
         name: isArgon ? `${group.name}:${kind || bucket.window || 'limit'}` : `${group.name}:${kind || bucket.name}`,
         remainingPercent: Math.round(Math.min(1, Math.max(0, fraction)) * 1e6) / 1e4,
-        ...(bucket.reset_time ? { resetsAt: bucket.reset_time } : {}),
+        ...(resetsAt ? { resetsAt } : {}),
         ...(kind ? { windowMinutes: kind === '5h' ? 300 : 10080 } : {}),
         ...(models ? { models } : {}),
       });
@@ -336,8 +346,11 @@ export function kimiWindows(body) {
 function kimiCredentials(home) {
   let toml = '';
   try { toml = readFileSync(path.join(home, '.kimi-code', 'config.toml'), 'utf8'); } catch { /* not configured */ }
-  const section = /^\[providers\."managed:kimi-code"\.oauth\]\s*\n([^[]*)/m.exec(toml)?.[1] || '';
-  const key = /^\s*key\s*=\s*"oauth\/([A-Za-z0-9_-]+)"\s*$/m.exec(section)?.[1];
+  const section = /^\[providers\."managed:kimi-code"\.oauth\][ \t]*\r?\n([\s\S]*?)(?=^\[|\Z)/m.exec(toml)?.[1]
+    || /^\[providers\."managed:kimi-code"\.oauth\][ \t]*\r?\n([\s\S]*)/m.exec(toml)?.[1]
+    || '';
+  const body = section.replace(/^\[[\s\S]*$/m, '');
+  const key = /^\s*key\s*=\s*"oauth\/([A-Za-z0-9_-]+)"\s*$/m.exec(body)?.[1];
   return key ? readJson(path.join(home, '.kimi-code', 'credentials', `${key}.json`)) : {};
 }
 export const kimiLoggedIn = (home = homedir()) => typeof kimiCredentials(home).access_token === 'string';
@@ -349,6 +362,7 @@ export async function kimiQuota(home = homedir()) {
   const { status, data } = await request('https://api.kimi.ai/coding/v1/usages', { headers: { Authorization: `Bearer ${creds.access_token}` } });
   if (status === 401) return unknown('kimi-code-usage', 'Kimi oturum jetonu reddedildi.', { auth: 'credentials_present' });
   if (status === 403) return { status: 'auth_required', auth: 'no_subscription', windows: [], source: 'kimi-code-usage', note: 'Kimi aboneliği Kimi Code erişimi içermiyor.' };
+  if (status === 0 || status >= 500) return unknown('kimi-code-usage', `Kimi kota servisi erişilemiyor (HTTP ${status})`, { auth: 'credentials_present', networkError: true });
   if (status !== 200) return unknown('kimi-code-usage', `Kimi kota servisi HTTP ${status}`);
   const windows = kimiWindows(data);
   return withStatus(windows, { auth: 'kimi-code', source: 'kimi-code-usage', ...(windows.length ? {} : { note: 'Kimi Code kullanım kotası boş döndü; abonelik Kimi Code içermiyor olabilir.' }) });
@@ -374,13 +388,18 @@ export async function minimaxQuota(home = homedir()) {
   const route = `/matrix/api/v1/user/get_user_extra_info?${query}`;
   const encoded = encodeURIComponent(route); // same safe set as the client's Python quote(safe="~()*!.'-")
   const lookup = await request(`https://agent.minimax.io${route}`, { method: 'POST', body: {}, headers: { Authorization: `Bearer ${creds.accessToken}`, 'User-Agent': 'MiniMaxCode', 'x-timestamp': seconds, yy: md5(`${encoded}_{}${md5(millis)}ooui`), 'x-signature': md5(`${seconds}I*7Cf%WZ#S&%1RlZJ&C2{}`) } });
+  if (lookup.status === 0 || lookup.status >= 500) return unknown('minimax-coding-plan', 'MiniMax kota servisine ulaşılamadı.', { auth: 'credentials_present', networkError: true });
   const workspaces = lookup.data?.workspaces || lookup.data?.data?.workspaces || [];
   const group = workspaces.find(workspace => workspace?.workspace_type === 0)?.op_group_id;
   if (!group) return unknown('minimax-coding-plan', 'MiniMax girişi var; plan kotası okunamadı.', { auth: 'credentials_present' });
   const { status, data } = await request('https://platform.minimax.io/v1/api/openplatform/coding_plan/remains', { headers: { Authorization: `Bearer ${creds.accessToken}`, 'X-Group-Id': String(group) } });
+  if (status === 0 || status >= 500) return unknown('minimax-coding-plan', 'MiniMax plan kota servisine ulaşılamadı.', { auth: 'credentials_present', networkError: true });
   if (status !== 200 || data?.base_resp?.status_code) return unknown('minimax-coding-plan', 'MiniMax plan kotası okunamadı.', { auth: 'credentials_present' });
   const windows = minimaxWindows(data);
-  return windows.length ? withStatus(windows, { auth: 'minimax', source: 'minimax-coding-plan' }) : { status: 'unknown', auth: 'minimax', windows: [], subscription: 'none', source: 'minimax-coding-plan', note: 'Etkin MiniMax Coding Plan bulunamadı.' };
+  const hasUnlimited = (data?.model_remains || []).some(m => m?.current_interval_status === 3 || m?.current_weekly_status === 3);
+  if (windows.length) return withStatus(windows, { auth: 'minimax', source: 'minimax-coding-plan' });
+  if (hasUnlimited) return { status: 'available', auth: 'minimax', windows: [], subscription: 'active', informational: true, source: 'minimax-coding-plan', note: 'MiniMax Coding Plan sınırsız / aktif.' };
+  return { status: 'unknown', auth: 'minimax', windows: [], subscription: 'none', source: 'minimax-coding-plan', note: 'Etkin MiniMax Coding Plan bulunamadı.' };
 }
 
 // ---- OpenRouter (through OpenCode's own auth store) -------------------------
@@ -409,7 +428,8 @@ export async function openrouterQuota(home = homedir()) {
 async function openrouterInfo(key) {
   const headers = { Authorization: `Bearer ${key}` };
   const [info, credits] = await Promise.all([request('https://openrouter.ai/api/v1/key', { headers }), request('https://openrouter.ai/api/v1/credits', { headers })]);
-  if (info.status === 401) return { auth: 'missing', note: 'OpenRouter anahtarı geçersiz; opencode providers login ile yenileyin.' };
+  if (info.status === 401 || info.status === 403) return { auth: 'missing', note: 'OpenRouter anahtarı geçersiz; opencode providers login ile yenileyin.' };
+  if (info.status === 0 || info.status >= 500) return { auth: 'api_key', networkError: true, note: 'OpenRouter kota servisine ulaşılamadı.' };
   const balance = credits.status === 200 ? Number(credits.data?.data?.total_credits) - Number(credits.data?.data?.total_usage) : null;
   return { auth: 'api_key', note: openrouterNote(info.status === 200 ? info.data?.data : null, credits.status === 200 ? credits.data?.data : null), ...(Number.isFinite(balance) ? { balanceUsd: balance } : {}) };
 }
@@ -463,11 +483,16 @@ export function parseOpenCodeGoUsage(body) {
   const found = [];
   const windowFrom = value => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-    const direct = percent(value.remaining ?? value.remaining_percent ?? value.remainingPercent ?? value.percent_remaining ?? value.percentRemaining);
+    const explicitPercent = percent(value.remaining_percent ?? value.remainingPercent ?? value.percent_remaining ?? value.percentRemaining);
     const limit = Number(value.limit ?? value.total ?? value.quota);
     const used = Number(value.used ?? value.consumed);
-    const computed = direct == null && Number.isFinite(limit) && limit > 0 && Number.isFinite(used) ? ((limit - used) / limit) * 100 : null;
-    const remaining = direct ?? computed;
+    const rawRemaining = Number(value.remaining);
+    let remaining = explicitPercent;
+    if (remaining == null && Number.isFinite(limit) && limit > 0) {
+      if (Number.isFinite(used)) remaining = percent(((limit - used) / limit) * 100);
+      else if (Number.isFinite(rawRemaining)) remaining = percent((rawRemaining / limit) * 100);
+    }
+    if (remaining == null) remaining = percent(value.remaining);
     if (remaining == null) return null;
     return { remaining, label: typeof value.name === 'string' ? value.name : null, resetsAt: isoTime(value.resets_at ?? value.resetsAt ?? value.reset_at ?? value.resetAt) };
   };
@@ -538,15 +563,20 @@ export async function apiRouteQuota(baseUrl, key) {
   if (!vendor || !key) return null;
   if (vendor === 'openrouter') {
     const info = await openrouterInfo(key);
-    return { ...info, status: info.auth === 'missing' ? 'auth_required' : 'available', windows: [], source: 'openrouter-key' };
+    const status = info.auth === 'missing' ? 'auth_required' : info.networkError ? 'unknown' : 'available';
+    return { ...info, status, windows: [], source: 'openrouter-key' };
   }
   if (vendor === 'zai' || vendor === 'bigmodel') {
     const { status, data } = await zaiMonitor(key, vendor === 'zai' ? 'https://api.z.ai' : 'https://open.bigmodel.cn');
+    if (status === 401 || status === 403) return authRequired(`${vendor}-monitor`, 'API anahtarı sağlayıcı tarafından reddedildi.');
+    if (status === 0 || status >= 500) return unknown(`${vendor}-monitor`, 'Sağlayıcı kota servisine ulaşılamadı.', { auth: 'api_key', networkError: true });
     if (status === 200 && data?.success) return withStatus(zaiWindows(data), { source: `${vendor}-monitor`, note: `Plan: ${data.data?.level || 'bilinmiyor'}` });
     return status === 200 ? { status: 'unknown', windows: [], source: `${vendor}-monitor`, note: 'Anahtar bir Coding Plan paketine bağlı değil (kullandıkça öde olabilir).' } : null;
   }
   const origin = new URL(baseUrl).hostname.endsWith('minimaxi.com') ? 'https://www.minimaxi.com' : 'https://platform.minimax.io';
   const { status, data } = await request(`${origin}/v1/api/openplatform/coding_plan/remains`, { headers: { Authorization: `Bearer ${key}` } });
+  if (status === 401 || status === 403) return authRequired('minimax-coding-plan', 'MiniMax API anahtarı reddedildi.');
+  if (status === 0 || status >= 500) return unknown('minimax-coding-plan', 'MiniMax kota servisine ulaşılamadı.', { auth: 'api_key', networkError: true });
   if (status !== 200 || data?.base_resp?.status_code) return null;
   return withStatus(minimaxWindows(data), { source: 'minimax-coding-plan' });
 }

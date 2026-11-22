@@ -460,6 +460,18 @@
   .notice::before { content: "✓" / ""; position: absolute; left: 14px; top: 12px; font-weight: 700; color: var(--success); }
   .notice.error { border-color: color-mix(in oklab, var(--danger) 45%, var(--border)); background: color-mix(in oklab, var(--raised), var(--danger) 10%); }
   .notice.error::before { content: "!" / ""; color: var(--danger); left: 17px; }
+  .console-banner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--s-2) var(--s-3);
+    padding: var(--s-2) var(--s-4);
+    border-bottom: 1px solid color-mix(in oklab, var(--warn, #d97706) 40%, var(--border));
+    background: color-mix(in oklab, var(--raised), var(--warn, #d97706) 10%);
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  .console-banner > span { flex: 1 1 320px; }
 
   /* Pool view toolbar */
   .pool-view-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--s-2); flex-shrink: 0; }

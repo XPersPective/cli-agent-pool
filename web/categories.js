@@ -24,7 +24,7 @@ export function migrateCategories(input) {
 export function removeCategory(config, id) {
   config.categories = categoriesOf(config).filter(category => category.id !== id);
   for (const route of config.routes) for (const model of route.models) {
-    const previous = model.memberships ?? (model.group === id ? [{ group: id }] : []);
+    const previous = model.memberships ?? (model.group && model.group !== 'unassigned' ? [{ group: model.group, ...(model.defaultEffort ? { effort: model.defaultEffort } : {}) }] : []);
     model.memberships = previous.filter(member => member.group !== id);
     if (model.group === id) model.group = model.memberships[0]?.group || 'unassigned';
   }

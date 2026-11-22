@@ -19,13 +19,25 @@ import { createRemoteServer } from '../remote/server.js';
 import { waitForTask } from '../src/task-protocol.js';
 import { setTimeout as delay } from 'node:timers/promises';
 
+const booleanFlags = new Set(['detach', 'live', 'force', 'status', 'open', 'fix-console']);
+
 function parseFlags(args) {
   const flags = {};
   const positional = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
+    if (arg === '--') { positional.push(...args.slice(i + 1)); break; }
     if (arg.startsWith('--')) {
+      const eq = arg.indexOf('=');
+      if (eq > 2) {
+        flags[arg.slice(2, eq)] = arg.slice(eq + 1);
+        continue;
+      }
       const key = arg.slice(2);
+      if (booleanFlags.has(key)) {
+        flags[key] = true;
+        continue;
+      }
       const next = args[i + 1];
       if (next !== undefined && !next.startsWith('--')) {
         flags[key] = next;
@@ -46,8 +58,16 @@ function multiFlags(args) {
   const positional = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
+    if (arg === '--') { positional.push(...args.slice(i + 1)); break; }
     if (!arg.startsWith('--')) { positional.push(arg); continue; }
+    const eq = arg.indexOf('=');
+    if (eq > 2) {
+      const key = arg.slice(2, eq);
+      (values[key] ||= []).push(arg.slice(eq + 1));
+      continue;
+    }
     const key = arg.slice(2);
+    if (booleanFlags.has(key)) { (values[key] ||= []).push(true); continue; }
     const next = args[i + 1];
     let value = true;
     if (next !== undefined && !next.startsWith('--')) { value = next; i++; }
@@ -110,6 +130,7 @@ export async function main(args = process.argv.slice(2)) {
     return;
   }
   if (command === 'install' || command === 'setup') {
+    ownerOnly();
     const { flags } = parseFlags(rest);
     const res = await installDesktopAndSkills(directory, null, { fixConsole: Boolean(flags['fix-console']) });
     if (res.restartRequired) {
@@ -130,9 +151,10 @@ export async function main(args = process.argv.slice(2)) {
     return;
   }
   if (command === 'open' || command === 'ui' || command === 'dashboard') {
+    ownerOnly();
     const config = ensureInitialized(directory, false);
     const info = await ensureDaemon(directory, config);
-    void ensureRemoteDaemon(directory, { python: config.python }).catch(() => {});
+    void ensureRemoteDaemon(directory, { python: config.python, wait: false }).catch(() => {});
     const windowInfo = await openDashboardWindow(info.dashboard, { reauth: Boolean(info.reauthNeeded) });
     print({ ...info, ...windowInfo });
     return;
@@ -201,11 +223,12 @@ export async function main(args = process.argv.slice(2)) {
   if (command === 'ensure' || command === 'start') {
     const config = ensureInitialized(directory, true);
     const info = await ensureDaemon(directory, config);
-    void ensureRemoteDaemon(directory, { python: config.python }).catch(() => {});
+    void ensureRemoteDaemon(directory, { python: config.python, wait: false }).catch(() => {});
     print(info);
     return;
   }
   if (command === 'stop') {
+    ownerOnly();
     const { flags } = parseFlags(rest);
     const config = ensureInitialized(directory, false);
     try {
@@ -217,9 +240,13 @@ export async function main(args = process.argv.slice(2)) {
     return;
   }
   if (command === 'restart') {
+    ownerOnly();
     // Servisi durdurup aynı veri diziniyle yeni bir arka plan servisi başlatır.
+    const { flags } = parseFlags(rest);
     const config = ensureInitialized(directory, false);
-    await delay(Number(rest.find(a => a.startsWith('--delay='))?.split('=')[1] || 900));
+    const delayMs = flags.delay !== undefined ? Number(flags.delay) : 900;
+    if (!Number.isFinite(delayMs) || delayMs < 0 || delayMs > 30_000) throw new PoolError('INVALID_REQUEST', '--delay 0 ile 30000 ms arasında olmalı.');
+    await delay(delayMs);
     try {
       const res = await managementRequest(directory, config, { operation: 'shutdown', force: false });
       if (res.confirmRequired) {
@@ -229,14 +256,17 @@ export async function main(args = process.argv.slice(2)) {
     } catch {
       // Servis zaten kapalı olabilir; yine de yeni örnek başlatılır.
     }
+    let portReleased = false;
     for (let attempt = 0; attempt < 80; attempt++) {
       await delay(150);
       try {
         await managementRequest(directory, config, { operation: 'pair_ui' });
       } catch {
+        portReleased = true;
         break; // Port boşaldı.
       }
     }
+    if (!portReleased) throw new PoolError('SHUTDOWN_TIMEOUT', 'Eski servis belirlenen sürede kapanmadı.');
     spawnDetachedHidden([process.execPath, fileURLToPath(import.meta.url), 'serve'], {
       cwd: directory,
       env: { ...process.env, CLI_AGENT_POOL_HOME: directory },
@@ -291,23 +321,25 @@ export async function main(args = process.argv.slice(2)) {
         service: await callPoolTool(client, 'pool_help'),
         catalog: await callPoolTool(client, 'pool_catalog'),
         pools: await callPoolTool(client, 'pool_list_pools'),
+        quotas: await callPoolTool(client, 'pool_quota_overview'),
       })));
     }
     return;
   }
   if (command === 'quotas') {
     const { flags } = parseFlags(rest);
-    const routePart = flags.route ? `/${encodeURIComponent(flags.route)}` : '';
+    const route = typeof flags.route === 'string' ? flags.route : '';
+    const routePart = route ? `/${encodeURIComponent(route)}` : '';
     const livePart = flags.live ? '?live=1' : '';
-    if (flags.live && !flags.route) throw new PoolError('INVALID_REQUEST', '--live requires --route <routeId>.');
-    print(await apiOrMcp(`/api/quotas${routePart}${livePart}`, flags.live ? 'pool_get_quotas' : null, flags.live ? { routeId: flags.route } : {}));
+    if (flags.live && !route) throw new PoolError('INVALID_REQUEST', '--live requires --route <routeId>.');
+    print(await apiOrMcp(`/api/quotas${routePart}${livePart}`, flags.live ? 'pool_get_quotas' : 'pool_quota_overview', route ? { routeId: route } : {}));
     return;
   }
   if (command === 'model') {
     const { flags } = parseFlags(rest);
     const query = new URLSearchParams();
-    if (flags.route) query.set('route', flags.route);
-    if (flags.model) query.set('model', flags.model);
+    if (typeof flags.route === 'string') query.set('route', flags.route);
+    if (typeof flags.model === 'string') query.set('model', flags.model);
     print(await apiRequest(directory, `/api/model?${query.toString()}`));
     return;
   }
@@ -317,26 +349,28 @@ export async function main(args = process.argv.slice(2)) {
     return;
   }
   if (command === 'catalog' || command === 'pools' || command === 'help-code') {
-    const { flags } = parseFlags(rest);
+    const { flags, positional } = parseFlags(rest);
+    const codeArg = typeof flags.code === 'string' ? flags.code : (command === 'help-code' && positional[0] ? positional[0] : undefined);
     const query = new URLSearchParams();
-    for (const [flag, key] of [['code', 'code'], ['view', 'view'], ['billing', 'billing'], ['adapter', 'adapter'], ['kind', 'kind'], ['route', 'routeId'], ['query', 'query'], ['limit', 'limit'], ['offset', 'offset']]) {
+    for (const [flag, key] of [['view', 'view'], ['billing', 'billing'], ['adapter', 'adapter'], ['kind', 'kind'], ['route', 'routeId'], ['query', 'query'], ['limit', 'limit'], ['offset', 'offset']]) {
       if (flags[flag] !== undefined && flags[flag] !== true) query.set(key, String(flags[flag]));
     }
+    if (codeArg) query.set('code', codeArg);
     const base = command === 'pools'
-      ? `/api/pools${flags.group ? `/${encodeURIComponent(flags.group)}` : ''}`
+      ? `/api/pools${typeof flags.group === 'string' ? `/${encodeURIComponent(flags.group)}` : ''}`
       : command === 'help-code' ? '/api/help' : '/api/catalog';
     const suffix = query.toString() ? `?${query.toString()}` : '';
     const mcpArgs = {
-      ...(flags.group && command === 'pools' ? { group: flags.group } : {}),
-      ...(flags.code ? { code: flags.code } : {}),
-      ...(flags.view ? { view: flags.view } : {}),
-      ...(flags.billing ? { billing: flags.billing } : {}),
-      ...(flags.adapter ? { adapter: flags.adapter } : {}),
-      ...(flags.kind ? { kind: flags.kind } : {}),
-      ...(flags.route ? { routeId: flags.route } : {}),
-      ...(flags.query ? { query: flags.query } : {}),
-      ...(flags.limit ? { limit: Number(flags.limit) } : {}),
-      ...(flags.offset ? { offset: Number(flags.offset) } : {}),
+      ...(typeof flags.group === 'string' && command === 'pools' ? { group: flags.group } : {}),
+      ...(codeArg ? { code: codeArg } : {}),
+      ...(typeof flags.view === 'string' ? { view: flags.view } : {}),
+      ...(typeof flags.billing === 'string' ? { billing: flags.billing } : {}),
+      ...(typeof flags.adapter === 'string' ? { adapter: flags.adapter } : {}),
+      ...(typeof flags.kind === 'string' ? { kind: flags.kind } : {}),
+      ...(typeof flags.route === 'string' ? { routeId: flags.route } : {}),
+      ...(typeof flags.query === 'string' ? { query: flags.query } : {}),
+      ...(typeof flags.limit === 'string' ? { limit: Number(flags.limit) } : {}),
+      ...(typeof flags.offset === 'string' ? { offset: Number(flags.offset) } : {}),
     };
     print(await apiOrMcp(`${base}${suffix}`, command === 'pools' ? 'pool_list_pools' : command === 'help-code' ? 'pool_help' : 'pool_catalog', mcpArgs));
     return;
@@ -360,34 +394,37 @@ export async function main(args = process.argv.slice(2)) {
   }
   if (command === 'run') {
     const { flags, positional } = parseFlags(rest);
-    const prompt = flags.prompt || positional.join(' ');
+    if (flags.wait === true) throw new PoolError('INVALID_REQUEST', '--wait sayısal saniye değeri ister.');
+    if (flags.timeout === true) throw new PoolError('INVALID_REQUEST', '--timeout sayısal saniye değeri ister.');
+    const prompt = (typeof flags.prompt === 'string' ? flags.prompt : '') || positional.join(' ');
     if (!prompt) throw new PoolError('PROMPT_REQUIRED', 'Görev metnini --prompt "..." ile belirtin.');
     const out = await runTaskFromCli(directory, {
       prompt,
-      workspace: flags.workspace || process.cwd(),
-      kind: flags.kind || (flags.mode === 'execute' ? 'write' : flags.mode === 'response' ? 'text' : 'read'),
-      routeId: flags.route,
-      mode: flags.mode,
+      workspace: typeof flags.workspace === 'string' ? flags.workspace : process.cwd(),
+      kind: (typeof flags.kind === 'string' ? flags.kind : '') || (flags.mode === 'execute' ? 'write' : flags.mode === 'response' ? 'text' : 'read'),
+      routeId: typeof flags.route === 'string' ? flags.route : undefined,
+      mode: typeof flags.mode === 'string' ? flags.mode : undefined,
       waitSeconds: flags.wait,
-      modelId: flags.model,
-      group: flags.group,
-      effort: flags.effort,
+      modelId: typeof flags.model === 'string' ? flags.model : undefined,
+      group: typeof flags.group === 'string' ? flags.group : undefined,
+      effort: typeof flags.effort === 'string' ? flags.effort : undefined,
       timeoutSeconds: flags.timeout,
-      idempotencyKey: flags.key,
+      idempotencyKey: typeof flags.key === 'string' ? flags.key : undefined,
       detach: Boolean(flags.detach),
     });
     print(out);
     return;
   }
-  if (command === 'init') { initialize(directory); print({ configuration: path.join(directory, 'config.json'), tokenFile: path.join(directory, 'access-token'), next: 'Configure routes; secrets stay outside the repository.' }); return; }
+  if (command === 'init') { ownerOnly(); initialize(directory); print({ configuration: path.join(directory, 'config.json'), tokenFile: path.join(directory, 'access-token'), next: 'Configure routes; secrets stay outside the repository.' }); return; }
   if (command === 'discover') { print(discover()); return; }
   if (command === 'scan-import') {
+    ownerOnly();
     initialize(directory);
     const view = configView(directory);
-    const imported = importDiscoveredRoutes(view.config);
+    const imported = importDiscoveredRoutes(view.config, directory);
     const catalogErrors = [];
     for (const route of imported.config.routes.filter(route => !route.api && ['claude','agy'].includes(route.adapter))) {
-      try { imported.addedModels += mergeCatalogModels(route, await routeCatalog(route, directory, imported.config.python), imported.config.modelFilters); }
+      try { imported.addedModels += mergeCatalogModels(route, await routeCatalog(route, directory, imported.config.python, directory), imported.config.modelFilters); }
       catch { catalogErrors.push(route.id); }
     }
     saveConfig(directory, imported.config, view.revision);
@@ -403,6 +440,7 @@ export async function main(args = process.argv.slice(2)) {
     print({ valid: true, connections: config.routes.length, enabled: config.routes.filter(r => r.enabled).length }); return;
   }
   if (command === 'models' || command === 'refresh-models') {
+    if (command === 'refresh-models') ownerOnly();
     const route = config.routes.find(r => r.id === rest[0]);
     const cwd = directory;
     if (!route) throw new PoolError('NOT_FOUND', 'Bağlantı kimliği bulunamadı.');
@@ -453,15 +491,21 @@ export async function main(args = process.argv.slice(2)) {
     return;
   }
   if (command !== 'serve') throw new PoolError('UNKNOWN_COMMAND', 'Bilinmeyen komut. help komutunu çalıştırın.');
+  ownerOnly();
   const token = readFileSync(path.join(directory, 'access-token'), 'utf8').trim();
   const store = new Store(path.join(directory, 'pool.sqlite'));
   const pool = new Pool(config, store, { directory });
   const pidFile = path.join(directory, 'daemon.pid');
+  let ownsPidFile = false;
   let stopping = false;
   async function stop() {
     if (stopping) return;
     stopping = true;
-    try { rmSync(pidFile, { force: true }); } catch { /* ignore */ }
+    if (ownsPidFile) {
+      try {
+        if (readFileSync(pidFile, 'utf8').trim() === String(process.pid)) rmSync(pidFile, { force: true });
+      } catch { /* ignore */ }
+    }
     app.server.close();
     app.server.closeAllConnections();
     await pool.close();
@@ -476,8 +520,9 @@ export async function main(args = process.argv.slice(2)) {
   try {
     const address = await app.listen();
     writeFileSync(pidFile, String(process.pid), 'utf8');
+    ownsPidFile = true;
     print({ status: 'listening', endpoint: `http://127.0.0.1:${address.port}/mcp`, dashboard: app.uiURL(), authentication: 'Bearer token from private access-token file; dashboard uses a separate HttpOnly browser session' });
-    void ensureRemoteDaemon(directory, { python: config.python }).catch(() => {});
+    void ensureRemoteDaemon(directory, { python: config.python, wait: false }).catch(() => {});
     // Refresh the owner's native Antigravity permissions in account profiles; failures only affect that route.
     for (const route of config.routes.filter(route => route.runtime === 'wsl')) void prepareWslProfile(route, config.python, directory).catch(() => {});
     for (const route of config.routes.filter(route => route.adapter === 'agy' && route.profile && route.runtime !== 'wsl')) {

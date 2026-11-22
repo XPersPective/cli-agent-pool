@@ -1,11 +1,12 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync, fsyncSync, closeSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 
 const MAX_CHATS = 80;
 const MAX_MESSAGES_PER_CHAT = 200;
 const MAX_RECENT_FOLDERS = 16;
 const MAX_CONTEXT_CHARS = 3200;
+const DEVICE_SESSION_TTL_MS = 365 * 24 * 60 * 60 * 1000;
 
 const sha = value => createHash('sha256').update(String(value)).digest('hex');
 
@@ -38,30 +39,33 @@ export function buildCompactPrompt(chat, userPrompt, includeContext = true) {
       if (current) turns.push(current);
       current = { user: String(msg.text || '').trim(), assistant: null };
     } else if (msg.role === 'assistant' && current) {
-      const files = Array.isArray(msg.report?.files) && msg.report.files.length
-        ? ` [Dosyalar: ${msg.report.files.slice(0, 8).map(f => f.path).join(', ')}]`
-        : '';
+      const filePaths = Array.isArray(msg.report?.files)
+        ? msg.report.files.slice(0, 8).map(f => (typeof f === 'string' ? f : f?.path)).filter(Boolean)
+        : [];
+      const files = filePaths.length ? ` [Dosyalar: ${filePaths.join(', ')}]` : '';
       const summary = msg.report?.summary || msg.result || msg.text || '';
       const clean = String(summary).replace(/\s+/g, ' ').trim();
-      if (clean) current.assistant = `${clean.slice(0, 620)}${files}`;
+      if (clean) current.assistant = { text: clean.slice(0, 620), files: files.slice(0, 260) };
     }
   }
   if (current) turns.push(current);
   const recent = turns.filter(t => t.user && t.assistant).slice(-3);
   if (!recent.length) return prompt;
 
-  const lines = ['[Önceki konuşma özeti — kısa bağlam]'];
-  let used = lines[0].length;
-  for (const turn of recent) {
+  const header = '[Önceki konuşma özeti — kısa bağlam]';
+  let used = header.length;
+  const blocks = [];
+  for (let i = recent.length - 1; i >= 0; i--) {
+    const turn = recent[i];
     const u = turn.user.replace(/\s+/g, ' ').slice(0, 380);
-    const a = turn.assistant.slice(0, 650);
+    const a = `${turn.assistant.text}${turn.assistant.files}`;
     const block = `- Kullanıcı: ${u}\n  Yanıt: ${a}`;
     if (used + block.length + 2 > MAX_CONTEXT_CHARS) break;
-    lines.push(block);
+    blocks.unshift(block);
     used += block.length + 1;
   }
-  if (lines.length === 1) return prompt;
-  return `${lines.join('\n')}\n\n[Güncel istek]\n${prompt}`;
+  if (!blocks.length) return prompt;
+  return `${header}\n${blocks.join('\n')}\n\n[Güncel istek]\n${prompt}`;
 }
 
 export class RemoteStore {
@@ -100,25 +104,46 @@ export class RemoteStore {
       }));
       return {
         version: 1,
-        cookieKey: typeof parsed.cookieKey === 'string' && parsed.cookieKey.length >= 32 ? parsed.cookieKey : base.cookieKey,
+        cookieKey: typeof parsed.cookieKey === 'string' && /^[a-f0-9]{64}$/i.test(parsed.cookieKey) ? parsed.cookieKey : base.cookieKey,
         devices: Array.isArray(parsed.devices) ? parsed.devices : [],
         sharedFolders: cleanPaths(parsed.sharedFolders),
         favoriteFolders: cleanPaths(parsed.favoriteFolders),
         recentFolders: cleanPaths(parsed.recentFolders),
         chats: cleanChats,
       };
-    } catch {
-      const fallback = emptyState();
-      this.writeState(fallback);
-      return fallback;
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        try { renameSync(this.file, `${this.file}.corrupt.${Date.now()}`); } catch { /* ignore */ }
+        const fallback = emptyState();
+        this.writeState(fallback);
+        return fallback;
+      }
+      throw error;
     }
   }
 
   writeState(state = this.state) {
     mkdirSync(this.directory, { recursive: true, mode: 0o700 });
-    const tmp = `${this.file}.${process.pid}.${Date.now()}.tmp`;
-    writeFileSync(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
-    renameSync(tmp, this.file);
+    const tmp = `${this.file}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
+    let fd;
+    try {
+      fd = openSync(tmp, 'wx', 0o600);
+      writeFileSync(fd, JSON.stringify(state));
+      fsyncSync(fd);
+      closeSync(fd);
+      fd = undefined;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        try {
+          renameSync(tmp, this.file);
+          return;
+        } catch (err) {
+          if (attempt === 3 || !['EPERM', 'EBUSY', 'EACCES'].includes(err?.code)) throw err;
+        }
+      }
+    } finally {
+      if (fd !== undefined) { try { closeSync(fd); } catch { /* ignore */ } }
+      if (existsSync(tmp)) { try { unlinkSync(tmp); } catch { /* ignore */ } }
+    }
   }
 
   signSession(deviceId, secret) {
@@ -130,7 +155,9 @@ export class RemoteStore {
   pairDevice(label = 'Cihaz') {
     const id = randomUUID();
     const secret = randomBytes(24).toString('hex');
-    const now = new Date().toISOString();
+    const nowMs = Date.now();
+    const now = new Date(nowMs).toISOString();
+    const expiresAt = new Date(nowMs + DEVICE_SESSION_TTL_MS).toISOString();
     const cleanLabel = String(label || 'Cihaz').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 80) || 'Cihaz';
     this.state.devices.push({
       id,
@@ -138,8 +165,12 @@ export class RemoteStore {
       secretHash: sha(secret),
       createdAt: now,
       lastSeenAt: now,
+      expiresAt,
     });
-    if (this.state.devices.length > 30) this.state.devices = this.state.devices.slice(-30);
+    if (this.state.devices.length > 30) {
+      // Preserve the oldest owner device at index 0 while trimming excess devices.
+      this.state.devices = [this.state.devices[0], ...this.state.devices.slice(-29)];
+    }
     this.writeState();
     const cookieValue = `${id}.${secret}.${this.signSession(id, secret)}`;
     return { id, label: cleanLabel, cookieValue };
@@ -152,12 +183,13 @@ export class RemoteStore {
     const [id, secret, mac] = parts;
     const device = this.state.devices.find(d => d.id === id);
     if (!device) return null;
+    if (device.expiresAt && Date.parse(device.expiresAt) <= Date.now()) return null;
     if (!safeEqual(sha(secret), device.secretHash)) return null;
     if (!safeEqual(mac, this.signSession(id, secret))) return null;
     const now = Date.now();
     if (!device.lastSeenAt || now - Date.parse(device.lastSeenAt) > 60_000) {
       device.lastSeenAt = new Date(now).toISOString();
-      this.writeState();
+      try { this.writeState(); } catch { /* non-fatal lastSeen update */ }
     }
     return { id: device.id, label: device.label, createdAt: device.createdAt, lastSeenAt: device.lastSeenAt };
   }
