@@ -57,10 +57,84 @@ internal static class FolderPicker
     private static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")]
     private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetThreadDesktop(uint threadId);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool GetUserObjectInformationW(IntPtr obj, int index, StringBuilder buf, int len, out int needed);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CreateProcessW(string app, StringBuilder cmdLine, IntPtr procAttr, IntPtr threadAttr, bool inheritHandles, uint creationFlags, IntPtr env, string currentDir, ref STARTUPINFOW si, out PROCESS_INFORMATION pi);
+    [DllImport("kernel32.dll")]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint ms);
+    [DllImport("kernel32.dll")]
+    private static extern bool GetExitCodeProcess(IntPtr handle, out uint code);
+    [DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr handle);
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFOW
+    {
+        public int cb; public string lpReserved; public string lpDesktop; public string lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public short wShowWindow, cbReserved2; public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess, hThread; public uint dwProcessId, dwThreadId;
+    }
+
+    private static string CurrentDesktopName()
+    {
+        try
+        {
+            IntPtr h = GetThreadDesktop(GetCurrentThreadId());
+            var sb = new StringBuilder(256);
+            int needed;
+            if (h != IntPtr.Zero && GetUserObjectInformationW(h, 2, sb, sb.Capacity * 2, out needed)) return sb.ToString();
+        }
+        catch { }
+        return "";
+    }
+
+    private static bool TryReexecOnDefaultDesktop(out int exitCode)
+    {
+        exitCode = 0;
+        if (Environment.GetEnvironmentVariable("CLI_AGENT_POOL_PICKER_REEXEC") == "1") return false;
+        string current = CurrentDesktopName();
+        if (string.IsNullOrEmpty(current) || string.Equals(current, "Default", StringComparison.OrdinalIgnoreCase)) return false;
+        try
+        {
+            Environment.SetEnvironmentVariable("CLI_AGENT_POOL_PICKER_REEXEC", "1");
+            var si = new STARTUPINFOW();
+            si.cb = Marshal.SizeOf(typeof(STARTUPINFOW));
+            si.lpDesktop = "WinSta0\\Default";
+            PROCESS_INFORMATION pi;
+            var cmd = new StringBuilder("\"" + Application.ExecutablePath + "\"");
+            if (!CreateProcessW(null, cmd, IntPtr.Zero, IntPtr.Zero, true, 0, IntPtr.Zero, null, ref si, out pi)) return false;
+            try
+            {
+                WaitForSingleObject(pi.hProcess, 0xFFFFFFFF);
+                uint code;
+                exitCode = GetExitCodeProcess(pi.hProcess, out code) ? (int)code : 1;
+                return true;
+            }
+            finally
+            {
+                if (pi.hThread != IntPtr.Zero) CloseHandle(pi.hThread);
+                if (pi.hProcess != IntPtr.Zero) CloseHandle(pi.hProcess);
+            }
+        }
+        catch { return false; }
+    }
 
     [STAThread]
     private static void Main()
     {
+        int reexecCode;
+        if (TryReexecOnDefaultDesktop(out reexecCode))
+        {
+            Environment.ExitCode = reexecCode;
+            return;
+        }
         try
         {
             var dialog = (IFileDialog)new NativeFolderDialog();

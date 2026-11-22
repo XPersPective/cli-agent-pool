@@ -44,8 +44,15 @@ test('wincred.py exits cleanly with code 2 for absent credential target without 
   );
 });
 
-test('dashboard.cs launches ensure hidden with CreateNoWindow and ProcessWindowStyle.Hidden', () => {
+test('dashboard.cs launches ensure hidden with CreateNoWindow and ProcessWindowStyle.Hidden and targets WinSta0\\Default', () => {
   const source = readFileSync(new URL('../src/dashboard.cs', import.meta.url), 'utf8');
+  const picker = readFileSync(new URL('../src/folder-picker.cs', import.meta.url), 'utf8');
   assert.match(source, /CreateNoWindow=true/);
   assert.match(source, /WindowStyle=ProcessWindowStyle\.Hidden/);
+  assert.match(source, /OpenDesktopW\("Default"/);
+  assert.match(source, /SetThreadDesktop\(/);
+  assert.doesNotMatch(source, /\[STAThread\]\s*static int Main/);
+  assert.match(source, /WinSta0\\\\Default/);
+  assert.match(picker, /TryReexecOnDefaultDesktop/);
+  assert.match(picker, /WinSta0\\\\Default/);
 });

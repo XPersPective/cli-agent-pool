@@ -24,9 +24,9 @@ jobs:
         shell: pwsh
         run: |
           $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-          & $csc /nologo /target:winexe /out:"$env:TEMP\ci-dashboard.exe" /reference:System.dll,System.Windows.Forms.dll,System.Management.dll src\dashboard.cs
+          & $csc /nologo /target:winexe /out:"$env:TEMP\ci-dashboard.exe" /reference:System.dll,System.Windows.Forms.dll,System.Management.dll,System.Web.Extensions.dll src\dashboard.cs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $csc /nologo /target:winexe /out:"$env:TEMP\ci-folder-picker.exe" /reference:System.dll,System.Windows.Forms.dll src\folder-picker.cs
+          & $csc /nologo /target:winexe /out:"$env:TEMP\ci-folder-picker.exe" /reference:System.dll,System.Windows.Forms.dll,System.Web.Extensions.dll src\folder-picker.cs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Remove-Item -Force "$env:TEMP\ci-dashboard.exe","$env:TEMP\ci-folder-picker.exe"
       - run: npm test

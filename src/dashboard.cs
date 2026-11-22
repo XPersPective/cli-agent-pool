@@ -28,10 +28,55 @@ internal static class Dashboard {
     [DllImport("user32.dll")] static extern int GetWindowTextLength(IntPtr window);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr window, StringBuilder text, int length);
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window, out RECT rect);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr OpenDesktopW(string desktop, uint flags, bool inherit, uint desiredAccess);
+    [DllImport("user32.dll", SetLastError=true)] static extern bool SetThreadDesktop(IntPtr desktop);
+    [DllImport("user32.dll", SetLastError=true)] static extern bool CloseDesktop(IntPtr desktop);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool CreateProcessW(string app, StringBuilder cmdLine, IntPtr procAttr, IntPtr threadAttr, bool inheritHandles, uint creationFlags, IntPtr env, string currentDir, ref STARTUPINFOW si, out PROCESS_INFORMATION pi);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern bool CloseHandle(IntPtr handle);
     [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct STARTUPINFOW {
+        public int cb; public string lpReserved; public string lpDesktop; public string lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public short wShowWindow, cbReserved2; public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct PROCESS_INFORMATION {
+        public IntPtr hProcess, hThread; public uint dwProcessId, dwThreadId;
+    }
     static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
     static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
     const uint SWP_NOMOVE = 0x0002, SWP_NOSIZE = 0x0001, SWP_SHOWWINDOW = 0x0040;
+
+    static IntPtr AttachInteractiveDesktop() {
+        // When the Pool daemon was auto-started by an agent running on an off-screen
+        // desktop (e.g. exebox-*), attach to WinSta0\Default so window lookup, focus,
+        // and browser launches always happen on the user's real interactive desktop.
+        try {
+            IntPtr desk = OpenDesktopW("Default", 0, false, 0x000F01FF);
+            if (desk == IntPtr.Zero) desk = OpenDesktopW("Default", 0, false, 0x00C3);
+            if (desk != IntPtr.Zero) {
+                if (SetThreadDesktop(desk)) return desk;
+                CloseDesktop(desk);
+            }
+        } catch { }
+        return IntPtr.Zero;
+    }
+
+    static void LaunchBrowser(string browser, string arguments) {
+        var si = new STARTUPINFOW();
+        si.cb = Marshal.SizeOf(typeof(STARTUPINFOW));
+        si.lpDesktop = "WinSta0\\Default";
+        si.dwFlags = 0x00000001; // STARTF_USESHOWWINDOW
+        si.wShowWindow = 1; // SW_SHOWNORMAL
+        PROCESS_INFORMATION pi;
+        var cmdLine = new StringBuilder(Quote(browser) + " " + arguments);
+        if (CreateProcessW(null, cmdLine, IntPtr.Zero, IntPtr.Zero, false, 0, IntPtr.Zero, null, ref si, out pi)) {
+            if (pi.hThread != IntPtr.Zero) CloseHandle(pi.hThread);
+            if (pi.hProcess != IntPtr.Zero) CloseHandle(pi.hProcess);
+            return;
+        }
+        var start = new ProcessStartInfo(browser, arguments) { UseShellExecute=false, WindowStyle=ProcessWindowStyle.Normal };
+        using (var process = Process.Start(start)) { }
+    }
 
     static string Quote(string value) {
         // Windows paths and these fixed browser arguments cannot contain embedded quotes.
@@ -164,7 +209,8 @@ internal static class Dashboard {
             return dashboard;
         }
     }
-    [STAThread] static int Main(string[] args) {
+    static int Main(string[] args) {
+        IntPtr interactiveDesktop = AttachInteractiveDesktop();
         try {
             if (args.Length != 3 && args.Length != 4) throw new ArgumentException("Invalid dashboard launch arguments");
             bool isRemote = (args.Length == 4 && args[3] == "remote") || args[1] == "--remote-url";
@@ -204,8 +250,7 @@ internal static class Dashboard {
                         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Google", "Chrome", "Application", "chrome.exe"),
                         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Google", "Chrome", "Application", "chrome.exe") }) if (File.Exists(candidate)) { browser=candidate; break; }
                     if (browser == null) throw new Exception("Microsoft Edge veya Google Chrome bulunamadi.");
-                    var start = new ProcessStartInfo(browser, Quote("--app="+url) + " --new-window " + Quote("--user-data-dir="+profile) + " --no-first-run --no-default-browser-check --disable-background-mode --no-service-autorun") { UseShellExecute=false, WindowStyle=ProcessWindowStyle.Normal };
-                    using (var process = Process.Start(start)) { }
+                    LaunchBrowser(browser, Quote("--app="+url) + " --new-window " + Quote("--user-data-dir="+profile) + " --no-first-run --no-default-browser-check --disable-background-mode --no-service-autorun");
                     for (int i=0; i<100; i++) {
                         Thread.Sleep(200); windows=Windows(profile);
                         if (windows.Count>0) { Activate(windows); return 0; }
@@ -218,6 +263,8 @@ internal static class Dashboard {
             if (args.Length>1 && (args[1]=="--url" || args[1]=="--remote-url")) Console.Error.WriteLine(error.Message);
             else MessageBox.Show(error.Message, title, MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 1;
+        } finally {
+            if (interactiveDesktop != IntPtr.Zero) { try { CloseDesktop(interactiveDesktop); } catch { } }
         }
     }
 }

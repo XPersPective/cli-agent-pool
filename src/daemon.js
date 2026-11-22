@@ -193,12 +193,12 @@ async function dashboardExecutable(directory, python = undefined) {
   return executable;
 }
 
-export async function openDashboardWindow(url, { remote = false, reauth = false } = {}) {
+export async function openDashboardWindow(url, { remote = false, reauth = false, directory = dataDirectory() } = {}) {
   const windows = process.platform === 'win32';
-  const executable = windows ? await dashboardExecutable(dataDirectory()) : process.platform === 'darwin' ? 'open' : 'xdg-open';
+  const executable = windows ? await dashboardExecutable(directory) : process.platform === 'darwin' ? 'open' : 'xdg-open';
   const winArgs = remote
-    ? [dataDirectory(), '--remote-url', url, 'remote']
-    : [dataDirectory(), '--url', url, ...(reauth ? ['--reauth'] : [])];
+    ? [directory, '--remote-url', url, 'remote']
+    : [directory, '--url', url, ...(reauth ? ['--reauth'] : [])];
   const proc = spawn(executable, windows ? winArgs : [url], { detached:true, stdio:'ignore', windowsHide:false });
   if(windows) {
     const [code] = await once(proc,'exit');
@@ -208,8 +208,8 @@ export async function openDashboardWindow(url, { remote = false, reauth = false 
   return { launchRequested:true, mode:windows?'app-window':'default-browser' };
 }
 
-export async function openRemoteWindow(url) {
-  return openDashboardWindow(url, { remote: true });
+export async function openRemoteWindow(url, options = {}) {
+  return openDashboardWindow(url, { ...options, remote: true });
 }
 
 export async function apiRequest(directory, routePath, { method = 'GET', body } = {}) {

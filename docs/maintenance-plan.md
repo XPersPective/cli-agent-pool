@@ -152,6 +152,15 @@
 - [x] **Doğrulama kanıtı (2.20.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate`, `npm test` (`218/218`, yeni `test/remote.test.js` dahil) ve canlı `cli-agent-pool` servisi üzerinden `/r/state` uçtan uca entegrasyon testi doğrulandı.
 
 ## 2.19.0 — Onay/Ekleme Kilidi Düzeltmesi, Windows Pythonw İzolasyonu, 300 Model Sınırı, Neon/Ağ Hata Düzeltmeleri ve Otomatik Güncelleme Bildirimi
+## 2.30.1 — Gizli Masaüstünden Başlatılan Serviste Remote/Panel ve Klasör Seçici Pencere Görünürlüğü
+- [x] **Kök neden (canlı masaüstü dökümüyle doğrulandı)**: `pool.js serve` arka plan servisi başka bir kodlama ajanının (`exebox-*`) gizli Windows masaüstünden otomatik başlatıldığında, paneldeki **Remote Sohbet** düğmesine basılınca `dashboard.exe` ve başlattığı `msedge.exe` (`CLI Agent Remote`) o görünmez `exebox-*` masaüstünde açılıyordu; `dashboard.exe` pencereyi o masaüstünde görünür bulup başarı (`exit 0`) döndürdüğü için panel "pencere açıldı" bildirimi veriyor ancak kullanıcının gerçek masaüstünde (`WinSta0\Default`) hiçbir pencere görünmüyordu.
+- [x] **Etkileşimli `WinSta0\Default` sabitlemesi (`src/dashboard.cs`, `src/folder-picker.cs`, `src/daemon.js`, `src/web.js`)**:
+  - `src/dashboard.cs` `Main` üzerindeki `[STAThread]` (gizli OLE penceresi oluşturup `SetThreadDesktop`'ı `ERROR_BUSY 170` ile bozan) kaldırıldı; `AttachInteractiveDesktop()` (`OpenDesktopW("Default")` + `SetThreadDesktop`) ile pencere araması/odaklaması gerçek masaüstüne bağlandı ve tarayıcı `CreateProcessW` (`STARTUPINFOW.lpDesktop = "WinSta0\\Default"`) ile başlatılır hale getirildi; eski görünmez masaüstünde takılı kalan penceresiz profiller otomatik emekliye ayrılır.
+  - `src/folder-picker.cs` geçerli masaüstü `"Default"` değilse kendini `CreateProcessW(..., lpDesktop = "WinSta0\\Default", inheritHandles = true)` ile yeniden başlatarak `[STAThread]` IFileDialog'un her zaman görünür masaüstünde açılmasını garanti eder.
+  - `openDashboardWindow` / `openRemoteWindow` açık `directory` parametresini iletir; CI `csc.exe` kontrolüne `System.Web.Extensions.dll` referansı eklendi.
+- [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.30.1`.
+- [x] **Doğrulama kanıtı (2.30.1)**: `csc.exe` (`dashboard.cs` + `folder-picker.cs` temiz), `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate` (`0 vulnerabilities`) ve `npm test` (`247/247`, güncellenmiş `test/hidden-console.test.js` dahil).
+
 ## 2.30.0 — Kapsamlı Güvenlik, Çekirdek Motor, Adaptör/Kota, Remote PWA, Panel ve Belge Sertleştirmesi
 - [x] **Güvenlik ve yetki sınırları (`src/adapters.js`, `src/pool.js`, `src/server.js`, `src/http-api.js`, `src/web.js`, `src/lifecycle.js`, `src/profiles.js`, `src/config.js`, `src/secrets-store.js`, `bin/pool.js`)**:
   - `sessionId` için sıkı karakter/önek doğrulaması (`/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/`) ve `codex exec resume` için `--` ayırıcısı eklenerek CLI bayrak enjeksiyonu (`--dangerously-skip-permissions`, `--yolo`, `--last`) engellendi.
