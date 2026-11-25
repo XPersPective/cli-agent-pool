@@ -32,10 +32,23 @@ function ensureCodexFileStoreConfig(target) {
   } catch { /* Profile config stays optional if read-only. */ }
 }
 
+export function writeProfileRuntimeLocator(targetHome, directory) {
+  if (typeof targetHome !== 'string' || typeof directory !== 'string' || !path.isAbsolute(directory)) return;
+  try {
+    const locatorDir = path.join(targetHome, '.cli-agent-pool');
+    mkdirSync(locatorDir, { recursive: true, mode: 0o700 });
+    const locatorFile = path.join(locatorDir, 'runtime-path');
+    const resolved = path.resolve(directory);
+    const current = existsSync(locatorFile) ? readFileSync(locatorFile, 'utf8').trim() : '';
+    if (current !== resolved) writeFileSync(locatorFile, `${resolved}\n`, { mode: 0o600 });
+  } catch { /* Best-effort runtime locator for isolated profile CLIs. */ }
+}
+
 export function profileEnvironment(route, directory, create = true) {
   if (!route.profile || route.api || route.runtime === 'wsl' || !(profileAdapters.has(route.adapter) || homeProfileAdapters.has(route.adapter))) return {};
   const target = profileDirectory(route, directory);
   if (create) mkdirSync(target, { recursive: true, mode: 0o700 });
+  if (create && homeProfileAdapters.has(route.adapter)) writeProfileRuntimeLocator(target, directory);
   if (route.adapter === 'agy') return { USERPROFILE: target, HOME: target, WSL_DISTRO_NAME: 'cli-agent-pool' };
   if (homeProfileAdapters.has(route.adapter)) return { USERPROFILE: target, HOME: target };
   if (route.adapter === 'codex') {
@@ -189,9 +202,15 @@ function sanitizeMcpServers(servers) {
   for (const [name, entry] of Object.entries(servers)) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
     const copy = { ...entry };
+    const poolHome = entry.env && typeof entry.env === 'object' && !Array.isArray(entry.env) ? entry.env.CLI_AGENT_POOL_HOME : null;
     // Never copy credential contents (env tokens, API keys, auth headers) between profiles.
+    // Only the non-secret local Pool runtime path may be preserved so isolated profiles
+    // connect to the same daemon instead of falling back to a different access-token.
     delete copy.env;
     delete copy.headers;
+    if (typeof poolHome === 'string' && poolHome.trim() && path.isAbsolute(poolHome.trim()) && !/[\u0000-\u001f\u007f]/.test(poolHome)) {
+      copy.env = { CLI_AGENT_POOL_HOME: poolHome.trim() };
+    }
     clean[name] = copy;
   }
   return clean;

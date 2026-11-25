@@ -1422,13 +1422,21 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
     const tokenFile = isWsl
       ? wslWindowsPath(route, `${wslProfileHome(route)}/.gemini/antigravity-cli/antigravity-oauth-token`)
       : (route.profile ? path.join(agyHome, '.gemini', 'antigravity-cli', 'antigravity-oauth-token') : undefined);
-    const result = await antigravityQuota(agyHome, { tokenFile, credentialStore: !route.profile && !isWsl, python });
-    if (result.status === 'auth_required') {
+    const tokenOpts = { tokenFile, credentialStore: !route.profile && !isWsl, python };
+    const tokenRes = await antigravityToken(agyHome, tokenOpts);
+    if (!tokenRes.token && tokenRes.reason !== 'network_error') {
+      const result = await antigravityQuota(agyHome, { ...tokenOpts, tokenRes });
       return { ...base, account: route.profile || 'default', ...result };
     }
-    const windows = !isWsl
-      ? await capture([...argv, '-p', '/usage', '--output-format', 'json'], cwd, python, env, 30_000).then(usage => agyUsageWindows(JSON.parse(usage.output))).catch(() => [])
-      : [];
+    const [result, windows] = await Promise.all([
+      antigravityQuota(agyHome, { ...tokenOpts, tokenRes }),
+      !isWsl
+        ? capture([...argv, '-p', '/usage', '--output-format', 'json'], cwd, python, env, 18_000).then(usage => agyUsageWindows(JSON.parse(usage.output))).catch(() => [])
+        : Promise.resolve([]),
+    ]);
+    if (result.status === 'auth_required' && !windows.length) {
+      return { ...base, account: route.profile || 'default', ...result };
+    }
     if (windows.length) {
       const status = windows.every(window => window.remainingPercent <= 0) ? 'rate_limited' : 'available';
       const cloudOk = result && result.status !== 'auth_required' && !result.networkError;
@@ -1441,7 +1449,7 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
     return { ...base, account: route.profile, ...(await claudeQuota(undefined, claudeConfigDirectory(route, directory))) };
   }
   if (route.adapter === 'qoder') {
-    const result = await capture([...argv, 'status', '-o', 'json'], cwd, python, env);
+    const result = await capture([...argv, 'status', '-o', 'json'], cwd, python, env, 12_000);
     let status;
     try { status = JSON.parse(result.output); } catch { /* Never persist account identifiers. */ }
     const loggedIn = result.code === 0 && status?.logged_in === true;
@@ -1449,7 +1457,7 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
   }
   if (route.adapter === 'claude' && route.billing !== 'subscription') {
     // Token-plan Claude routes use the user's configured endpoint; claude.ai usage does not apply.
-    const text = await capture([...argv, 'auth', 'status', '--text'], cwd, python, env);
+    const text = await capture([...argv, 'auth', 'status', '--text'], cwd, python, env, 12_000);
     const endpoint = /base URL:\s*(\S+)/i.exec(text.output + text.stderr)?.[1] || 'https://api.anthropic.com';
     return { ...base, status: 'unknown', auth: 'token_plan', endpoint, windows: [], source: 'claude-settings', note: `Uç nokta: ${endpoint} · Bu sağlayıcı kota yüzdesi bildirmiyor.` };
   }
@@ -1468,21 +1476,25 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
     return { ...base, ...snapshot };
   }
   if (route.adapter === 'opencode' || route.adapter === 'mimo') {
-    let snapshot = { status: 'unknown', auth: 'unverified', windows: [], source: route.adapter };
-    try {
-      const result = await capture([...argv, 'providers', 'list', '--pure'], cwd, python, env);
-      const count = /(\d+)\s+credentials?/i.exec(result.output)?.[1];
-      if (result.code === 0 && count !== undefined) snapshot = { status: Number(count) === 0 && route.billing !== 'free' ? 'auth_required' : 'unknown', auth: Number(count) > 0 ? 'credentials_present' : 'unverified', windows: [], source: 'native-provider-list' };
-    } catch { /* A failed inspection is not proof that the user is logged out. */ }
+    const providersPromise = capture([...argv, 'providers', 'list', '--pure'], cwd, python, env, 12_000)
+      .then(result => {
+        const count = /(\d+)\s+credentials?/i.exec(result.output)?.[1];
+        if (result.code === 0 && count !== undefined) {
+          return { status: Number(count) === 0 && route.billing !== 'free' ? 'auth_required' : 'unknown', auth: Number(count) > 0 ? 'credentials_present' : 'unverified', windows: [], source: 'native-provider-list' };
+        }
+        return { status: 'unknown', auth: 'unverified', windows: [], source: route.adapter };
+      })
+      .catch(() => ({ status: 'unknown', auth: 'unverified', windows: [], source: route.adapter }));
     if (route.adapter === 'opencode') {
       // OpenCode mixes a pay-as-you-go Zen key, an optional Go subscription and
-      // free provider models in one route. Each source is read on its own so a
-      // missing one never hides the others.
+      // free provider models in one route. Each source is read in parallel so a
+      // missing or slow one never delays or hides the others.
       const home = profileHome(route, directory);
-      const [goWindows, openrouter, stats] = await Promise.all([
+      const [baseSnapshot, goWindows, openrouter, stats] = await Promise.all([
+        providersPromise,
         opencodeGoWindows(home),
         openrouterQuota(home),
-        capture([...argv, 'stats', '--days', '1'], cwd, python, env, 20_000).then(result => parseOpenCodeStats(result.output)).catch(() => null),
+        capture([...argv, 'stats', '--days', '1'], cwd, python, env, 12_000).then(result => parseOpenCodeStats(result.output)).catch(() => null),
       ]);
       const notes = [];
       if (openrouter?.note) notes.push(openrouter.note);
@@ -1491,19 +1503,21 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
       if (statsNote) notes.push(statsNote);
       if (!goWindows.length) notes.push('Zen bakiyesi konsolda: opencode.ai/console');
       const goLimited = goWindows.length > 0 && goWindows.some(w => w.remainingPercent <= 0);
-      const nextStatus = snapshot.status === 'auth_required'
+      const nextStatus = baseSnapshot.status === 'auth_required'
         ? 'auth_required'
         : goLimited ? 'rate_limited'
-          : (goWindows.length || snapshot.auth === 'credentials_present' || openrouter?.auth === 'api_key' || stats || route.billing === 'free') ? 'available' : 'unknown';
-      snapshot = {
-        ...snapshot,
+          : (goWindows.length || baseSnapshot.auth === 'credentials_present' || openrouter?.auth === 'api_key' || stats || route.billing === 'free') ? 'available' : 'unknown';
+      const snapshot = {
+        ...baseSnapshot,
         status: nextStatus,
         ...(goWindows.length ? { scope: 'account', windows: goWindows } : { windows: [], informational: true }),
         ...(openrouter?.balanceUsd != null ? { balanceUsd: openrouter.balanceUsd } : {}),
         note: notes.join(' · '),
       };
       if (openrouter?.auth === 'missing' && snapshot.auth !== 'credentials_present') snapshot.auth = 'missing';
+      return { ...base, ...snapshot };
     }
+    const snapshot = await providersPromise;
     return { ...base, ...snapshot };
   }
   if (route.adapter === 'lmstudio' || route.adapter === 'ollama') {

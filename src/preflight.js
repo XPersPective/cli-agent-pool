@@ -55,9 +55,11 @@ async function run(argv, cwd, python, { input = '', env = {}, timeoutMs = 30_000
 
 const gitEnv = { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' };
 export async function gitFacts(workspace, python) {
-  const inside = await run(['git', '-C', workspace, 'rev-parse', '--is-inside-work-tree'], workspace, python);
+  const [inside, origin] = await Promise.all([
+    run(['git', '-C', workspace, 'rev-parse', '--is-inside-work-tree'], workspace, python, { env: gitEnv, timeoutMs: 10_000 }),
+    run(['git', '-C', workspace, 'remote', 'get-url', 'origin'], workspace, python, { env: gitEnv, timeoutMs: 10_000 }),
+  ]);
   if (inside.stopReason || inside.code !== 0 || inside.output.trim() !== 'true') return { repository: false, origin: false };
-  const origin = await run(['git', '-C', workspace, 'remote', 'get-url', 'origin'], workspace, python);
   return { repository: true, origin: !origin.stopReason && origin.code === 0 && Boolean(origin.output.trim()) };
 }
 
@@ -69,6 +71,7 @@ export async function poolRemoteDigest(workspace, python) {
 
 // The CLI version is part of the cache key: an upgrade must re-run preflight.
 const versions = new Map();
+const pendingVersions = new Map();
 export async function cliVersion(route, python) {
   const argv = commandArgv(route);
   let stamp = '';
@@ -76,10 +79,15 @@ export async function cliVersion(route, python) {
   const cacheKey = `${route.executable}\0${stamp}`;
   const cached = versions.get(cacheKey);
   if (cached && Date.now() - cached.at < 300_000) return cached.value;
-  const result = await run([...argv, '--version'], path.dirname(route.executable), python, { timeoutMs: 20_000 }).catch(() => null);
-  const value = `${stamp}\0${result && !result.stopReason ? `${result.code}:${result.output.trim().slice(0, 200)}` : 'unavailable'}`;
-  versions.set(cacheKey, { value, at: Date.now() });
-  return value;
+  if (pendingVersions.has(cacheKey)) return pendingVersions.get(cacheKey);
+  const work = (async () => {
+    const result = await run([...argv, '--version'], path.dirname(route.executable), python, { timeoutMs: 10_000 }).catch(() => null);
+    const value = `${stamp}\0${result && !result.stopReason ? `${result.code}:${result.output.trim().slice(0, 200)}` : 'unavailable'}`;
+    versions.set(cacheKey, { value, at: Date.now() });
+    return value;
+  })();
+  pendingVersions.set(cacheKey, work);
+  try { return await work; } finally { pendingVersions.delete(cacheKey); }
 }
 
 export async function preflightKey({ route, modelId, effort, workspace, capabilities, readPaths, directory, python }) {

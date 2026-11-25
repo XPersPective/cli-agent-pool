@@ -31,8 +31,10 @@ export function ensureInitialized(directory, autoImport = true) {
   return loadConfig(directory);
 }
 
-export async function managementRequest(directory, config, body) {
+export async function managementRequest(directory, config, body, { signal } = {}) {
   const managementToken = readFileSync(path.join(directory, 'management-token'), 'utf8').trim();
+  const timeoutSignal = AbortSignal.timeout(4000);
+  const combinedSignal = signal ? AbortSignal.any([timeoutSignal, signal]) : timeoutSignal;
   const response = await fetch(`http://127.0.0.1:${config.port}/manage`, {
     method: 'POST',
     headers: {
@@ -40,7 +42,7 @@ export async function managementRequest(directory, config, body) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(4000),
+    signal: combinedSignal,
   });
   if (!response.ok) {
     const text = await response.text();
@@ -54,16 +56,17 @@ export async function managementRequest(directory, config, body) {
 
 const ensuringDaemons = new Map();
 
-export async function ensureDaemon(directory, config = ensureInitialized(directory)) {
+export async function ensureDaemon(directory, config = ensureInitialized(directory), { signal } = {}) {
   const key = `${path.resolve(directory)}:${config.port}`;
   if (ensuringDaemons.has(key)) return ensuringDaemons.get(key);
   const work = (async () => {
     try {
-      const info = await managementRequest(directory, config, { operation: 'pair_ui' });
+      const info = await managementRequest(directory, config, { operation: 'pair_ui' }, { signal });
       return { ...info, started: false };
     } catch (error) {
       // A responding server may own active writes or even belong to another app.
       // Startup never kills a PID or an arbitrary listener to claim the port.
+      if (signal?.aborted) throw error;
       if (error?.status) throw error;
     }
     spawnDetachedHidden([process.execPath, poolBinPath, 'serve'], {
@@ -72,12 +75,13 @@ export async function ensureDaemon(directory, config = ensureInitialized(directo
       python: config.python,
     });
 
-    for (let attempt = 0; attempt < 60; attempt++) {
-      await delay(100);
+    for (let attempt = 0; attempt < 100; attempt++) {
+      await delay(100, undefined, signal ? { signal } : undefined);
       try {
-        const info = await managementRequest(directory, config, { operation: 'pair_ui' });
+        const info = await managementRequest(directory, config, { operation: 'pair_ui' }, { signal });
         return { ...info, started: true };
       } catch (error) {
+        if (signal?.aborted) throw error;
         if (error?.status) throw error;
         // Wait until HTTP listener is ready.
       }
@@ -251,7 +255,7 @@ export async function withMcpClient(directory, callback) {
   const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${config.port}/mcp`), {
     requestInit: { headers: { Authorization: `Bearer ${token}`, ...taskHeader() } },
   });
-  await client.connect(transport);
+  await client.connect(transport, { timeout: 15_000 });
   try {
     return await callback(client, config);
   } finally {
@@ -259,8 +263,8 @@ export async function withMcpClient(directory, callback) {
   }
 }
 
-export async function callPoolTool(client, name, args = {}) {
-  const res = await client.callTool({ name, arguments: args });
+export async function callPoolTool(client, name, args = {}, { timeout = 120_000 } = {}) {
+  const res = await client.callTool({ name, arguments: args }, undefined, { timeout });
   const text = res.content?.[0]?.text;
   let parsed;
   try { parsed = text ? JSON.parse(text) : res.structuredContent?.data; }

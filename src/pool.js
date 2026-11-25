@@ -54,6 +54,8 @@ export class Pool {
     this.directory = dependencies.directory || dataDirectory();
     this.execute = dependencies.execute || execute;
     this.checkAuth = dependencies.checkAuth || checkAuth;
+    this.quotaReader = dependencies.quota || quota;
+    this.quotaTimeoutMs = dependencies.quotaTimeoutMs ?? 25_000;
     this.authCacheTtlMs = dependencies.authCacheTtlMs ?? (dependencies.checkAuth ? 0 : 60_000);
     this.verifiedAuth = new Map();
     this.active = new Map();
@@ -209,20 +211,46 @@ export class Pool {
     if (this.quotaRequests.has(routeId)) return this.quotaRequests.get(routeId);
     const request = (async () => {
       const cwd = this.directory;
-      let snapshot;
-      if (route.adapter === 'codex' && !route.api) {
-        const email = routeAccountEmail(route, this.directory);
-        const emailExtra = email ? { email } : {};
-        try { snapshot = { ...(await codexControl(route, cwd, this.config.python, 'quotas', this.directory)), adapter: route.adapter, billing: route.billing, loginCommand: loginCommands.codex, ...emailExtra }; }
-        catch {
-          try { await this.checkAuth(route, cwd, this.config.python, this.directory); }
-          catch (error) {
-            if (error.code !== 'AUTH_REQUIRED') throw error;
-            snapshot = { connection: route.id, status: 'auth_required', windows: [], observedAt: new Date().toISOString(), loginCommand: loginCommands.codex, ...emailExtra };
+      const probe = (async () => {
+        if (route.adapter === 'codex' && !route.api) {
+          const email = routeAccountEmail(route, this.directory);
+          const emailExtra = email ? { email } : {};
+          try { return { ...(await codexControl(route, cwd, this.config.python, 'quotas', this.directory)), adapter: route.adapter, billing: route.billing, loginCommand: loginCommands.codex, ...emailExtra }; }
+          catch {
+            let authSnap = null;
+            try { await this.checkAuth(route, cwd, this.config.python, this.directory); }
+            catch (error) {
+              if (error.code !== 'AUTH_REQUIRED') throw error;
+              authSnap = { connection: route.id, status: 'auth_required', windows: [], observedAt: new Date().toISOString(), loginCommand: loginCommands.codex, ...emailExtra };
+            }
+            return authSnap || (cached?.windows?.length ? { ...cached, ...emailExtra } : { connection: route.id, status: 'unknown', windows: [], observedAt: new Date().toISOString(), loginCommand: loginCommands.codex, ...emailExtra });
           }
-          snapshot ||= cached?.windows?.length ? { ...cached, ...emailExtra } : { connection: route.id, status: 'unknown', windows: [], observedAt: new Date().toISOString(), loginCommand: loginCommands.codex, ...emailExtra };
         }
-      } else snapshot = await quota(route, cwd, this.config.python, this.directory);
+        return this.quotaReader(route, cwd, this.config.python, this.directory);
+      })();
+      let snapshot;
+      if (this.quotaTimeoutMs > 0) {
+        let timer;
+        const timedOut = Symbol('quota_timeout');
+        const winner = await Promise.race([
+          probe,
+          new Promise(resolve => { timer = setTimeout(() => resolve(timedOut), this.quotaTimeoutMs); timer.unref?.(); }),
+        ]);
+        clearTimeout(timer);
+        if (winner === timedOut) {
+          // Keep background probe error-handled so it never causes an unhandled rejection.
+          void probe.then(late => {
+            if (late && !late.networkError) { try { this.store.saveQuota(routeId, late); } catch { /* ignore */ } }
+          }).catch(() => {});
+          snapshot = cached?.windows?.length
+            ? { ...cached, observedAt: cached.observedAt, stale: true, networkError: true, note: 'Canlı kota sorgusu zaman aşımına uğradı; önbellekteki son değer döndürüldü.' }
+            : { connection: route.id, adapter: route.adapter, billing: route.billing, status: 'unknown', windows: [], observedAt: cached?.observedAt || new Date().toISOString(), stale: true, networkError: true, loginCommand: loginCommands[route.adapter], note: 'Canlı kota sorgusu zaman aşımına uğradı.' };
+          return snapshot;
+        }
+        snapshot = winner;
+      } else {
+        snapshot = await probe;
+      }
       if (snapshot.networkError && !snapshot.windows?.length && cached?.windows?.length) {
         snapshot = {
           ...cached,

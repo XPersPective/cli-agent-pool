@@ -256,7 +256,7 @@ export async function antigravityQuota(home = homedir(), options = {}) {
   try {
     email = extractAntigravityEmail(readJson(tokenFile));
   } catch {}
-  const tokenRes = await antigravityToken(home, options);
+  const tokenRes = options.tokenRes || await antigravityToken(home, options);
   if (!email && tokenRes.email) email = tokenRes.email;
   if (!email) {
     try {

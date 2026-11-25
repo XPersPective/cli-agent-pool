@@ -140,19 +140,29 @@ export const configSchema = z.object({
   }
 }).transform(migrateCategories);
 
-export function dataDirectory() {
-  if (process.env.CLI_AGENT_POOL_HOME) {
-    const home = process.env.CLI_AGENT_POOL_HOME.trim();
-    if (!path.isAbsolute(home) || home.includes('\0')) throw new PoolError('INVALID_RUNTIME_DIRECTORY', 'CLI_AGENT_POOL_HOME mutlak bir yol olmalı.');
-    return home;
+export function dataDirectory({ env = process.env, home = homedir() } = {}) {
+  if (env.CLI_AGENT_POOL_HOME) {
+    const explicit = env.CLI_AGENT_POOL_HOME.trim();
+    if (!path.isAbsolute(explicit) || explicit.includes('\0')) throw new PoolError('INVALID_RUNTIME_DIRECTORY', 'CLI_AGENT_POOL_HOME mutlak bir yol olmalı.');
+    return explicit;
   }
-  const locator = path.join(homedir(), '.cli-agent-pool', 'runtime-path');
+  const locator = path.join(home, '.cli-agent-pool', 'runtime-path');
   if (existsSync(locator)) {
-    const directory = readFileSync(locator,'utf8').trim();
-    if (!path.isAbsolute(directory)) throw new PoolError('INVALID_RUNTIME_DIRECTORY','Kayitli Pool veri dizini mutlak bir yol olmali.');
+    const directory = readFileSync(locator, 'utf8').trim();
+    if (!path.isAbsolute(directory)) throw new PoolError('INVALID_RUNTIME_DIRECTORY', 'Kayitli Pool veri dizini mutlak bir yol olmali.');
     return directory;
   }
-  return path.join(process.env.LOCALAPPDATA || path.join(homedir(), '.local', 'share'), 'cli-agent-pool');
+  // Isolated account profiles live at <poolDataDir>/profiles/<adapter>/<profile>.
+  // Because USERPROFILE/HOME points at the profile folder, the owner's home locator
+  // is not visible; resolve the enclosing Pool data directory before falling back.
+  const profilesDir = path.dirname(path.dirname(home));
+  if (path.basename(profilesDir).toLowerCase() === 'profiles') {
+    const poolRoot = path.dirname(profilesDir);
+    if (poolRoot && poolRoot !== profilesDir && (existsSync(path.join(poolRoot, 'access-token')) || existsSync(path.join(poolRoot, 'config.json')))) {
+      return poolRoot;
+    }
+  }
+  return path.join(env.LOCALAPPDATA || path.join(home, '.local', 'share'), 'cli-agent-pool');
 }
 
 export function initialize(directory) {

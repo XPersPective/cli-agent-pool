@@ -210,8 +210,8 @@ export function createServer(pool, token, port = pool.config.port, management) {
       await transport.handleRequest(req, res, body);
     } catch { if (!res.writableEnded) fail(500, 'INTERNAL_ERROR', 'İstek tamamlanamadı. Yeniden bağlanın.'); }
   });
-  server.requestTimeout = 120_000;
-  server.headersTimeout = 10_000;
+  server.requestTimeout = 130_000;
+  server.headersTimeout = 15_000;
   server.keepAliveTimeout = 5000;
   server.maxHeadersCount = 32;
   return { server, uiURL: () => ui?.launchURL(server.address()?.port), listen: () => new Promise((resolve, reject) => {

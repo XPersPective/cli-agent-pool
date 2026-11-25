@@ -431,8 +431,8 @@ export async function main(args = process.argv.slice(2)) {
     print({ catalogErrors, discoveredCLIs: imported.discoveredCount, addedRoutes: imported.addedRoutes, addedModels: imported.addedModels, refreshedModels: imported.refreshedModels, totalRoutes: imported.config.routes.length });
     return;
   }
+  if (command === 'stdio') { await stdioBridge(directory); return; }
   const config = ensureInitialized(directory, false);
-  if (command === 'stdio') { await stdioBridge(directory, config); return; }
   if (command === 'validate') {
     for (const route of config.routes) commandArgv(route);
     const python = await capture([config.python, '--version'], directory, config.python);

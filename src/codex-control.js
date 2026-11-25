@@ -2,12 +2,12 @@ import { runProcess } from './process.js';
 import { routeCommand } from './adapters.js';
 import { PoolError, dataDirectory } from './config.js';
 
-export async function codexControl(route, cwd, python, method, directory = dataDirectory()) {
+export async function codexControl(route, cwd, python, method, directory = dataDirectory(), timeoutMs = method === 'quotas' ? 15_000 : 20_000) {
   let nextId = 1;
   const pending = new Map();
   const command = routeCommand(route, directory);
   const storeOverride = route.profile ? ['-c', 'cli_auth_credentials_store="file"'] : [];
-  const handle = runProcess({ extraEnv: command.env, argv: [...command.argv, ...storeOverride, 'app-server', '--stdio', '-c', 'model_provider="openai"'], cwd, python, relay: true, timeoutMs: 20_000,
+  const handle = runProcess({ extraEnv: command.env, argv: [...command.argv, ...storeOverride, 'app-server', '--stdio', '-c', 'model_provider="openai"'], cwd, python, relay: true, timeoutMs,
     onLine(line) {
       if (!line || !line.trim()) return;
       let message;

@@ -4,7 +4,7 @@
 import { PoolError } from './config.js';
 import { capture } from './process.js';
 import { writeFileSync } from 'node:fs';
-import { accountProfileAdapters, mirrorAgyPermissions, profileDirectory, nextFreeProfile, wslExecutable, wslProfileHome, wslWindowsPath, wslHelperDirectory, wslBrowserHelper } from './profiles.js';
+import { accountProfileAdapters, mirrorAgyPermissions, profileDirectory, nextFreeProfile, writeProfileRuntimeLocator, wslExecutable, wslProfileHome, wslWindowsPath, wslHelperDirectory, wslBrowserHelper } from './profiles.js';
 import path from 'node:path';
 import { homedir } from 'node:os';
 
@@ -86,6 +86,7 @@ export function isolatedLoginRoute(config, routeId, extraUsed = []) {
 
 export function prepareNativeAgyProfile(route, directory) {
   const home = profileDirectory(route, directory);
+  writeProfileRuntimeLocator(home, directory);
   const targetGemini = path.join(home, '.gemini');
   return mirrorAgyPermissions(targetGemini, homedir(), false);
 }
