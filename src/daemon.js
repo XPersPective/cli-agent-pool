@@ -31,9 +31,9 @@ export function ensureInitialized(directory, autoImport = true) {
   return loadConfig(directory);
 }
 
-export async function managementRequest(directory, config, body, { signal } = {}) {
+export async function managementRequest(directory, config, body, { signal, timeoutMs = 4000 } = {}) {
   const managementToken = readFileSync(path.join(directory, 'management-token'), 'utf8').trim();
-  const timeoutSignal = AbortSignal.timeout(4000);
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const combinedSignal = signal ? AbortSignal.any([timeoutSignal, signal]) : timeoutSignal;
   const response = await fetch(`http://127.0.0.1:${config.port}/manage`, {
     method: 'POST',
@@ -216,7 +216,7 @@ export async function openRemoteWindow(url, options = {}) {
   return openDashboardWindow(url, { ...options, remote: true });
 }
 
-export async function apiRequest(directory, routePath, { method = 'GET', body } = {}) {
+export async function apiRequest(directory, routePath, { method = 'GET', body, timeoutMs = 120_000 } = {}) {
   const config = ensureInitialized(directory, !existsSync(path.join(directory, 'config.json')));
   const send = () => {
     const token = readFileSync(path.join(directory, 'access-token'), 'utf8').trim();
@@ -228,12 +228,16 @@ export async function apiRequest(directory, routePath, { method = 'GET', body } 
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   };
   let response;
   try {
     response = await send();
-  } catch {
+  } catch (error) {
+    if (error?.name === 'TimeoutError') {
+      throw new PoolError('REQUEST_TIMEOUT', 'Havuz isteği zaman aşımına uğradı.');
+    }
     await ensureDaemon(directory, config);
     response = await send();
   }
@@ -247,19 +251,24 @@ export async function apiRequest(directory, routePath, { method = 'GET', body } 
   return parsed;
 }
 
-export async function withMcpClient(directory, callback) {
-  const config = ensureInitialized(directory, !existsSync(path.join(directory, 'config.json')));
-  await ensureDaemon(directory, config);
+async function openMcpClient(directory, config) {
   const token = readFileSync(path.join(directory, 'access-token'), 'utf8').trim();
   const client = new Client({ name: 'cli-agent-pool-cli', version });
   const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${config.port}/mcp`), {
     requestInit: { headers: { Authorization: `Bearer ${token}`, ...taskHeader() } },
   });
   await client.connect(transport, { timeout: 15_000 });
+  return client;
+}
+
+export async function withMcpClient(directory, callback) {
+  const config = ensureInitialized(directory, !existsSync(path.join(directory, 'config.json')));
+  await ensureDaemon(directory, config);
+  const client = await openMcpClient(directory, config);
   try {
     return await callback(client, config);
   } finally {
-    await client.close();
+    try { await client.close(); } catch { /* ignore close errors */ }
   }
 }
 
@@ -278,6 +287,34 @@ export async function callPoolTool(client, name, args = {}, { timeout = 120_000 
   return parsed;
 }
 
+export async function waitTaskWithReconnect(directory, initialClient, config, taskId, { waitSeconds = 0, sleep = delay } = {}) {
+  let client = initialClient;
+  let ownsClient = false;
+  const getTask = async id => {
+    let lastError = null;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        return await callPoolTool(client, 'pool_get_task', { taskId: id, compact: true });
+      } catch (error) {
+        if (error instanceof PoolError) throw error;
+        lastError = error;
+        if (attempt === 4) break;
+        if (ownsClient) { try { await client.close(); } catch { /* ignore */ } }
+        await sleep(500);
+        await ensureDaemon(directory, config);
+        client = await openMcpClient(directory, config);
+        ownsClient = true;
+      }
+    }
+    throw lastError;
+  };
+  try {
+    return await waitForTask(getTask, taskId, { waitSeconds, sleep });
+  } finally {
+    if (ownsClient) { try { await client.close(); } catch { /* ignore */ } }
+  }
+}
+
 export async function runTaskFromCli(directory, options) {
   const waitSeconds = Number(options.waitSeconds ?? 0);
   if (!Number.isInteger(waitSeconds) || waitSeconds < 0 || waitSeconds > Math.floor(2147483647 / 1000))
@@ -286,7 +323,7 @@ export async function runTaskFromCli(directory, options) {
   const config = ensureInitialized(directory, !existsSync(path.join(directory, 'config.json')));
   await ensureDaemon(directory, config);
 
-  return withMcpClient(directory, async client => {
+  return withMcpClient(directory, async (client, cfg) => {
     const submitted = await callPoolTool(client, 'pool_submit', {
       prompt: options.prompt,
       workspace,
@@ -300,7 +337,7 @@ export async function runTaskFromCli(directory, options) {
       idempotencyKey: options.idempotencyKey || `cli-${randomUUID()}`,
     });
     if (options.detach) return submitted;
-    return waitForTask(id => callPoolTool(client, 'pool_get_task', { taskId: id, compact: true }), submitted.id, { waitSeconds, sleep: delay });
+    return waitTaskWithReconnect(directory, client, cfg, submitted.id, { waitSeconds, sleep: delay });
   });
 }
 

@@ -756,7 +756,7 @@ export async function checkAuth(route, cwd, python, directory = dataDirectory(),
     const tokenFile = isWsl
       ? wslWindowsPath(route, `${wslProfileHome(route)}/.gemini/antigravity-cli/antigravity-oauth-token`)
       : (route.profile ? path.join(agyHome, '.gemini', 'antigravity-cli', 'antigravity-oauth-token') : undefined);
-    const tokenRes = await antigravityToken(agyHome, { tokenFile, credentialStore: !route.profile && !isWsl });
+    const tokenRes = await antigravityToken(agyHome, { tokenFile, credentialStore: !route.profile && !isWsl, python });
     if (tokenRes.reason === 'auth_required') {
       throw new PoolError('AUTH_REQUIRED', `Antigravity (${route.id}) oturumu geçersiz veya süresi dolmuş; Ayarlar'dan yeniden giriş yapın.`);
     }
@@ -988,7 +988,21 @@ export function execute(route, model, task, python, progress, directory = dataDi
   const usesStdin = route.promptStdin ?? !promptArgAdapters.has(route.adapter);
   const input = !usesStdin ? '' : route.adapter === 'mmx' ? JSON.stringify([{ role: 'user', content: task.prompt }]) : route.adapter === 'agy' ? `${JSON.stringify({ event: 'user', message: { content: task.prompt } })}\n` : task.prompt;
   const timeoutMs = Number(task.timeoutSeconds) > 0 ? task.timeoutSeconds * 1000 : 0;
-  const process = runProcess({ argv, cwd: task.workspace, input, extraEnv, python, timeoutMs, maxBytes: Infinity, retainBytes: 2_097_152,
+  const postResultExitMs = Number.isFinite(context?.postResultExitMs) ? context.postResultExitMs : 15_000;
+  let postResultTimer = null;
+  let proc = null;
+  const armPostResultExit = () => {
+    if (postResultTimer || !(postResultExitMs > 0)) return;
+    // Some CLIs print their final terminal JSON result event and then hang on exit
+    // due to lingering MCP child handles or open keep-alive sockets. Give the CLI a
+    // clean grace window to exit normally, then tear down its process tree.
+    postResultTimer = setTimeout(() => {
+      postResultTimer = null;
+      proc?.cancel('RESULT_COMPLETE');
+    }, postResultExitMs);
+    postResultTimer.unref?.();
+  };
+  proc = runProcess({ argv, cwd: task.workspace, input, extraEnv, python, timeoutMs, maxBytes: Infinity, retainBytes: 2_097_152,
     onLine(line) {
       if (!line.trim()) return;
       context?.onActivity?.();
@@ -1038,6 +1052,7 @@ export function execute(route, model, task, python, progress, directory = dataDi
           answer = typeof result?.response === 'string' ? result.response : '';
           productError ||= result?.status !== 'SUCCESS';
           if (productError) failureText = JSON.stringify(result?.error || result?.status || '');
+          armPostResultExit();
         }
         return;
       }
@@ -1054,6 +1069,7 @@ export function execute(route, model, task, python, progress, directory = dataDi
           if (event.result?.error) failureText = JSON.stringify(event.result.error);
           if (typeof event.result?.output === 'string' && event.result.output) answer = event.result.output;
           else if (task.mode === 'execute' && event.result?.output && typeof event.result.output === 'object' && !Array.isArray(event.result.output)) answer = JSON.stringify(event.result.output);
+          armPostResultExit();
         }
         if (/.failed$/.test(event.type || '')) { productError = true; failureText = JSON.stringify(event.error || event.result?.error || ''); }
         if (event.type === 'turn.completed' && typeof event.model?.modelId === 'string') progress('model:' + event.model.modelId.slice(0, 100));
@@ -1078,6 +1094,7 @@ export function execute(route, model, task, python, progress, directory = dataDi
           answer = event.result || event.response || event.text || answer;
           productError ||= Boolean(event.is_error || event.error);
           sawResult = true;
+          if (['claude', 'qoder', 'qwen'].includes(route.adapter)) armPostResultExit();
         } else if (event.type === 'text' && (event.text || event.part?.text)) {
           answer += event.text || event.part.text;
         } else if (event.type === 'assistant' && Array.isArray(event.message?.content)) {
@@ -1091,15 +1108,21 @@ export function execute(route, model, task, python, progress, directory = dataDi
     },
   });
   return {
-    cancel: process.cancel,
-    done: process.done.then(result => {
-      if (result.stopReason) {
+    cancel: reason => {
+      if (postResultTimer) { clearTimeout(postResultTimer); postResultTimer = null; }
+      proc.cancel(reason);
+    },
+    done: proc.done.then(result => {
+      if (postResultTimer) { clearTimeout(postResultTimer); postResultTimer = null; }
+      const postResultReclaimed = result.stopReason === 'RESULT_COMPLETE' && sawResult;
+      if (result.stopReason && !postResultReclaimed) {
         return {
           error: result.stopReason,
           detail: formatStopReasonDetail(result.stopReason, { timeoutSeconds: task.timeoutSeconds, lastStepSummary, stderr: result.stderr }),
         };
       }
-      if (route.adapter === 'mmx' && result.code === 0) {
+      const exitCode = postResultReclaimed ? 0 : result.code;
+      if (route.adapter === 'mmx' && exitCode === 0) {
         try {
           const json = JSON.parse(result.output);
           const body = json.data || json;
@@ -1108,7 +1131,7 @@ export function execute(route, model, task, python, progress, directory = dataDi
           productError = Boolean(json.error || body.base_resp?.status_code);
           if (productError && !failureText) failureText = JSON.stringify(json.error || body.base_resp || json);
         } catch { productError = true; }
-      } else if (route.adapter === 'zcode' && result.code === 0) {
+      } else if (route.adapter === 'zcode' && exitCode === 0) {
         try {
           const body = JSON.parse(result.output);
           const zSid = extractSessionId('zcode', body);
@@ -1120,23 +1143,23 @@ export function execute(route, model, task, python, progress, directory = dataDi
           answer = typeof body.response === 'string' ? body.response : '';
           sawResult = Boolean(answer);
         } catch { productError = true; }
-      } else if (!sawResult && !strictJsonlAdapters.has(route.adapter) && result.code === 0) {
+      } else if (!sawResult && !strictJsonlAdapters.has(route.adapter) && exitCode === 0) {
         const fallback = answer.trim() || rawLines.join('\n').trim() || result.output.trim();
         if (fallback) { answer = fallback; sawResult = true; }
       }
       // Some CLIs emit a single JSON error on stdout even on a nonzero exit.
       // Never dump raw NDJSON step streams into failureText when structured JSONL events were already parsed.
-      if (result.code !== 0 && !failureText && (!strictJsonlAdapters.has(route.adapter) || !sawJsonEvent)) {
+      if (exitCode !== 0 && !failureText && (!strictJsonlAdapters.has(route.adapter) || !sawJsonEvent)) {
         failureText = result.output;
       }
       // Keep a short redacted vendor message so the calls screen can explain a failure.
       let detail = redact(`${failureText} ${result.stderr} ${sawResult ? '' : rawLines.join('\n')}`.replace(/\s+/g, ' ').trim()).slice(-600);
-      if (!detail && result.code !== 0 && lastStepSummary) {
-        detail = redact(`CLI beklenmedik şekilde sonlandı (çıkış kodu ${result.code}). Son aktif adım: ${lastStepSummary}`).slice(0, 600);
+      if (!detail && exitCode !== 0 && lastStepSummary) {
+        detail = redact(`CLI beklenmedik şekilde sonlandı (çıkış kodu ${exitCode}). Son aktif adım: ${lastStepSummary}`).slice(0, 600);
       }
       const failed = error => ({ error, ...(detail ? { detail } : {}) });
       if (permissionDenied) return { error: 'PERMISSION_REQUIRED', detail: permissionDetail || 'Native tool permission denied.', ...(answer.trim() ? { result: redact(answer) } : {}) };
-      if (result.code !== 0 || productError) return failed(classifyFailure(`${failureText} ${result.stderr} ${rawLines.join('\n')}`));
+      if (exitCode !== 0 || productError) return failed(classifyFailure(`${failureText} ${result.stderr} ${rawLines.join('\n')}`));
       if (!sawResult && strictJsonlAdapters.has(route.adapter) && rawLines.length) {
         const classified = classifyFailure(`${rawLines.join('\n')} ${result.stderr}`);
         return failed(classified === 'CLI_FAILED' ? 'PROTOCOL_ERROR' : classified);
@@ -1449,7 +1472,9 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
     return { ...base, account: route.profile, ...(await claudeQuota(undefined, claudeConfigDirectory(route, directory))) };
   }
   if (route.adapter === 'qoder') {
-    const result = await capture([...argv, 'status', '-o', 'json'], cwd, python, env, 12_000);
+    let result;
+    try { result = await capture([...argv, 'status', '-o', 'json'], cwd, python, env, 12_000); }
+    catch { return { ...base, status: 'unknown', windows: [], networkError: true, source: 'qoder-status', note: 'Qoder durum sorgusu zaman aşımına uğradı veya tamamlanamadı.' }; }
     let status;
     try { status = JSON.parse(result.output); } catch { /* Never persist account identifiers. */ }
     const loggedIn = result.code === 0 && status?.logged_in === true;
@@ -1457,7 +1482,9 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
   }
   if (route.adapter === 'claude' && route.billing !== 'subscription') {
     // Token-plan Claude routes use the user's configured endpoint; claude.ai usage does not apply.
-    const text = await capture([...argv, 'auth', 'status', '--text'], cwd, python, env, 12_000);
+    let text;
+    try { text = await capture([...argv, 'auth', 'status', '--text'], cwd, python, env, 12_000); }
+    catch { return { ...base, status: 'unknown', auth: 'token_plan', windows: [], networkError: true, source: 'claude-settings', note: 'Claude ayar/durum sorgusu zaman aşımına uğradı.' }; }
     const endpoint = /base URL:\s*(\S+)/i.exec(text.output + text.stderr)?.[1] || 'https://api.anthropic.com';
     return { ...base, status: 'unknown', auth: 'token_plan', endpoint, windows: [], source: 'claude-settings', note: `Uç nokta: ${endpoint} · Bu sağlayıcı kota yüzdesi bildirmiyor.` };
   }
@@ -1524,16 +1551,21 @@ export async function quota(route, cwd, python, directory = dataDirectory()) {
     return { ...base, status: 'available', auth: route.billing === 'free' ? 'builtin_free' : 'configured', windows: [], source: route.adapter };
   }
   if (route.adapter !== 'mmx') return { ...base, status: 'unknown', auth: 'unverified', windows: [], source: route.adapter, note: 'Bu CLI kota sorgusu sunmuyor.' };
-  const authRes = await capture([...argv, 'auth', 'status', '--output', 'json'], cwd, python, env);
+  const [authRes, result] = await Promise.all([
+    capture([...argv, 'auth', 'status', '--output', 'json'], cwd, python, env, 12_000).catch(() => null),
+    capture([...argv, 'quota', 'show', '--output', 'json'], cwd, python, env, 12_000).catch(() => null),
+  ]);
+  if (!authRes && !result) {
+    return { ...base, status: 'unknown', windows: [], networkError: true, source: 'mmx', note: 'mmx kota/oturum sorgusu zaman aşımına uğradı.' };
+  }
   let authJson = {};
-  try { authJson = JSON.parse(authRes.output); } catch {}
-  const loggedIn = authRes.code === 0 && Boolean(authJson?.method);
-  const result = await capture([...argv, 'quota', 'show', '--output', 'json'], cwd, python, env);
+  try { authJson = JSON.parse(authRes?.output || ''); } catch {}
+  const loggedIn = authRes ? (authRes.code === 0 && Boolean(authJson?.method)) : null;
   let body;
-  try { body = JSON.parse(result.output); } catch { /* Unknown output never proves an active plan. */ }
-  const failure = result.code !== 0 || !body || body.error || body.base_resp?.status_code;
-  const subscription = !failure ? 'active' : /no active (?:token )?plan/i.test(result.output + result.stderr) ? 'none' : 'unknown';
+  try { body = JSON.parse(result?.output || ''); } catch { /* Unknown output never proves an active plan. */ }
+  const failure = !result || result.code !== 0 || !body || body.error || body.base_resp?.status_code;
+  const subscription = !failure ? 'active' : /no active (?:token )?plan/i.test(`${result?.output || ''}${result?.stderr || ''}`) ? 'none' : 'unknown';
   const windows = failure ? [] : minimaxWindows(body.data || body);
-  const status = !loggedIn ? 'auth_required' : windows.some(window => window.remainingPercent <= 0) ? 'rate_limited' : subscription === 'active' ? 'available' : 'unknown';
-  return { ...base, status, auth: loggedIn ? authJson.method : 'missing', subscription, windows, source: 'mmx' };
+  const status = loggedIn === false ? 'auth_required' : windows.some(window => window.remainingPercent <= 0) ? 'rate_limited' : subscription === 'active' ? 'available' : 'unknown';
+  return { ...base, status, auth: loggedIn ? authJson.method : (loggedIn === false ? 'missing' : 'unverified'), subscription, windows, ...(!result ? { networkError: true } : {}), source: 'mmx' };
 }

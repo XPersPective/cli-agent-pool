@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import http from 'node:http';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -13,7 +14,9 @@ import { configSchema, dataDirectory } from '../src/config.js';
 import { Store } from '../src/store.js';
 import { Pool } from '../src/pool.js';
 import { createServer } from '../src/server.js';
-import { callPoolTool } from '../src/daemon.js';
+import { apiRequest, callPoolTool, managementRequest } from '../src/daemon.js';
+import { execute, quota } from '../src/adapters.js';
+import { runProcess } from '../src/process.js';
 import {
   stdioBridge,
   isAuthError,
@@ -319,4 +322,166 @@ test('timeout layers are aligned and Pool.getQuota + cliVersion bound slow probe
   assert.equal(v1, v2);
   assert.match(v1, /1\.2\.3/);
   assert.equal(readFileSync(countFile, 'utf8').length, 1, 'concurrent cliVersion calls should share one in-flight probe');
+});
+
+test('runProcess settles on spawn error and cancels promptly during large blocked stdin write', async t => {
+  const addCleanup = createCleanups(t);
+  const workDir = makeTempDir(addCleanup, 'pool-proc-res-');
+
+  // 1. Missing python binary settles immediately with SPAWN_FAILED instead of hanging.
+  const t0 = Date.now();
+  const missing = runProcess({
+    argv: [process.execPath, '-e', 'console.log("ok")'],
+    cwd: workDir,
+    python: path.join(workDir, 'does-not-exist-python.exe'),
+    timeoutMs: 5000,
+  });
+  const missingRes = await missing.done;
+  assert.equal(missingRes.stopReason, 'SPAWN_FAILED');
+  assert.equal(missing.send('ignored'), false);
+  assert.ok(Date.now() - t0 < 2000, 'spawn error must settle immediately');
+
+  // 2. Large (>32 KB) stdin prompt sent to a child that never reads stdin cancels promptly.
+  const sleeper = path.join(workDir, 'sleeper.cjs');
+  writeFileSync(sleeper, 'setInterval(() => {}, 60000);');
+  const t1 = Date.now();
+  const proc = runProcess({
+    argv: [process.execPath, sleeper],
+    cwd: workDir,
+    input: 'X'.repeat(40_000),
+    python: process.platform === 'win32' ? 'python' : 'python3',
+    timeoutMs: 400,
+  });
+  const res = await proc.done;
+  assert.equal(res.stopReason, 'TIMEOUT');
+  assert.ok(Date.now() - t1 < 4000, 'timeout cancel must work even while initial large stdin write is blocked');
+});
+
+test('stdio bridge survives dying-daemon restart race on reconnect', async t => {
+  const addCleanup = createCleanups(t);
+  const { root, config, token, managementToken, pool } = makeFixture(addCleanup);
+  let activeApp = createServer(pool, token, 0, { directory: root, token: managementToken });
+  const { port } = await activeApp.listen();
+  config.port = port;
+  writeFileSync(path.join(root, 'config.json'), JSON.stringify(config));
+
+  addCleanup(async () => {
+    if (activeApp?.server?.listening) {
+      activeApp.server.closeAllConnections();
+      await new Promise(resolve => activeApp.server.close(resolve));
+    }
+  });
+
+  // Simulate restart race: first ensureDaemon call returns while the port is still closed
+  // (as if a dying daemon answered pair_ui 1ms before closing); second call starts the server.
+  let ensureCalls = 0;
+  const ensureDaemonFn = async () => {
+    ensureCalls++;
+    if (ensureCalls >= 2 && !activeApp.server.listening) {
+      activeApp = createServer(pool, token, port, { directory: root, token: managementToken });
+      await activeApp.listen();
+    }
+    return { status: 'listening', started: ensureCalls >= 2 };
+  };
+
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const closeBridge = await stdioBridge(root, null, { serverTransport, warmUp: false, ensureDaemonFn });
+  addCleanup(() => closeBridge());
+
+  const client = new Client({ name: 'restart-race-test', version: '1.0.0' });
+  await client.connect(clientTransport);
+  addCleanup(() => client.close());
+
+  assert.equal((await client.listTools()).tools.length, 19);
+
+  // Shut down daemon completely.
+  activeApp.server.closeAllConnections();
+  await new Promise(resolve => activeApp.server.close(resolve));
+
+  // Next tool call survives the first failed openFresh attempt and succeeds on retry.
+  const help = await client.callTool({ name: 'pool_help', arguments: {} });
+  assert.equal(ensureCalls, 2);
+  assert.ok(!help.isError);
+  assert.ok(help.structuredContent?.data?.entries);
+});
+
+test('execute completes cleanly via post-result exit grace when a CLI hangs after emitting final result', async t => {
+  const addCleanup = createCleanups(t);
+  const workDir = makeTempDir(addCleanup, 'pool-post-result-');
+  const fakeAgy = path.join(workDir, 'hanging-agy.cjs');
+  writeFileSync(fakeAgy, [
+    'process.stdin.resume();',
+    'console.log(JSON.stringify({ event: "init", init: { model: "gemini-4-neon" } }));',
+    'console.log(JSON.stringify({ event: "result", result: { status: "SUCCESS", response: "Finished cleanly" } }));',
+    'setInterval(() => {}, 60000);',
+  ].join('\n'));
+
+  const route = { id: 'agy-hang-test', adapter: 'agy', executable: fakeAgy, enabled: true, billing: 'subscription', trustedSettings: true };
+  const model = { id: 'gemini-4-neon', alias: 'Gemini 4 Neon', kinds: ['text'] };
+  const t0 = Date.now();
+  const run = execute(
+    route,
+    model,
+    { prompt: 'hi', workspace: workDir, kind: 'text', timeoutSeconds: 0 },
+    process.platform === 'win32' ? 'python' : 'python3',
+    () => {},
+    workDir,
+    { directory: workDir, postResultExitMs: 250 },
+  );
+  const outcome = await run.done;
+  assert.equal(outcome.error, undefined);
+  assert.equal(outcome.result, 'Finished cleanly');
+  assert.ok(Date.now() - t0 < 4000, 'hanging CLI after terminal result event must be reclaimed promptly');
+});
+
+test('managementRequest and apiRequest honor explicit timeouts and qoder/mmx quota failures degrade to networkError', async t => {
+  const addCleanup = createCleanups(t);
+  const root = makeTempDir(addCleanup, 'pool-http-timeout-');
+  const token = randomBytes(32).toString('hex');
+  const managementToken = randomBytes(32).toString('hex');
+  writeFileSync(path.join(root, 'access-token'), token);
+  writeFileSync(path.join(root, 'management-token'), managementToken);
+  writeFileSync(path.join(root, '.acl-hardened'), 'test\n');
+
+  const slowServer = http.createServer((_req, res) => {
+    const timer = setTimeout(() => {
+      if (!res.writableEnded) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      }
+    }, 250);
+    timer.unref();
+  });
+  await new Promise(resolve => slowServer.listen(0, '127.0.0.1', resolve));
+  addCleanup(async () => {
+    slowServer.closeAllConnections();
+    await new Promise(resolve => slowServer.close(resolve));
+  });
+  const { port } = slowServer.address();
+  const config = configSchema.parse({ port, workspaceRoots: [], routes: [] });
+  writeFileSync(path.join(root, 'config.json'), JSON.stringify(config));
+
+  // managementRequest times out at short budget and succeeds with longer budget.
+  await assert.rejects(
+    managementRequest(root, config, { operation: 'refresh_route_auth' }, { timeoutMs: 60 }),
+    err => err?.name === 'TimeoutError' || err?.name === 'AbortError',
+  );
+  const okManage = await managementRequest(root, config, { operation: 'refresh_route_auth' }, { timeoutMs: 2000 });
+  assert.deepEqual(okManage, { ok: true });
+
+  // apiRequest enforces timeoutMs with REQUEST_TIMEOUT instead of hanging forever.
+  await assert.rejects(
+    apiRequest(root, '/api/help', { timeoutMs: 60 }),
+    err => err?.code === 'REQUEST_TIMEOUT',
+  );
+
+  // qoder and mmx quota readers degrade to networkError on CLI spawn/timeout failure (allowing Pool.getQuota cached fallback).
+  const badPy = path.join(root, 'no-such-python.exe');
+  const qoderSnap = await quota({ id: 'qoder-t', adapter: 'qoder', executable: process.execPath, billing: 'free_credits' }, root, badPy, root);
+  assert.equal(qoderSnap.networkError, true);
+  assert.equal(qoderSnap.status, 'unknown');
+
+  const mmxSnap = await quota({ id: 'mmx-t', adapter: 'mmx', executable: process.execPath, billing: 'token_plan' }, root, badPy, root);
+  assert.equal(mmxSnap.networkError, true);
+  assert.equal(mmxSnap.status, 'unknown');
 });

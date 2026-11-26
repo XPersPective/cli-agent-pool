@@ -162,20 +162,48 @@ export function runProcess({ argv, cwd, input = '', relay = false, extraEnv = {}
   });
   child.stdin.on('error', () => {});
   const done = new Promise(resolve => {
-    child.once('error', err => {
-      stopReason ||= 'SPAWN_FAILED';
-      if (err?.message) stderr = stderr ? `${stderr}\n${err.message}` : err.message;
-    });
-    child.once('close', code => {
+    let exitGraceTimer = null;
+    const finish = code => {
+      if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
       if (killTimer) clearTimeout(killTimer);
+      if (exitGraceTimer) clearTimeout(exitGraceTimer);
       lines.close();
       resolve({ code, output, stderr, stopReason: stopReason || (lineFailure ? 'PROTOCOL_ERROR' : null) });
+    };
+    child.once('error', err => {
+      stopReason ||= 'SPAWN_FAILED';
+      if (err?.message) stderr = stderr ? `${stderr}\n${err.message}` : err.message;
+      finish(null);
+    });
+    child.once('exit', code => {
+      if (settled || exitGraceTimer) return;
+      // Guard against a stray descendant holding stdout/stderr pipes open after
+      // the supervisor itself has exited, which would otherwise prevent 'close'.
+      exitGraceTimer = setTimeout(() => {
+        if (settled) return;
+        try { child.stdout?.destroy(); } catch { /* ignore */ }
+        try { child.stderr?.destroy(); } catch { /* ignore */ }
+        finish(code);
+      }, 1500);
+      exitGraceTimer.unref?.();
+    });
+    child.once('close', code => {
+      finish(code);
     });
   });
-  child.stdin.write(JSON.stringify({ argv, cwd, input, relay, hide: windowsHide !== false }) + '\n');
-  return { done, cancel, send: input => child.stdin.write(JSON.stringify({ input }) + '\n') };
+  if (!settled && child.stdin.writable && !child.stdin.destroyed) {
+    child.stdin.write(JSON.stringify({ argv, cwd, input, relay, hide: windowsHide !== false }) + '\n');
+  }
+  return {
+    done,
+    cancel,
+    send: input => {
+      if (settled || !child.stdin.writable || child.stdin.destroyed) return false;
+      return child.stdin.write(JSON.stringify({ input }) + '\n');
+    },
+  };
 }
 
 export async function capture(argv, cwd, python, extraEnv = {}, timeoutMs = 15_000) {

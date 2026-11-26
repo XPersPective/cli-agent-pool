@@ -233,17 +233,22 @@ def main():
         finally:
             cancel()
 
+    # Start parent EOF monitor before feeding initial stdin so a large (>4 KB)
+    # prompt blocked in child.stdin.write() never blinds cancel/timeout/parent death.
+    # Holding stdin_lock until initial write completes preserves ordering in relay mode.
+    stdin_lock.acquire()
+    threading.Thread(target=watch_parent, daemon=True).start()
     try:
-        with stdin_lock:
-            initial = request.get("input", "")
-            if initial:
-                child.stdin.write(initial.encode("utf-8"))
-                child.stdin.flush()
-            if not request.get("relay"):
-                child.stdin.close()
+        initial = request.get("input", "")
+        if initial:
+            child.stdin.write(initial.encode("utf-8"))
+            child.stdin.flush()
+        if not request.get("relay"):
+            child.stdin.close()
     except OSError:
         pass
-    threading.Thread(target=watch_parent, daemon=True).start()
+    finally:
+        stdin_lock.release()
     code = child.wait()
     # POSIX: also retire background descendants after the product exits.
     if os.name != "nt":

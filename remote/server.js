@@ -366,12 +366,12 @@ function createPoolBridge(directory, customFetch = fetch) {
     submit: payload => requestPool('/api/tasks', { method: 'POST', body: payload, auth: true, timeoutMs: 30_000 }),
     cancel: id => requestPool(`/api/tasks/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: {}, auth: true }),
     manageGet: () => managementRequest(directory, getConfig(), { operation: 'get' }),
-    manageSave: (config, revision) => managementRequest(directory, getConfig(), { operation: 'save', config, revision }),
-    clearHistory: () => managementRequest(directory, getConfig(), { operation: 'clear_history' }),
-    deleteTask: taskId => managementRequest(directory, getConfig(), { operation: 'delete_task', taskId }),
-    resolveTask: (taskId, note = 'Remote arayüzünden incelenerek kapatıldı.') => managementRequest(directory, getConfig(), { operation: 'resolve', taskId, reviewed: true, note }),
-    refreshRouteAuth: routeId => managementRequest(directory, getConfig(), { operation: 'refresh_route_auth', routeId }),
-    loginRoute: routeId => managementRequest(directory, getConfig(), { operation: 'login_route', routeId }),
+    manageSave: (config, revision) => managementRequest(directory, getConfig(), { operation: 'save', config, revision }, { timeoutMs: 10_000 }),
+    clearHistory: () => managementRequest(directory, getConfig(), { operation: 'clear_history' }, { timeoutMs: 10_000 }),
+    deleteTask: taskId => managementRequest(directory, getConfig(), { operation: 'delete_task', taskId }, { timeoutMs: 10_000 }),
+    resolveTask: (taskId, note = 'Remote arayüzünden incelenerek kapatıldı.') => managementRequest(directory, getConfig(), { operation: 'resolve', taskId, reviewed: true, note }, { timeoutMs: 10_000 }),
+    refreshRouteAuth: routeId => managementRequest(directory, getConfig(), { operation: 'refresh_route_auth', routeId }, { timeoutMs: 30_000 }),
+    loginRoute: routeId => managementRequest(directory, getConfig(), { operation: 'login_route', routeId }, { timeoutMs: 25_000 }),
     startPool: async () => {
       const cfg = ensureInitialized(directory, true);
       const info = await ensureDaemon(directory, cfg);

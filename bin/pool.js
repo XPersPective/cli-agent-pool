@@ -14,9 +14,8 @@ import { prepareWslProfile, prepareNativeAgyProfile } from '../src/accounts.js';
 import { stdioBridge } from '../src/stdio.js';
 import { rpcRequest } from '../src/rpc.js';
 import { version } from '../src/version.js';
-import { ensureInitialized, ensureDaemon, ensureRemoteDaemon, stopRemoteDaemon, managementRequest, openDashboardWindow, openRemoteWindow, windowsConsoleHostStatus, applyWindowsConsoleHostFix, withMcpClient, apiRequest, callPoolTool, runTaskFromCli, installDesktopAndSkills, scheduleServiceRestart } from '../src/daemon.js';
+import { ensureInitialized, ensureDaemon, ensureRemoteDaemon, stopRemoteDaemon, managementRequest, openDashboardWindow, openRemoteWindow, windowsConsoleHostStatus, applyWindowsConsoleHostFix, withMcpClient, apiRequest, callPoolTool, waitTaskWithReconnect, runTaskFromCli, installDesktopAndSkills, scheduleServiceRestart } from '../src/daemon.js';
 import { createRemoteServer } from '../remote/server.js';
-import { waitForTask } from '../src/task-protocol.js';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const booleanFlags = new Set(['detach', 'live', 'force', 'status', 'open', 'fix-console']);
@@ -469,12 +468,12 @@ export async function main(args = process.argv.slice(2)) {
     if (!input.routeId) throw new PoolError('INVALID_REQUEST', '--route is required.');
     const config = ensureInitialized(directory, false);
     await ensureDaemon(directory, config);
-    const started = await managementRequest(directory, config, { operation: 'preflight', input });
+    const started = await managementRequest(directory, config, { operation: 'preflight', input }, { timeoutMs: 30_000 });
     if (started.cached || values.detach) { print(started); return; }
-    const status = await withMcpClient(directory, async client => {
-      await waitForTask(id => callPoolTool(client, 'pool_get_task', { taskId: id, compact: true }), started.taskId, { waitSeconds: 1200, sleep: delay });
+    const status = await withMcpClient(directory, async (client, cfg) => {
+      await waitTaskWithReconnect(directory, client, cfg, started.taskId, { waitSeconds: 1200, sleep: delay });
       const { force, ...query } = input; void force;
-      return callPoolTool(client, 'pool_preflight_status', query);
+      return withMcpClient(directory, freshClient => callPoolTool(freshClient, 'pool_preflight_status', query));
     });
     print({ taskId: started.taskId, ...status });
     if (!status.ready) process.exitCode = 2;

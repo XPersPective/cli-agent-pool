@@ -152,6 +152,21 @@
 - [x] **Doğrulama kanıtı (2.20.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate`, `npm test` (`218/218`, yeni `test/remote.test.js` dahil) ve canlı `cli-agent-pool` servisi üzerinden `/r/state` uçtan uca entegrasyon testi doğrulandı.
 
 ## 2.19.0 — Onay/Ekleme Kilidi Düzeltmesi, Windows Pythonw İzolasyonu, 300 Model Sınırı, Neon/Ağ Hata Düzeltmeleri ve Otomatik Güncelleme Bildirimi
+## 2.31.2 — Süreç Yürütme Takılma Koruması, Post-Result Çıkış Koruması, Restart Yarışı ve Yönetim/API Zaman Aşımı Düzeltmeleri
+- [x] **Supervisor büyük stdin yazım kilidi ve iptal koruması (`src/supervisor.py`)**:
+  - `watch_parent` üst süreç EOF/iptal izleyici iş parçacığı `stdin_lock` altında ilk prompt yazılmadan **önce** başlatılır; 4 KB üstü büyük promptlar (100 KB'a kadar) `child.stdin.write()` içinde beklerken bile iptal, zaman aşımı veya üst süreç kapanışı süreç ağacını anında sonlandırır.
+- [x] **Alt süreç yaşam döngüsü kesin sonlanma garantisi (`src/process.js`)**:
+  - `runProcess` tek idempotent `finish()` yardımcısıyla `spawn` `'error'` olayında (ör. eksik Python) anında `SPAWN_FAILED` ile sonlanır; `'exit'` sonrası sızan bir torun süreç stdout/stderr borusunu açık tutsa bile `1500 ms` çıkış süresi sonunda boruları kapatıp görevi kilitlenmeden tamamlar; kapalı boruya `send()` çağrısı güvenli `false` döndürür.
+- [x] **Final sonuç sonrası kapanmayan CLI'lar için post-result çıkış koruması (`src/adapters.js`)**:
+  - `agy` (`result`), `claude` / `qoder` / `qwen` (`result`) ve `mcode` (`exec.completed`) son JSON sonuç olayını yazdıktan sonra asılı kalan alt MCP/soket tanıtıcıları nedeniyle çıkamayan süreçler `15 sn` temiz çıkış penceresi sonunda `RESULT_COMPLETE` ile toplanır ve alınmış sonuç/izin hatası kayıpsız döndürülür.
+  - `checkAuth` içindeki Antigravity token çözümlemesi yapılandırılmış `python` yolunu iletir; `qoder`, non-sub `claude` ve paralel (`12s`) `mmx` kota sorguları zaman aşımında fırlatmak yerine `networkError: true` döndürerek `Pool.getQuota` önbellek yedeklemesinin çalışmasını sağlar.
+- [x] **MCP `stdio` restart yarışı ve CLI/Remote zaman aşımı hizalaması (`src/stdio.js`, `src/daemon.js`, `bin/pool.js`, `remote/server.js`)**:
+  - `stdioBridge` kapanmakta olan servisin `pair_ui` yanıtlayıp ardından kapanması yarışına karşı `ensureDaemon` + `openFresh` adımını 3 denemeye kadar (`250 ms` aralıkla, iptal edilebilir) yineler ve `stdin` `close` / `SIGINT` olaylarında da temiz kapanır.
+  - `apiRequest` sınırsız `fetch` yerine varsayılan `120s` `AbortSignal.timeout` (`REQUEST_TIMEOUT`) kullanır; `runTaskFromCli` ve `cli-agent-pool preflight` görev bekleme döngüsü (`waitTaskWithReconnect`) geçici bağlantı kopmalarında yeni MCP bağlantısıyla kesintisiz devam eder.
+  - `managementRequest` yapılandırılabilir `timeoutMs` alır: Remote `refreshRouteAuth` (`30s`), `loginRoute` (`25s`), kaydetme/temizleme (`10s`) ve `cli-agent-pool preflight` (`30s`) artık 4 sn varsayılan sınırında yanlış zaman aşımına düşmez.
+- [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.31.2`.
+- [x] **Doğrulama kanıtı (2.31.2)**: `npm run check`, `npm run secrets` (`112` dosya temiz), `npm audit --audit-level=moderate` (`0 vulnerabilities`) ve `npm test` (`257/257` geçti; `test/mcp-timeout-resilience.test.js` `9/9` dahil).
+
 ## 2.31.1 — MCP `stdio` Anında El Sıkışma, Otomatik Yeniden Bağlanma, Timeout Katman Uyumu ve İzole Profil Çözümlemesi
 - [x] **Anında `stdio` MCP el sıkışması + tembel/otomatik yeniden bağlanma (`bin/pool.js`, `src/stdio.js`, `src/daemon.js`)**:
   - `bin/pool.js` `stdio` komutunda başlangıçta senkron `ensureInitialized()` / `icacls.exe` çağrısını atlayarak doğrudan `stdioBridge(directory)` başlatır.

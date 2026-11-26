@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -17,7 +18,7 @@ export const CALL_TOOL_TIMEOUT_MS = 120_000;
 const RECONNECTABLE_CODES = new Set([
   'ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH',
   'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT',
-  'ERR_SOCKET_CLOSED', 'ECONNABORTED',
+  'UND_ERR_BODY_TIMEOUT', 'ERR_SOCKET_CLOSED', 'ECONNABORTED',
 ]);
 
 export function isAuthError(error) {
@@ -38,7 +39,7 @@ export function isReconnectableError(error) {
     if (typeof candidate.code === 'string' && RECONNECTABLE_CODES.has(candidate.code)) return true;
   }
   const message = String(error.message || '');
-  if (/fetch failed|socket hang up|econnrefused|econnreset|epipe|not connected|connection closed|sse stream disconnected|shutting down/i.test(message)) {
+  if (/fetch failed|socket hang up|other side closed|terminated|econnrefused|econnreset|epipe|not connected|connection closed|sse stream disconnected|shutting down/i.test(message)) {
     return true;
   }
   return false;
@@ -106,27 +107,34 @@ export async function stdioBridge(directory, initialConfig = null, options = {})
     if (connectPromise) return connectPromise;
     const work = (async () => {
       let { config: cfg, token } = readBackend();
-      if (startDaemonFirst) {
-        await ensureDaemonFn(directory, cfg, { signal: bridgeAbort.signal });
-        if (closed) throw new Error('Bridge closed');
-        ({ config: cfg, token } = readBackend());
-        const fresh = await openFresh(cfg, token);
-        activeClient = fresh;
-        return fresh;
+      if (!startDaemonFirst) {
+        try {
+          const fresh = await openFresh(cfg, token);
+          activeClient = fresh;
+          return fresh;
+        } catch (error) {
+          if (closed || isAuthError(error)) throw error;
+        }
       }
-      try {
-        const fresh = await openFresh(cfg, token);
-        activeClient = fresh;
-        return fresh;
-      } catch (error) {
-        if (closed || isAuthError(error)) throw error;
-        await ensureDaemonFn(directory, cfg, { signal: bridgeAbort.signal });
+      // During a service restart, a dying daemon may answer pair_ui right before
+      // closing its socket; retry boundedly until the fresh listener accepts /mcp.
+      let lastError = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
         if (closed) throw new Error('Bridge closed');
-        ({ config: cfg, token } = readBackend());
-        const fresh = await openFresh(cfg, token);
-        activeClient = fresh;
-        return fresh;
+        if (attempt > 0) await delay(250, undefined, { signal: bridgeAbort.signal });
+        try {
+          await ensureDaemonFn(directory, cfg, { signal: bridgeAbort.signal });
+          if (closed) throw new Error('Bridge closed');
+          ({ config: cfg, token } = readBackend());
+          const fresh = await openFresh(cfg, token);
+          activeClient = fresh;
+          return fresh;
+        } catch (error) {
+          lastError = error;
+          if (closed || isAuthError(error) || !isReconnectableError(error) || attempt === 2) throw error;
+        }
       }
+      throw lastError;
     })();
     connectPromise = work;
     try {
@@ -148,8 +156,9 @@ export async function stdioBridge(directory, initialConfig = null, options = {})
   });
 
   const withClient = async (fn, extra) => {
-    const client = await ensureConnected();
+    let client = null;
     try {
+      client = await ensureConnected();
       return await fn(client);
     } catch (error) {
       if (closed || extra?.signal?.aborted || !isReconnectableError(error)) throw error;
@@ -188,6 +197,8 @@ export async function stdioBridge(directory, initialConfig = null, options = {})
   };
   if (serverTransport instanceof StdioServerTransport) {
     process.stdin.once('end', () => { void close(); });
+    process.stdin.once('close', () => { void close(); });
+    process.once('SIGINT', () => { void close(); });
     process.once('SIGTERM', () => { void close(); });
   }
   return close;
