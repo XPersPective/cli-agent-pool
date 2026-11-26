@@ -182,4 +182,15 @@ test('browserUI finish_switch isolates unprofiled routes, rejects duplicates and
   await ui.operation({ operation: 'delete_route', payload: { routeId: 'agy-acc2' } });
   assert.equal(existsSync(path.join(dir, 'profiles', 'agy', 'acc2')), false);
   assert.deepEqual(openedRoutes.map(r => r.profile), ['acc3', 'acc1', 'acc1', 'acc3', 'acc3']);
+
+  // Background quotas with includeDisabled:false skips disabled routes while snapshot caches cleanly
+  const disabledConfig = structuredClone(pool.config);
+  disabledConfig.routes.push({ id: 'agy-off', adapter: 'agy', executable: fakeAgy, enabled: false, billing: 'subscription', trustedSettings: true, models: [] });
+  pool.config = disabledConfig;
+  const queried = [];
+  pool.getQuota = async routeId => { queried.push(routeId); return { connection: routeId, status: 'available', windows: [], observedAt: new Date().toISOString() }; };
+  await ui.operation({ operation: 'quotas', payload: { includeDisabled: false, force: false } });
+  assert.deepEqual(queried, ['agy-local']);
+  await ui.operation({ operation: 'quotas', payload: { routeId: 'agy-off', force: true } });
+  assert.deepEqual(queried, ['agy-local', 'agy-off']);
 });

@@ -152,6 +152,19 @@
 - [x] **Doğrulama kanıtı (2.20.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate`, `npm test` (`218/218`, yeni `test/remote.test.js` dahil) ve canlı `cli-agent-pool` servisi üzerinden `/r/state` uçtan uca entegrasyon testi doğrulandı.
 
 ## 2.19.0 — Onay/Ekleme Kilidi Düzeltmesi, Windows Pythonw İzolasyonu, 300 Model Sınırı, Neon/Ağ Hata Düzeltmeleri ve Otomatik Güncelleme Bildirimi
+## 2.31.4 — Giriş Terminalini Öne Getirme, Anında Çıkış Denetimi ve Havuz/Panel Takılmalarının Giderilmesi
+- [x] **Giriş terminalini odaklama ve hatalı açılış tespiti (`src/winlogin.py`)**:
+  - `winlogin.py`, `WinSta0\Default` üzerinde `CreateProcessW` ile açtığı CLI konsol penceresini `OpenDesktopW("Default")` + `SetThreadDesktop` + `AttachThreadInput` + `SetWindowPos(HWND_TOPMOST/HWND_NOTOPMOST)` + `SetForegroundWindow` ile tarayıcı penceresinin önüne getirir; böylece tam ekran panel arkasında kaybolmaz.
+  - Başlatılan CLI pencere açmadan sıfır dışı çıkış koduyla anında kapanırsa yanlışlıkla "pencere açıldı" dönmek yerine hatayı (`exitCode`) bildirir.
+- [x] **Event-loop ve dosya sistemi donmalarının giderilmesi (`src/web.js`)**:
+  - Her 2–5 saniyede bir çağrılan `snapshot` işlemi içindeki senkron `discover()` (60 sn), `readInstalledVersion()` (30 sn), `configView` revizyonu (`statSync` mtime/size doğrulamalı) ve rota e-posta okumaları (30 sn) önbelleğe alındı; yapılandırma/hesap/tarama/güncelleme mutasyonlarında anında geçersiz kılınır.
+  - `quotas` işlemi `includeDisabled: false` desteği kazandı; arka plan kota yenilemesi kapalı rotalar için gereksiz CLI alt süreci başlatmaz.
+- [x] **Panel DOM takılmalarının ve uzun kilitlenmelerin giderilmesi (`web/app.js`)**:
+  - `renderCalls()` gizli sekmedeyken veya çağrı listesi imzası değişmediğinde DOM'u yeniden kurmaz.
+  - Arka plan kota yenilemesi 120 sn aralıkla (`force: false`, `includeDisabled: false`) sessiz çalışır ve kota verisi değişmediyse `renderPool()` / `renderSettings()` tetiklemez; `#refresh` yenilemesi kota sorgusunu arka plana bırakarak ekranı dakikalarca kilitlemez; `focus`/`visibilitychange` çakışmaları 1.5 sn soğuma ile tekilleştirilir.
+- [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.31.4`.
+- [x] **Doğrulama kanıtı (2.31.4)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate` (`0 vulnerabilities`) ve `npm test` (`259/259` geçti).
+
 ## 2.31.3 — Windows Etkileşimli Giriş Penceresi (`WinSta0\Default`), PowerShell Bağımlılığının Kaldırılması ve Bekleyen Profil Tekrar Kullanımı
 - [x] **Etkileşimli `WinSta0\Default` CLI giriş başlatıcısı (`src/winlogin.py`, `src/web.js`, `scripts/check.js`)**:
   - `openCliLogin` artık PowerShell `Start-Process` (gizli `exebox-*` masaüstünde açılan veya ağır .NET başlangıcı/zaman aşımıyla `LOGIN_FAILED` veren) yerine sabit Python yardımcısı `src/winlogin.py`'yi (`pythonw.exe`, shell-free) kullanır.

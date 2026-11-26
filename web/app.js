@@ -706,8 +706,8 @@ function startPolling() {
   scheduleNextRefresh();
   if (!quotaIntervalId) {
     quotaIntervalId = setInterval(() => {
-      if (!document.hidden && snapshot && !busy && !serviceStopped && !sessionExpired) void refreshQuotas();
-    }, 60000);
+      if (!document.hidden && snapshot && !busy && !serviceStopped && !sessionExpired) void refreshQuotas(undefined, { background: true });
+    }, 120_000);
   }
   if (!catalogIntervalId) {
     catalogIntervalId = setInterval(() => {
@@ -1442,7 +1442,10 @@ $('new-adapter').addEventListener('change', () => {
   if (cli?.defaultBilling) $('new-billing').value = cli.defaultBilling;
 });
 
-$('refresh').addEventListener('click', () => void action(async () => { await autoSyncCatalogs({ showErrors: true, refreshAfter: false, ignoreBusy: true }); await refresh(); await refreshQuotas(); }));
+$('refresh').addEventListener('click', () => void action(async () => {
+  await autoSyncCatalogs({ showErrors: true, refreshAfter: false, ignoreBusy: true });
+  await refresh();
+}).finally(() => { void refreshQuotas(); }));
 $('scan-import').addEventListener('click', () => void action(runScanImport));
 $('sync-all-permissions')?.addEventListener('click', () => void action(async () => {
   const result = await call('sync_permissions', {});
@@ -3273,25 +3276,40 @@ $('close-add-pool').addEventListener('click', () => $('add-pool-dialog').close()
 $('add-pool-dialog').addEventListener('close', () => { pendingPoolModel = null; pendingPoolBatch = null; });
 
 let pendingQuotaRouteId = null;
-async function refreshQuotas(routeId) {
+async function refreshQuotas(routeId, { background = false } = {}) {
   if (!snapshot || serviceStopped) return;
   if (quotasRefreshing) {
     if (routeId) pendingQuotaRouteId = routeId;
     return;
   }
   quotasRefreshing = true;
-  $('refresh-quotas').textContent = 'Limitler sorgulanıyor…';
-  renderPool();
+  if (!background) {
+    $('refresh-quotas').textContent = 'Limitler sorgulanıyor…';
+    renderPool();
+  }
+  const prevQuotasJson = background ? JSON.stringify(snapshot.quotas || {}) : null;
+  const prevErrorsJson = background ? JSON.stringify(quotaErrors || {}) : null;
+  let changed = !background;
   try {
-    const result = await call('quotas', { ...(routeId ? { routeId } : {}), force: true });
+    const result = await call('quotas', {
+      ...(routeId ? { routeId } : {}),
+      force: !background,
+      includeDisabled: Boolean(routeId) || (!background && showDisabledRoutes),
+    });
     if (snapshot) snapshot.quotas = { ...snapshot.quotas, ...result.quotas };
     quotaErrors = routeId ? { ...quotaErrors, [routeId]: result.errors[routeId] } : result.errors;
-  } catch (error) { notice(error.message, true); }
-  finally {
+    if (background) {
+      changed = JSON.stringify(snapshot?.quotas || {}) !== prevQuotasJson || JSON.stringify(quotaErrors || {}) !== prevErrorsJson;
+    }
+  } catch (error) {
+    if (!background) notice(error.message, true);
+  } finally {
     quotasRefreshing = false;
     $('refresh-quotas').textContent = 'Kotaları yenile';
-    renderPool();
-    if (!$('settings').hidden) renderSettings();
+    if (changed) {
+      renderPool();
+      if (!$('settings').hidden) renderSettings();
+    }
     if (pendingQuotaRouteId) {
       const nextRoute = pendingQuotaRouteId;
       pendingQuotaRouteId = null;
@@ -3374,11 +3392,16 @@ async function openTask(id, force = true) {
   showDetail(task);
 }
 
-function renderCalls() {
+let lastCallsSignature = '';
+function renderCalls(force = false) {
+  if ($('calls-panel')?.hidden) return;
   const focusedId = document.activeElement?.id;
   const allTasks = snapshot?.tasks || [];
   const callSearch = ($('calls-search')?.value || '').trim().toLocaleLowerCase('tr');
   const stateFilter = $('calls-state-filter')?.value || 'all';
+  const signature = `${callSearch}\0${stateFilter}\0${allTasks.map(t => `${t.id}:${t.state}:${t.updated}:${t.error || ''}`).join('|')}`;
+  if (!force && signature === lastCallsSignature) return;
+  lastCallsSignature = signature;
 
   if ($('calls-kpi')) {
     const kpiCounts = [
@@ -3522,9 +3545,12 @@ void refresh().then(() => {
     void checkForUpdates();
   }
 });
-document.addEventListener('visibilitychange', () => {
+let lastResumeRefreshAt = 0;
+function refreshOnResume() {
+  const now = Date.now();
+  if (now - lastResumeRefreshAt < 1500) return;
+  lastResumeRefreshAt = now;
   if (!document.hidden && !busy && !serviceStopped && !sessionExpired) void refresh();
-});
-window.addEventListener('focus', () => {
-  if (!document.hidden && !busy && !serviceStopped && !sessionExpired) void refresh();
-});
+}
+document.addEventListener('visibilitychange', refreshOnResume);
+window.addEventListener('focus', refreshOnResume);

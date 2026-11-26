@@ -103,3 +103,22 @@ test('winlogin.py launches CLI login on interactive WinSta0\\Default even when c
   assert.equal(observed.claudeDir, dir);
   assert.equal(observed.leakedArgv, false);
 });
+
+test('winlogin.py focuses console window on WinSta0\\Default and rejects immediate non-zero exit', { skip: process.platform !== 'win32' }, async () => {
+  const pyw = resolveWindowsPython('python', { preferWindowless: true });
+  const winlogin = fileURLToPath(new URL('../src/winlogin.py', import.meta.url));
+  const src = readFileSync(winlogin, 'utf8');
+  assert.match(src, /bring_process_window_to_front/);
+  assert.match(src, /SetForegroundWindow/);
+  assert.match(src, /HWND_TOPMOST/);
+  // An immediately failing CLI process must fail instead of falsely reporting opened:true.
+  const failingPayload = JSON.stringify({ file: pyw, arguments: ['-c', 'import sys; sys.exit(3)'] });
+  await assert.rejects(
+    execFileAsync(pyw, [winlogin], {
+      env: { ...process.env, CLI_AGENT_POOL_LOGIN_ARGV: failingPayload },
+      windowsHide: true,
+      timeout: 10_000,
+    }),
+    err => err.code === 1 && /"exitCode"\s*:\s*3/.test(err.stderr || ''),
+  );
+});

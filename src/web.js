@@ -217,9 +217,54 @@ export function browserUI(pool, management, { openLogin = openCliLogin, refreshI
   };
   let launchToken = randomBytes(32).toString('hex');
   let cachedUpdateStatus = null;
+  let cachedInstalled = null;
+  let cachedInstalledAt = 0;
+  let cachedInstalledVer = null;
+  let cachedInstalledVerAt = 0;
+  let cachedConfigRev = null;
+  let cachedConfigStamp = '';
+  const cachedEmails = new Map();
   let lastAuthorizedAt = 0;
   let lastUnauthorizedAt = 0;
   const refreshedAt = new Map();
+  const invalidateDiscoveryCache = () => { cachedInstalled = null; cachedInstalledAt = 0; };
+  const invalidateConfigCache = () => { cachedConfigRev = null; cachedConfigStamp = ''; };
+  const invalidateEmailCache = routeId => { if (routeId) cachedEmails.delete(routeId); else cachedEmails.clear(); };
+  const installedList = () => {
+    const now = Date.now();
+    if (cachedInstalled && now - cachedInstalledAt < 60_000) return cachedInstalled;
+    cachedInstalled = discover();
+    cachedInstalledAt = now;
+    return cachedInstalled;
+  };
+  const installedVersionCached = () => {
+    const now = Date.now();
+    if (cachedInstalledVer !== null && now - cachedInstalledVerAt < 30_000) return cachedInstalledVer;
+    cachedInstalledVer = readInstalledVersion() || '';
+    cachedInstalledVerAt = now;
+    return cachedInstalledVer;
+  };
+  const configRevisionCached = () => {
+    const configPath = path.join(management.directory, 'config.json');
+    try {
+      const st = statSync(configPath);
+      const stamp = `${st.mtimeMs}:${st.size}`;
+      if (cachedConfigRev && cachedConfigStamp === stamp) return cachedConfigRev;
+      cachedConfigRev = configView(management.directory).revision;
+      cachedConfigStamp = stamp;
+      return cachedConfigRev;
+    } catch {
+      return configView(management.directory).revision;
+    }
+  };
+  const routeEmailCached = route => {
+    const now = Date.now();
+    const hit = cachedEmails.get(route.id);
+    if (hit && now - hit.at < 30_000) return hit.value;
+    const value = routeAccountEmail(route, management.directory) || null;
+    cachedEmails.set(route.id, { value, at: now });
+    return value;
+  };
   const cookieSecret = createHmac('sha256', Buffer.from(management.token, 'hex')).update('cli-agent-pool-browser-cookie-v1').digest();
   const assets = new Map([
     ['/categories.js', ['text/javascript; charset=utf-8', readFileSync(new URL('../web/categories.js', import.meta.url))]],
@@ -339,12 +384,14 @@ export function browserUI(pool, management, { openLogin = openCliLogin, refreshI
     async operation(body) {
       const { operation, payload = {} } = body;
       if (operation === 'snapshot') {
+        const resolvedEmails = new Map();
         const quotas = Object.fromEntries(pool.config.routes.map(route => {
           const cached = pool.store.quota(route.id);
-          const email = cached?.email || routeAccountEmail(route, management.directory);
+          const email = cached?.email || routeEmailCached(route);
+          if (email) resolvedEmails.set(route.id, email);
           return [route.id, cached ? (email && !cached.email ? { ...cached, email } : cached) : null];
         }).filter(([, q]) => q));
-        const installedVersion = readInstalledVersion() || version;
+        const installedVersion = installedVersionCached() || version;
         const restartRequired = updateNeedsRestart(version, installedVersion);
         const updateStatus = cachedUpdateStatus
           ? {
@@ -379,10 +426,10 @@ export function browserUI(pool, management, { openLogin = openCliLogin, refreshI
         return {
           version,
           updateStatus,
-          revision: configView(management.directory).revision,
+          revision: configRevisionCached(),
           connections: pool.config.routes.map(route => {
             const { id, adapter, enabled, billing, autoSelect, api, profile, runtime } = route;
-            const email = quotasWithDup[id]?.email || routeAccountEmail(route, management.directory);
+            const email = quotasWithDup[id]?.email || resolvedEmails.get(id) || null;
             const duplicateOf = duplicateRoutes.get(id) || null;
             return {
               id, adapter, enabled, billing, account: profile || 'default', runtime: runtime || 'native',
@@ -398,7 +445,7 @@ export function browserUI(pool, management, { openLogin = openCliLogin, refreshI
           quotas: quotasWithDup,
           models: pool.models(),
           tasks: pool.list(160,0,true),
-          installed: discover(),
+          installed: installedList(),
           workspaceRoots: pool.config.workspaceRoots,
           categories: pool.config.categories,
         };
@@ -448,6 +495,8 @@ export function browserUI(pool, management, { openLogin = openCliLogin, refreshI
           try { deleteSecret(management.directory, deletedRoute.api.secretRef); } catch { /* best-effort */ }
         }
         pool.schedule();
+        invalidateConfigCache();
+        invalidateEmailCache(routeId);
         return { ...annotateView(configView(management.directory), management.directory), deletedRoute: routeId };
       }
       if (operation === 'settings') return managementOperation(pool, management, { operation: 'get' });
@@ -519,6 +568,8 @@ export function browserUI(pool, management, { openLogin = openCliLogin, refreshI
         pendingSwitches.delete(payload.routeId);
         cleanupUnusedProfile(pool.config.routes, previous);
         pool.schedule();
+        invalidateConfigCache();
+        invalidateEmailCache(target.id);
         return { ...annotateView(configView(management.directory), management.directory), switchedRoute: target.id, profile: target.profile, ...(candidateEmail ? { email: candidateEmail } : {}) };
       }
       if (operation === 'logout_route') {
@@ -531,6 +582,7 @@ export function browserUI(pool, management, { openLogin = openCliLogin, refreshI
         clearProfileAuth(route, management.directory);
         pool.verifiedAuth?.clear?.();
         try { pool.store.deleteQuota?.(routeId); } catch {}
+        invalidateEmailCache(routeId);
         return { ...annotateView(configView(management.directory), management.directory), loggedOutRoute: routeId };
       }
       if (operation === 'add_account') {
@@ -585,6 +637,8 @@ export function browserUI(pool, management, { openLogin = openCliLogin, refreshI
         pool.config = saveConfig(management.directory, { ...view.config, routes: [...view.config.routes, route] }, view.revision);
         pool.schedule();
         pendingAccounts.delete(payload.routeId);
+        invalidateConfigCache();
+        invalidateEmailCache(route.id);
         return { ...annotateView(configView(management.directory), management.directory), addedRoute: route.id, ...(candidateEmail ? { email: candidateEmail } : {}) };
       }
       if (operation === 'sync_permissions') {
@@ -600,8 +654,15 @@ export function browserUI(pool, management, { openLogin = openCliLogin, refreshI
       if (operation === 'skills') return workspaceSkills(payload.workspace || '', pool.config.workspaceRoots);
       if (operation === 'skill') return readWorkspaceSkill(payload.workspace || '', pool.config.workspaceRoots, payload.id);
       if (operation === 'select') return pool.selectLive(payload);
-      if (operation === 'save') return managementOperation(pool, management, { ...payload, operation: 'save' });
+      if (operation === 'save') {
+        const saved = managementOperation(pool, management, { ...payload, operation: 'save' });
+        invalidateConfigCache();
+        invalidateDiscoveryCache();
+        return saved;
+      }
       if (operation === 'scan_import') {
+        invalidateDiscoveryCache();
+        invalidateEmailCache();
         const initialView = configView(management.directory);
         const targetRoutes = initialView.config.routes.filter(route =>
           !route.api && (payload.routeId ? route.id === payload.routeId : liveCatalogAdapters.has(route.adapter)),
@@ -642,9 +703,13 @@ export function browserUI(pool, management, { openLogin = openCliLogin, refreshI
           clearTimeout(t);
         }
         pool.schedule();
+        invalidateConfigCache();
+        invalidateDiscoveryCache();
         return { ...annotateView(configView(management.directory), management.directory), addedRoutes: imported.addedRoutes, addedModels: imported.addedModels, refreshedModels: imported.refreshedModels, discoveredCount: imported.discoveredCount, catalogErrors };
       }
       if (operation === 'check_update') {
+        cachedInstalledVer = null;
+        cachedInstalledVerAt = 0;
         cachedUpdateStatus = await checkUpdateStatus({ runningVersion: version, force: Boolean(payload.force) });
         return cachedUpdateStatus;
       }
@@ -667,13 +732,19 @@ export function browserUI(pool, management, { openLogin = openCliLogin, refreshI
       if (operation === 'probe_model') return pool.probeModel(payload);
       if (operation === 'task') return pool.get(payload.taskId);
       if (operation === 'cancel') return pool.cancel(payload.taskId);
-      if (operation === 'quota') return pool.getQuota(payload.routeId, payload.force === true);
+      if (operation === 'quota') {
+        invalidateEmailCache(payload.routeId);
+        return pool.getQuota(payload.routeId, payload.force === true);
+      }
       if (operation === 'quotas') {
-        const routes = pool.config.routes.filter(route => !payload.routeId || route.id === payload.routeId);
+        const includeDisabled = payload.includeDisabled !== false || Boolean(payload.routeId);
+        const routes = pool.config.routes.filter(route => (payload.routeId ? route.id === payload.routeId : (includeDisabled || route.enabled)));
         const quotas = {}, errors = {};
         await Promise.all(routes.map(async route => {
-          try { quotas[route.id] = await pool.getQuota(route.id, payload.force === true); }
-          catch (error) { errors[route.id] = error instanceof PoolError ? error.message : 'Kota sorgulanamadı'; }
+          try {
+            invalidateEmailCache(route.id);
+            quotas[route.id] = await pool.getQuota(route.id, payload.force === true);
+          } catch (error) { errors[route.id] = error instanceof PoolError ? error.message : 'Kota sorgulanamadı'; }
         }));
         return { quotas, errors };
       }
@@ -681,6 +752,9 @@ export function browserUI(pool, management, { openLogin = openCliLogin, refreshI
         return managementOperation(pool, management, { operation: 'shutdown', force: Boolean(payload.force) });
       }
       if (operation === 'update_service') {
+        invalidateDiscoveryCache();
+        cachedInstalledVer = null;
+        cachedInstalledVerAt = 0;
         const res = management.onUpdate
           ? await management.onUpdate()
           : await installDesktopAndSkills(management.directory);
