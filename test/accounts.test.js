@@ -190,19 +190,27 @@ test('profile quotas read only that profile login and never fall back to the def
 test('login opens the official CLI with the account profile, never with credentials', async t => {
   const directory = temp(t);
   const seen = [];
-  const run = async (file, args, options) => { seen.push(JSON.parse(options.env.CLI_AGENT_POOL_LOGIN_ARGV)); seen.at(-1).env = options.env; seen.at(-1).script = args.at(-1); return { stdout: '{"opened":true}' }; };
+  const run = async (file, args, options) => { seen.push(JSON.parse(options.env.CLI_AGENT_POOL_LOGIN_ARGV)); seen.at(-1).launcher = file; seen.at(-1).args = args; seen.at(-1).env = options.env; return { stdout: '{"opened":true}' }; };
   await openCliLogin(native('codex', { profile: 'acc2' }), { platform: 'win32', run, directory });
   assert.deepEqual(seen[0].arguments, ['login']);
   assert.equal(seen[0].env.CODEX_HOME, path.join(directory, 'profiles', 'codex', 'acc2'));
+  assert.match(seen[0].args[0], /winlogin\.py$/);
   let prepared = false;
   await openCliLogin(wslRoute(), { platform: 'win32', run, directory, prepare: async () => { prepared = true; } });
   assert.equal(prepared, true);
   assert.equal(seen[1].file, wslExecutable());
   assert.deepEqual(seen[1].arguments, ['-d', 'Ubuntu', '--exec', '/usr/bin/env', 'HOME=/home/u/.cli-agent-pool/profiles/agy/acc2', 'PATH=/home/u/.cli-agent-pool/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', '/home/u/.local/bin/agy']);
-  // wsl.exe rejects quoted options ("--exec"), which closed the login window at once.
-  assert.match(seen[1].script, /if \(\$_ -eq '' -or \$_ -match '\\s'\) \{ '"' \+ \$_ \+ '"' \} else \{ \$_ \}/);
+  // winlogin.py uses CreateProcessW on WinSta0\Default with subprocess.list2cmdline,
+  // keeping non-whitespace flags such as --exec unquoted for wsl.exe.
+  const winloginSource = readFileSync(new URL('../src/winlogin.py', import.meta.url), 'utf8');
+  assert.match(winloginSource, /WinSta0\\\\Default/);
+  assert.match(winloginSource, /subprocess\.list2cmdline/);
   const manual = await openCliLogin(native('claude', { profile: 'acc2' }), { platform: 'linux', run, directory });
   assert.match(manual.message, /CLAUDE_CONFIG_DIR=".*acc2" claude auth login/);
+  await assert.rejects(
+    openCliLogin(native('claude', { profile: 'acc2' }), { platform: 'win32', run: async () => { throw new Error('boom'); }, directory }),
+    err => err.code === 'LOGIN_FAILED' && /\$env:CLAUDE_CONFIG_DIR=".*acc2"; claude auth login/.test(err.message),
+  );
 });
 
 test('file-based CLIs get their own home per account profile', t => {

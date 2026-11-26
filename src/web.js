@@ -1,8 +1,10 @@
 import { workspaceSkills, readWorkspaceSkill } from './skills.js';
 import { randomBytes, timingSafeEqual, createHmac, createHash } from 'node:crypto';
 import { readFileSync, realpathSync, statSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { configView, saveConfig, configSchema, PoolError, dataDirectory } from './config.js';
 import { discover, routeCatalog, importDiscoveredRoutes, loginCommands, mergeCatalogModels, migrateFilterAliases, routeCommand, accountLoggedIn, routeAccountEmail, quota } from './adapters.js';
@@ -10,8 +12,10 @@ import { nextAccountRoute, isolatedLoginRoute, prepareWslProfile, prepareNativeA
 import { accountProfileAdapters, clearProfileAuth, clearProfileDirectory, wslPrefix, wslLoginPath } from './profiles.js';
 import { codexControl } from './codex-control.js';
 import { saveSecret, hasSecret, deleteSecret } from './secrets-store.js';
-import { childEnvironment, runProcess } from './process.js';
+import { childEnvironment, resolveWindowsPython, runProcess } from './process.js';
 import { installDesktopAndSkills, scheduleServiceRestart, checkUpdateStatus, readInstalledVersion, updateNeedsRestart, ensureRemoteDaemon, openRemoteWindow, windowsConsoleHostStatus, applyWindowsConsoleHostFix } from './daemon.js';
+
+const winLoginScript = fileURLToPath(new URL('./winlogin.py', import.meta.url));
 
 const execPicker = async (file, args, options) => {
   if (options.windowsHide === false && /\.exe$/i.test(file)) {
@@ -71,15 +75,24 @@ export async function openCliLogin(route, { platform = process.platform, run = p
   }
   const prefix = Object.entries(profileEnv).map(([key, value]) => `${key}="${value}" `).join('');
   if (platform !== 'win32') return { opened: false, message: `Terminalde ${prefix}${command} çalıştırın, girişten sonra Kontrol et düğmesine basın.` };
-  if (argv.some(arg => /["\r\n]/.test(arg))) throw new PoolError('LOGIN_UNAVAILABLE', `Terminalde ${command} çalıştırın.`);
-  // Fixed platform script only: arguments travel as JSON data, never executable PowerShell text.
-  // Every forwarded argument is a file or fixed login word, without embedded quotes or trailing backslashes.
-  // Only arguments with whitespace are quoted: wsl.exe does not accept quoted options such as "--exec".
-  const script = `$ErrorActionPreference = 'Stop'; $taskLoginRequest = ConvertFrom-Json $env:CLI_AGENT_POOL_LOGIN_ARGV; $taskLoginOptions = @{FilePath=$taskLoginRequest.file; WindowStyle='Normal'; PassThru=$true; ErrorAction='Stop'}; if ($taskLoginRequest.arguments.Count -gt 0) { $taskLoginOptions.ArgumentList = (($taskLoginRequest.arguments | ForEach-Object { if ($_ -eq '' -or $_ -match '\\s') { '"' + $_ + '"' } else { $_ } }) -join ' ') }; $taskLoginProcess = Start-Process @taskLoginOptions; @{opened=$true} | ConvertTo-Json -Compress`;
+  if (argv.some(arg => /["\r\n\u0000]/.test(arg))) throw new PoolError('LOGIN_UNAVAILABLE', `Terminalde ${command} çalıştırın.`);
+  // Fixed platform helper only: arguments travel as JSON data, never executable shell text.
+  // winlogin.py invokes CreateProcessW with lpDesktop="WinSta0\\Default" and CREATE_NEW_CONSOLE
+  // so the CLI sign-in terminal is always visible even when the daemon runs on an off-screen desktop.
+  const launcher = resolveWindowsPython(python, { platform, preferWindowless: true });
   try {
-    const result = await run(path.join(process.env.SystemRoot || 'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe'), ['-NoProfile','-NonInteractive','-Command',script], { env: childEnvironment({...profileEnv, CLI_AGENT_POOL_LOGIN_ARGV: JSON.stringify({file:argv[0],arguments:argv.slice(1)})}), windowsHide: true, timeout: 15000, maxBuffer: 4096 });
+    const result = await run(launcher, [winLoginScript], {
+      cwd: homedir(),
+      env: childEnvironment({ ...profileEnv, CLI_AGENT_POOL_LOGIN_ARGV: JSON.stringify({ file: argv[0], arguments: argv.slice(1) }) }),
+      windowsHide: true,
+      timeout: 15000,
+      maxBuffer: 4096,
+    });
     if (!JSON.parse(result.stdout).opened) throw new Error('Not opened');
-  } catch { throw new PoolError('LOGIN_FAILED', `Giriş penceresi açılamadı. Terminalde ${command} çalıştırın.`); }
+  } catch {
+    const winEnvHint = Object.entries(profileEnv).map(([key, value]) => `$env:${key}="${value}"; `).join('');
+    throw new PoolError('LOGIN_FAILED', `Giriş penceresi açılamadı. Terminalde ${winEnvHint}${command} çalıştırın.`);
+  }
   return { opened: true, message: 'Resmî CLI giriş penceresi açıldı. Girişi orada tamamlayıp Kontrol et düğmesine basın.' };
 }
 
@@ -450,11 +463,21 @@ export function browserUI(pool, management, { openLogin = openCliLogin, refreshI
         const route = view.config.routes.find(route => route.id === payload.routeId);
         if (!route) throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı.');
         if (payload.isolated === true && !route.api && route.runtime !== 'wsl' && accountProfileAdapters.has(route.adapter)) {
-          const extraUsed = [...pendingAccounts.values(), ...pendingSwitches.values()]
+          const existingPending = pendingSwitches.get(route.id);
+          const extraUsed = [
+            ...pendingAccounts.values(),
+            ...[...pendingSwitches.entries()].filter(([id]) => id !== route.id).map(([, item]) => item),
+          ]
             .filter(item => item.adapter === route.adapter)
             .map(item => item.profile);
-          const staging = isolatedLoginRoute(view.config, route.id, extraUsed);
-          cleanupUnusedProfile(view.config.routes, staging);
+          const reusePending = Boolean(
+            existingPending
+            && existingPending.adapter === route.adapter
+            && existingPending.profile
+            && !view.config.routes.some(item => item.adapter === route.adapter && item.profile === existingPending.profile),
+          );
+          const staging = reusePending ? existingPending : isolatedLoginRoute(view.config, route.id, extraUsed);
+          if (!reusePending) cleanupUnusedProfile(view.config.routes, staging);
           if (staging.adapter === 'agy') prepareNativeAgyProfile(staging, management.directory);
           const opened = await openLogin(staging, { directory: management.directory, python: pool.config.python, prepare: async () => {} });
           pendingSwitches.set(route.id, staging);
@@ -514,11 +537,22 @@ export function browserUI(pool, management, { openLogin = openCliLogin, refreshI
         const view = configView(management.directory);
         // Step 1: open the official sign-in for a new profile. Nothing is saved yet.
         const baseRoute = view.config.routes.find(item => item.id === payload.routeId);
-        const extraUsed = baseRoute ? [...pendingAccounts.values(), ...pendingSwitches.values()]
+        const existingPending = pendingAccounts.get(payload.routeId);
+        const extraUsed = baseRoute ? [
+          ...[...pendingAccounts.entries()].filter(([id]) => id !== payload.routeId).map(([, item]) => item),
+          ...pendingSwitches.values(),
+        ]
           .filter(item => item.adapter === baseRoute.adapter)
           .map(item => item.profile) : [];
-        const { route } = nextAccountRoute(view.config, payload.routeId, 'native', extraUsed);
-        cleanupUnusedProfile(view.config.routes, route);
+        const reusePending = Boolean(
+          existingPending
+          && baseRoute
+          && existingPending.adapter === baseRoute.adapter
+          && existingPending.profile
+          && !view.config.routes.some(item => item.id === existingPending.id || (item.adapter === existingPending.adapter && item.profile === existingPending.profile)),
+        );
+        const route = reusePending ? existingPending : nextAccountRoute(view.config, payload.routeId, 'native', extraUsed).route;
+        if (!reusePending) cleanupUnusedProfile(view.config.routes, route);
         if (route.adapter === 'agy' && route.runtime !== 'wsl') prepareNativeAgyProfile(route, management.directory);
         else if (route.runtime === 'wsl') await prepareWslProfile(route, pool.config.python, management.directory);
         const opened = await openLogin(route, { directory: management.directory, python: pool.config.python, prepare: async () => {} });

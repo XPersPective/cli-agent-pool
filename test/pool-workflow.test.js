@@ -309,7 +309,7 @@ test('owner login opens the native CLI using a fixed platform script and data-on
   await openCliLogin({...route,adapter},{platform:'win32',run});
   assert.deepEqual(JSON.parse(launched.options.env.CLI_AGENT_POOL_LOGIN_ARGV),{file:process.execPath,arguments:arguments_});
  }
- assert(!launched.args.at(-1).includes(process.execPath));assert.equal(launched.options.env.OPENAI_API_KEY,undefined);assert(launched.args.includes('-NonInteractive'));
+ assert(!launched.args.at(-1).includes(process.execPath));assert.equal(launched.options.env.OPENAI_API_KEY,undefined);assert.match(launched.args[0],/winlogin\.py$/);assert.equal(launched.options.windowsHide,true);
  await assert.rejects(openCliLogin({...route,api:{}},{platform:'win32',run}),{code:'LOGIN_UNAVAILABLE'});
  await assert.rejects(openCliLogin(route,{platform:'win32',run:async()=>{throw Error('failed')}}),{code:'LOGIN_FAILED'});
  assert.equal((await openCliLogin(route,{platform:'linux',run})).opened,false);

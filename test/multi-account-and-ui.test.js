@@ -154,10 +154,21 @@ test('browserUI finish_switch isolates unprofiled routes, rejects duplicates and
   await assert.rejects(ui.operation({ operation: 'finish_account', payload: { routeId: 'agy-local' } }), { code: 'DUPLICATE_ACCOUNT' });
   assert.equal(existsSync(path.join(dir, 'profiles', 'agy', 'acc3')), false, 'duplicate candidate directory must be cleaned up');
 
-  // Test isolated switch on agy-local -> acc1
+  // Test isolated switch on agy-local -> acc1, and verify retrying reuses acc1 without jumping profiles
   const sw = await ui.operation({ operation: 'login', payload: { routeId: 'agy-local', isolated: true } });
   assert.equal(sw.profile, 'acc1');
+  const markerFile = path.join(dir, 'profiles', 'agy', 'acc1', 'pending-marker.txt');
+  writeFileSync(markerFile, 'keep');
+  const swRetry = await ui.operation({ operation: 'login', payload: { routeId: 'agy-local', isolated: true } });
+  assert.equal(swRetry.profile, 'acc1');
+  assert.equal(existsSync(markerFile), true, 'retrying isolated login must not wipe the active pending profile');
   assert.equal((await ui.operation({ operation: 'finish_switch', payload: { routeId: 'agy-local' } })).pending, 'agy-local');
+
+  // Retrying add_account for the same route also reuses the same pending profile instead of leaking acc4/acc5
+  const add1 = await ui.operation({ operation: 'add_account', payload: { routeId: 'agy-local' } });
+  const add2 = await ui.operation({ operation: 'add_account', payload: { routeId: 'agy-local' } });
+  assert.equal(add1.pending, 'agy-acc3');
+  assert.equal(add2.pending, 'agy-acc3');
   const acc1TokenDir = path.join(dir, 'profiles', 'agy', 'acc1', '.gemini', 'antigravity-cli');
   mkdirSync(acc1TokenDir, { recursive: true });
   writeFileSync(path.join(acc1TokenDir, 'antigravity-oauth-token'), JSON.stringify({ id_token_email: 'first@example.com', token: { refresh_token: 'r1' } }));
@@ -170,5 +181,5 @@ test('browserUI finish_switch isolates unprofiled routes, rejects duplicates and
   // Deleting agy-acc2 removes its profile folder from disk
   await ui.operation({ operation: 'delete_route', payload: { routeId: 'agy-acc2' } });
   assert.equal(existsSync(path.join(dir, 'profiles', 'agy', 'acc2')), false);
-  assert.equal(openedRoutes.length, 2);
+  assert.deepEqual(openedRoutes.map(r => r.profile), ['acc3', 'acc1', 'acc1', 'acc3', 'acc3']);
 });

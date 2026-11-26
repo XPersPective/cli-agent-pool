@@ -152,6 +152,16 @@
 - [x] **Doğrulama kanıtı (2.20.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate`, `npm test` (`218/218`, yeni `test/remote.test.js` dahil) ve canlı `cli-agent-pool` servisi üzerinden `/r/state` uçtan uca entegrasyon testi doğrulandı.
 
 ## 2.19.0 — Onay/Ekleme Kilidi Düzeltmesi, Windows Pythonw İzolasyonu, 300 Model Sınırı, Neon/Ağ Hata Düzeltmeleri ve Otomatik Güncelleme Bildirimi
+## 2.31.3 — Windows Etkileşimli Giriş Penceresi (`WinSta0\Default`), PowerShell Bağımlılığının Kaldırılması ve Bekleyen Profil Tekrar Kullanımı
+- [x] **Etkileşimli `WinSta0\Default` CLI giriş başlatıcısı (`src/winlogin.py`, `src/web.js`, `scripts/check.js`)**:
+  - `openCliLogin` artık PowerShell `Start-Process` (gizli `exebox-*` masaüstünde açılan veya ağır .NET başlangıcı/zaman aşımıyla `LOGIN_FAILED` veren) yerine sabit Python yardımcısı `src/winlogin.py`'yi (`pythonw.exe`, shell-free) kullanır.
+  - `src/winlogin.py` salt-veri `CLI_AGENT_POOL_LOGIN_ARGV` JSON'ını okur, alt sürece geçmeden ortamdan siler ve `kernel32.CreateProcessW` ile `lpDesktop = "WinSta0\\Default"`, `CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP` (uygunsa `CREATE_BREAKAWAY_FROM_JOB`) ve `SW_SHOWNORMAL` kullanarak resmî CLI giriş terminalini (`claude auth login`, `codex login`, `agy`, WSL vb.) her zaman kullanıcının görünür masaüstünde açar.
+  - Hata durumunda Windows PowerShell için profil ortam değişkeni (`$env:CLAUDE_CONFIG_DIR="..."` vb.) komuta eklenir.
+- [x] **Tekrarlanan giriş / ek hesap denemelerinde bekleyen profil korunması (`src/web.js`)**:
+  - `login` (`isolated: true`) ve `add_account` işlemleri aynı bağlantı için bekleyen bir profil zaten varsa (`pendingSwitches` / `pendingAccounts`), yeni `acc3`/`acc4`/`acc5` profilleri açıp açık pencereyi boşa düşürmek yerine mevcut bekleyen profili temizlemeden yeniden kullanır.
+- [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.31.3`.
+- [x] **Doğrulama kanıtı (2.31.3)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate` (`0 vulnerabilities`) ve `npm test` (`258/258` geçti; `CliAgentPoolBg` gizli masaüstünden `WinSta0\Default` üzerine `winlogin.py` başlatma ve tekrarlanan girişte bekleyen profil koruma testleri dahil).
+
 ## 2.31.2 — Süreç Yürütme Takılma Koruması, Post-Result Çıkış Koruması, Restart Yarışı ve Yönetim/API Zaman Aşımı Düzeltmeleri
 - [x] **Supervisor büyük stdin yazım kilidi ve iptal koruması (`src/supervisor.py`)**:
   - `watch_parent` üst süreç EOF/iptal izleyici iş parçacığı `stdin_lock` altında ilk prompt yazılmadan **önce** başlatılır; 4 KB üstü büyük promptlar (100 KB'a kadar) `child.stdin.write()` içinde beklerken bile iptal, zaman aşımı veya üst süreç kapanışı süreç ağacını anında sonlandırır.
