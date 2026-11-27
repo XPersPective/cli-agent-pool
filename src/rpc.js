@@ -7,7 +7,6 @@ export async function rpcRequest(stream) {
   let input = '';
   for await (const chunk of stream) {
     input += chunk.toString('utf8');
-    if (Buffer.byteLength(input) > 1_000_000) throw new PoolError('INVALID_REQUEST', 'JSON isteği en fazla 1 MB olabilir.');
   }
   let request;
   try { request = JSON.parse(input); } catch { throw new PoolError('INVALID_REQUEST', 'stdin üzerinde geçerli JSON isteği gerekli.'); }

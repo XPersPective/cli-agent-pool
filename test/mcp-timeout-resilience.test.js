@@ -258,10 +258,10 @@ test('timeout layers are aligned and Pool.getQuota + cliVersion bound slow probe
   const addCleanup = createCleanups(t);
   const { root, token, managementToken, store } = makeFixture(addCleanup);
 
-  // 1. Aligned timeout constants and HTTP server timeouts.
+  // 1. Unlimited execution/HTTP timeouts and aligned transport constants.
   assert.equal(CONNECT_TIMEOUT_MS, 15_000);
   assert.equal(LIST_TOOLS_TIMEOUT_MS, 30_000);
-  assert.equal(CALL_TOOL_TIMEOUT_MS, 120_000);
+  assert.equal(CALL_TOOL_TIMEOUT_MS, 2_147_483_647);
 
   const slowConfig = configSchema.parse({
     workspaceRoots: [],
@@ -286,11 +286,11 @@ test('timeout layers are aligned and Pool.getQuota + cliVersion bound slow probe
   addCleanup(() => slowPool.close());
 
   const app = createServer(slowPool, token, 0, { directory: root, token: managementToken });
-  assert.equal(app.server.requestTimeout, 130_000);
+  assert.equal(app.server.requestTimeout, 0);
   assert.equal(app.server.headersTimeout, 15_000);
   app.server.close();
 
-  // 2. callPoolTool passes aligned 120s timeout (overriding SDK's 60s default).
+  // 2. callPoolTool passes unlimited (max 32-bit) timeout so long tasks never time out prematurely.
   let capturedOptions = null;
   const fakeClient = {
     async callTool(_params, _schema, opts) {
@@ -299,7 +299,7 @@ test('timeout layers are aligned and Pool.getQuota + cliVersion bound slow probe
     },
   };
   await callPoolTool(fakeClient, 'pool_help', {});
-  assert.equal(capturedOptions?.timeout, 120_000);
+  assert.equal(capturedOptions?.timeout, 2_147_483_647);
 
   // 3. Pool.getQuota enforces quotaTimeoutMs and falls back to cached windows with stale+networkError.
   const t0 = Date.now();
@@ -484,4 +484,42 @@ test('managementRequest and apiRequest honor explicit timeouts and qoder/mmx quo
   const mmxSnap = await quota({ id: 'mmx-t', adapter: 'mmx', executable: process.execPath, billing: 'token_plan' }, root, badPy, root);
   assert.equal(mmxSnap.networkError, true);
   assert.equal(mmxSnap.status, 'unknown');
+});
+
+test('inputs, outputs, execution reports and probes enforce no character limits or default timeouts', async () => {
+  const { taskSchema, PROBE_TIMEOUT_SECONDS } = await import('../src/pool.js');
+  const { executionReportSchema, compactTask } = await import('../src/task-protocol.js');
+  const { rpcRequest } = await import('../src/rpc.js');
+  const { Readable } = await import('node:stream');
+
+  assert.equal(PROBE_TIMEOUT_SECONDS, 0);
+  const bigPrompt = 'A'.repeat(250_000);
+  const parsedTask = taskSchema.parse({
+    prompt: bigPrompt,
+    workspace: process.cwd(),
+    kind: 'text',
+    idempotencyKey: 'unlimited-prompt-test-key',
+  });
+  assert.equal(parsedTask.prompt.length, 250_000);
+  assert.equal(parsedTask.timeoutSeconds, 0);
+
+  const bigSummary = 'B'.repeat(50_000);
+  const parsedReport = executionReportSchema.parse({
+    status: 'completed',
+    summary: bigSummary,
+    files: [],
+    checks: [],
+    research: [],
+    blockers: [],
+  });
+  assert.equal(parsedReport.summary.length, 50_000);
+
+  const bigOutput = 'C'.repeat(150_000);
+  const compact = compactTask({ id: 't1', prompt: bigPrompt, events: [], result: bigOutput, error: null });
+  assert.equal(compact.result.length, 150_000);
+  assert.equal(compact.reportTruncated, false);
+
+  const bigRpcPayload = JSON.stringify({ tool: 'pool_submit', arguments: { prompt: 'D'.repeat(1_200_000) } });
+  const rpc = await rpcRequest(Readable.from([bigRpcPayload]));
+  assert.equal(rpc.arguments.prompt.length, 1_200_000);
 });

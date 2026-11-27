@@ -1002,14 +1002,14 @@ export function execute(route, model, task, python, progress, directory = dataDi
     }, postResultExitMs);
     postResultTimer.unref?.();
   };
-  proc = runProcess({ argv, cwd: task.workspace, input, extraEnv, python, timeoutMs, maxBytes: Infinity, retainBytes: 2_097_152,
+  proc = runProcess({ argv, cwd: task.workspace, input, extraEnv, python, timeoutMs, maxBytes: Infinity, retainBytes: Infinity,
     onLine(line) {
       if (!line.trim()) return;
       context?.onActivity?.();
       let event;
       try { event = JSON.parse(line); } catch {
         if (rawLines.length >= 50) rawLines.shift();
-        rawLines.push(line.slice(0, 1000));
+        rawLines.push(line);
         return;
       }
       sawJsonEvent = true;

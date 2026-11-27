@@ -13,7 +13,7 @@ import { taskHeader } from './task-header.js';
 
 export const CONNECT_TIMEOUT_MS = 15_000;
 export const LIST_TOOLS_TIMEOUT_MS = 30_000;
-export const CALL_TOOL_TIMEOUT_MS = 120_000;
+export const CALL_TOOL_TIMEOUT_MS = 2_147_483_647;
 
 const RECONNECTABLE_CODES = new Set([
   'ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH',

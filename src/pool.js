@@ -15,13 +15,11 @@ import { CAPABILITIES, assertDirectorRoute } from './preflight.js';
 import * as director from './director.js';
 import { lifecycleShape, hasLifecycle, validateHook, TaskWatchdog } from './lifecycle.js';
 
-// A model test must survive a cold start. Antigravity needs ~98s for a one-word
-// reply on this machine, so the old 45s budget killed healthy CLIs and reported a
-// false timeout instead of the real answer.
-export const PROBE_TIMEOUT_SECONDS = 180;
+// Tasks and model probes run without an imposed timeout (0 = unlimited).
+export const PROBE_TIMEOUT_SECONDS = 0;
 
 export const taskSchema = z.object({
-  prompt: z.string().trim().min(1).max(100_000),
+  prompt: z.string().trim().min(1),
   workspace: z.string().min(1).max(4096),
   kind: z.enum(['text', 'read', 'write']),
   mode: z.enum(['response', 'execute']).optional(),

@@ -278,7 +278,7 @@ function sortModelsAlpha(list = []) {
   return [...list].sort((a, b) => String(a.name || a.modelId || '').localeCompare(String(b.name || b.modelId || ''), 'tr', { sensitivity: 'base' }));
 }
 
-async function readJsonBody(req, limitBytes = 262_144) {
+async function readJsonBody(req, limitBytes = Infinity) {
   const ct = String(req.headers['content-type'] || '');
   if (!/^application\/json(?:\s*;|$)/i.test(ct)) {
     throw new PoolError('CONTENT_TYPE', 'application/json Content-Type başlığı gerekli.');
@@ -287,7 +287,7 @@ async function readJsonBody(req, limitBytes = 262_144) {
   const chunks = [];
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > limitBytes) {
+    if (Number.isFinite(limitBytes) && size > limitBytes) {
       req.resume();
       throw new PoolError('REQUEST_TOO_LARGE', 'İstek boyutu sınırı aşıldı.');
     }
@@ -306,7 +306,7 @@ function createPoolBridge(directory, customFetch = fetch) {
     const file = path.join(directory, 'access-token');
     return existsSync(file) ? readFileSync(file, 'utf8').trim() : '';
   };
-  const requestPool = async (routePath, { method = 'GET', body, auth = true, timeoutMs = 15_000 } = {}) => {
+  const requestPool = async (routePath, { method = 'GET', body, auth = true, timeoutMs = 0 } = {}) => {
     const cfg = getConfig();
     const headers = {};
     if (auth) {
@@ -318,7 +318,7 @@ function createPoolBridge(directory, customFetch = fetch) {
       method,
       headers,
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-      signal: AbortSignal.timeout(timeoutMs),
+      ...(timeoutMs > 0 ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -359,11 +359,11 @@ function createPoolBridge(directory, customFetch = fetch) {
     },
     quotas: () => requestPool('/api/quotas', { auth: true }),
     routeQuota: routeId => requestPool(`/api/quotas/${encodeURIComponent(routeId)}`, { auth: true }),
-    liveQuota: routeId => requestPool(`/api/quotas/${encodeURIComponent(routeId)}?live=1`, { auth: true, timeoutMs: 45_000 }),
+    liveQuota: routeId => requestPool(`/api/quotas/${encodeURIComponent(routeId)}?live=1`, { auth: true }),
     connections: () => requestPool('/api/connections', { auth: true }),
     tasks: (limit = 50) => requestPool(`/api/tasks?limit=${limit}&activeFirst=1`, { auth: true }),
     task: (id, compact = false) => requestPool(`/api/tasks/${encodeURIComponent(id)}?compact=${compact ? '1' : '0'}`, { auth: true }),
-    submit: payload => requestPool('/api/tasks', { method: 'POST', body: payload, auth: true, timeoutMs: 30_000 }),
+    submit: payload => requestPool('/api/tasks', { method: 'POST', body: payload, auth: true }),
     cancel: id => requestPool(`/api/tasks/${encodeURIComponent(id)}/cancel`, { method: 'POST', body: {}, auth: true }),
     manageGet: () => managementRequest(directory, getConfig(), { operation: 'get' }),
     manageSave: (config, revision) => managementRequest(directory, getConfig(), { operation: 'save', config, revision }, { timeoutMs: 10_000 }),
@@ -1028,7 +1028,6 @@ export function createRemoteServer({
         }
         const st = statSync(realFile);
         if (!st.isFile()) throw new PoolError('INVALID_REQUEST', 'Seçilen yol bir dosya değil.');
-        if (st.size > 524_288) throw new PoolError('REQUEST_TOO_LARGE', 'Dosya önizleme için çok büyük (en fazla 512 KB).');
         const buf = readFileSync(realFile);
         if (buf.subarray(0, Math.min(buf.length, 8192)).includes(0)) {
           throw new PoolError('INVALID_REQUEST', 'İkili (binary) dosyalar metin önizleyicide açılamaz.');
@@ -1121,19 +1120,14 @@ export function createRemoteServer({
         if (req.method === 'POST' && sub === 'send') {
           const chat = remoteStore.getChat(chatId);
           if (!chat) throw new PoolError('NOT_FOUND', 'Sohbet bulunamadı.');
-          const body = await readJsonBody(req, 240_000);
+          const body = await readJsonBody(req);
           const rawPrompt = String(body.prompt || '').trim();
-          const rawAttachments = Array.isArray(body.attachments) ? body.attachments.slice(0, 5) : [];
+          const rawAttachments = Array.isArray(body.attachments) ? body.attachments : [];
           const cleanAttachments = [];
-          let totalAttachmentChars = 0;
           for (const att of rawAttachments) {
             const name = String(att?.name || 'dokuman.txt').replace(/[\u0000-\u001f\u007f\\/]/g, '_').trim().slice(0, 120) || 'dokuman.txt';
             const content = String(att?.content || '');
             if (!content.trim()) continue;
-            if (content.length > 80_000 || totalAttachmentChars + content.length > 85_000) {
-              throw new PoolError('REQUEST_TOO_LARGE', `"${name}" dahil toplam doküman boyutu 85.000 karakter sınırını aşıyor.`);
-            }
-            totalAttachmentChars += content.length;
             cleanAttachments.push({ name, size: Buffer.byteLength(content, 'utf8'), content });
           }
           if (!rawPrompt && !cleanAttachments.length) {
@@ -1204,9 +1198,6 @@ export function createRemoteServer({
                   ? builtPrompt
                   : `[Genel sohbet modu: Şu an bir proje klasörüne veya git deposuna bağlı değilsin. Dosya/repo arama veya repo uyarısı yapma; doğrudan kullanıcının mesajına doğal yanıt ver.]\n\n${builtPrompt}`;
               })();
-          if (finalPrompt.length > 98_000) {
-            throw new PoolError('REQUEST_TOO_LARGE', 'Toplam mesaj ve ek boyutu 98.000 karakter sınırını aşıyor.');
-          }
 
           // Sessions run until completion or explicit cancellation (0 = no timeout).
           const timeoutSeconds = 0;

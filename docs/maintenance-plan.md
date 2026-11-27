@@ -152,6 +152,15 @@
 - [x] **Doğrulama kanıtı (2.20.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate`, `npm test` (`218/218`, yeni `test/remote.test.js` dahil) ve canlı `cli-agent-pool` servisi üzerinden `/r/state` uçtan uca entegrasyon testi doğrulandı.
 
 ## 2.19.0 — Onay/Ekleme Kilidi Düzeltmesi, Windows Pythonw İzolasyonu, 300 Model Sınırı, Neon/Ağ Hata Düzeltmeleri ve Otomatik Güncelleme Bildirimi
+## 2.32.0 — Sınırsız Girdi/Çıktı Boyutu ve Zaman Aşımsız Görev/İstek Akışı
+- [x] **Girdi ve çıktı karakter/boyut sınırları kaldırıldı (`src/pool.js`, `src/task-protocol.js`, `src/supervisor.py`, `src/adapters.js`, `src/server.js`, `src/rpc.js`, `remote/server.js`, `remote/public/app.js`)**:
+  - `taskSchema.prompt` (`100_000` karakter), `executionReportSchema` (`4000`/`1000`/`32_768` karakter), `compactTask` (`6000` karakter kesme), `supervisor.py` stdin (`2_000_000` bayt), `execute` `retainBytes` (`2 MB`) ve `rawLines` (`1000` karakter) sınırları kaldırıldı.
+  - `/api`, `/mcp`, `/manage`, `/ui` HTTP gövdelerindeki `262_144` bayt, `rpcRequest` içindeki `1 MB`, Remote sohbet gönderimi ve eklerindeki `80_000`/`85_000`/`98_000` karakter ve `512 KB` önizleme sınırları kaldırıldı.
+- [x] **Görev, model testi, HTTP, MCP ve panel zaman aşımları kaldırıldı (`src/pool.js`, `src/server.js`, `src/stdio.js`, `src/daemon.js`, `bin/pool.js`, `remote/server.js`, `web/app.js`)**:
+  - `PROBE_TIMEOUT_SECONDS = 0`, `server.requestTimeout = 0`, `CALL_TOOL_TIMEOUT_MS = 2_147_483_647`, `callPoolTool` varsayılan timeout `2_147_483_647`, `apiRequest` ve Remote `requestPool` varsayılan `timeoutMs = 0`, `bin/pool.js preflight` `waitSeconds: 0` ve `web/app.js` `call()` yapay `AbortController` zaman aşımı kaldırıldı.
+- [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.32.0` (`v2.32.0` git etiketiyle).
+- [x] **Doğrulama kanıtı (2.32.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate` (`0 vulnerabilities`) ve `npm test` (`260/260` geçti).
+
 ## 2.31.4 — Giriş Terminalini Öne Getirme, Anında Çıkış Denetimi ve Havuz/Panel Takılmalarının Giderilmesi
 - [x] **Giriş terminalini odaklama ve hatalı açılış tespiti (`src/winlogin.py`)**:
   - `winlogin.py`, `WinSta0\Default` üzerinde `CreateProcessW` ile açtığı CLI konsol penceresini `OpenDesktopW("Default")` + `SetThreadDesktop` + `AttachThreadInput` + `SetWindowPos(HWND_TOPMOST/HWND_NOTOPMOST)` + `SetForegroundWindow` ile tarayıcı penceresinin önüne getirir; böylece tam ekran panel arkasında kaybolmaz.

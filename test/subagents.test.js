@@ -70,7 +70,7 @@ test('execution exposes commands without bypass flags and compact response omits
  const zcode=buildArguments({adapter:'zcode',executable:process.execPath},{id:'zcode-default'},task);
  assert(!zcode.includes('--disallowed-tools'));assert(taskPrompt(task).includes('actual pass/fail'));
  const compact=compactTask({id:'task',prompt:'private',events:[{}],result:'x'.repeat(7000),error:null});
- assert(!('prompt' in compact));assert(!('events' in compact));assert(compact.reportTruncated);assert(compact.result.length<6200);
+ assert(!('prompt' in compact));assert(!('events' in compact));assert.equal(compact.reportTruncated,false);assert.equal(compact.result.length,7000);
 });
 
 test('execution protocol reaches a supervised CLI that really edits a file and runs a check',async t=>{

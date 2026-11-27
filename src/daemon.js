@@ -216,7 +216,7 @@ export async function openRemoteWindow(url, options = {}) {
   return openDashboardWindow(url, { ...options, remote: true });
 }
 
-export async function apiRequest(directory, routePath, { method = 'GET', body, timeoutMs = 120_000 } = {}) {
+export async function apiRequest(directory, routePath, { method = 'GET', body, timeoutMs = 0 } = {}) {
   const config = ensureInitialized(directory, !existsSync(path.join(directory, 'config.json')));
   const send = () => {
     const token = readFileSync(path.join(directory, 'access-token'), 'utf8').trim();
@@ -228,7 +228,7 @@ export async function apiRequest(directory, routePath, { method = 'GET', body, t
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-      signal: AbortSignal.timeout(timeoutMs),
+      ...(timeoutMs > 0 ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
     });
   };
   let response;
@@ -272,7 +272,7 @@ export async function withMcpClient(directory, callback) {
   }
 }
 
-export async function callPoolTool(client, name, args = {}, { timeout = 120_000 } = {}) {
+export async function callPoolTool(client, name, args = {}, { timeout = 2_147_483_647 } = {}) {
   const res = await client.callTool({ name, arguments: args }, undefined, { timeout });
   const text = res.content?.[0]?.text;
   let parsed;

@@ -389,18 +389,12 @@ function notice(message, error = false) {
 }
 
 async function call(operation, payload = {}) {
-  const controller = new AbortController();
-  const timeout = operation === 'pick_folder'
-    ? 185_000
-    : ['scan_import', 'quotas', 'update_service'].includes(operation) ? 90_000 : 30_000;
-  const timer = setTimeout(() => controller.abort(), timeout);
   try {
     const response = await fetch('/ui', {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ operation, payload }),
-      signal: controller.signal,
     });
     const value = await response.json().catch(() => ({}));
     if (response.status === 401 || response.status === 403 || value?.error?.code === 'UNAUTHORIZED') {
@@ -423,7 +417,7 @@ async function call(operation, payload = {}) {
       throw new Error('Havuza ulaşılamıyor. Servisi kontrol edip yeniden deneyin; görev tanımınız korunuyor.');
     }
     throw error;
-  } finally { clearTimeout(timer); }
+  }
 }
 
 async function action(operation) {

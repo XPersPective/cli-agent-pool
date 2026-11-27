@@ -471,7 +471,7 @@ export async function main(args = process.argv.slice(2)) {
     const started = await managementRequest(directory, config, { operation: 'preflight', input }, { timeoutMs: 30_000 });
     if (started.cached || values.detach) { print(started); return; }
     const status = await withMcpClient(directory, async (client, cfg) => {
-      await waitTaskWithReconnect(directory, client, cfg, started.taskId, { waitSeconds: 1200, sleep: delay });
+      await waitTaskWithReconnect(directory, client, cfg, started.taskId, { waitSeconds: 0, sleep: delay });
       const { force, ...query } = input; void force;
       return withMcpClient(directory, freshClient => callPoolTool(freshClient, 'pool_preflight_status', query));
     });

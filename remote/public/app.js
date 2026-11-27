@@ -635,23 +635,10 @@
   async function addFilesAsAttachments(fileList) {
     const files = Array.from(fileList || []);
     for (const file of files) {
-      if (state.pendingAttachments.length >= 5) {
-        toast('Tek mesajda en fazla 5 doküman eklenebilir.', true);
-        break;
-      }
-      if (file.size > 80_000) {
-        toast(`"${file.name}" çok büyük (dosya başına en fazla 80 KB).`, true);
-        continue;
-      }
       try {
         const text = await file.text();
         if (text.includes('\u0000')) {
           toast(`"${file.name}" metin tabanlı bir doküman değil.`, true);
-          continue;
-        }
-        const usedChars = state.pendingAttachments.reduce((sum, item) => sum + (item.content?.length || 0), 0);
-        if (usedChars + text.length > 85_000) {
-          toast(`Toplam doküman boyutu 85.000 karakter sınırını aşıyor.`, true);
           continue;
         }
         state.pendingAttachments.push({ name: file.name, size: file.size, content: text });

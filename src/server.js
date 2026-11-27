@@ -143,8 +143,8 @@ export function createServer(pool, token, port = pool.config.port, management) {
       let url;
       try { url = new URL(req.url, `http://127.0.0.1:${actualPort}`); } catch { return fail(400, 'INVALID_URL', 'Geçersiz adres.'); }
       const readBody = async () => {
-        let size = 0; const parts = [];
-        for await (const chunk of req) { size += chunk.length; if (size > 262_144) throw new PoolError('REQUEST_TOO_LARGE', 'İstek boyutu sınırı aşıldı.'); parts.push(chunk); }
+        const parts = [];
+        for await (const chunk of req) parts.push(chunk);
         const text = Buffer.concat(parts).toString('utf8').trim();
         if (!text) return {};
         try { return JSON.parse(text); } catch { throw new PoolError('INVALID_JSON', 'Geçerli JSON gönderin.'); }
@@ -177,12 +177,9 @@ export function createServer(pool, token, port = pool.config.port, management) {
     if (inflight >= 128) return fail(429, 'BUSY', 'Çok fazla eşzamanlı istek var. Biraz sonra deneyin.');
     inflight++;
     res.once('close', () => { inflight--; });
-    let bytes = 0;
     const chunks = [];
     try {
       for await (const chunk of req) {
-        bytes += chunk.length;
-        if (bytes > 262_144) { fail(413, 'REQUEST_TOO_LARGE', 'İstek boyutu sınırı aşıldı.'); req.resume(); return; }
         chunks.push(chunk);
       }
       let body;
@@ -210,7 +207,7 @@ export function createServer(pool, token, port = pool.config.port, management) {
       await transport.handleRequest(req, res, body);
     } catch { if (!res.writableEnded) fail(500, 'INTERNAL_ERROR', 'İstek tamamlanamadı. Yeniden bağlanın.'); }
   });
-  server.requestTimeout = 130_000;
+  server.requestTimeout = 0;
   server.headersTimeout = 15_000;
   server.keepAliveTimeout = 5000;
   server.maxHeadersCount = 32;

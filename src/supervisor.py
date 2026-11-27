@@ -172,7 +172,7 @@ def spawn_windows_hidden(argv, cwd, desktop_name):
 
 
 def main():
-    request = json.loads(sys.stdin.buffer.readline(2_000_000))
+    request = json.loads(sys.stdin.buffer.readline())
     job = windows_job() if os.name == "nt" else None
     desktop = (None, None, None)
     child = None

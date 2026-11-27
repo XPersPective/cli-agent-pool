@@ -78,7 +78,9 @@ test('HTTP boundary rejects missing/wrong auth, foreign Host and browser Origin'
   });
   assert.equal(foreignHost, 403);
   assert.equal((await fetch(url, { ...base, headers: { ...base.headers, Authorization: `Bearer ${token}` }, body: '{' })).status, 400);
-  assert.equal((await fetch(url, { ...base, headers: { ...base.headers, Authorization: `Bearer ${token}` }, body: ' '.repeat(262_145) })).status, 413);
+  // Large authenticated payloads (>256 KB) are accepted without artificial 413 body limits.
+  const largeInvalidJson = await fetch(url, { ...base, headers: { ...base.headers, Authorization: `Bearer ${token}` }, body: ' '.repeat(300_000) + '{' });
+  assert.equal(largeInvalidJson.status, 400);
 });
 
 test('auto-start reuses the authenticated daemon and never kills a conflicting listener', async t => {
