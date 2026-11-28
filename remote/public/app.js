@@ -1862,23 +1862,6 @@
       body.appendChild(block);
     }
 
-    if (q) {
-      const seen = new Set(state.pools.flatMap(p => (p.models || []).map(m => `${m.routeId}::${m.modelId}`)));
-      const extras = state.models.filter(m => !seen.has(`${m.routeId}::${m.modelId}`) && matchesSearch(m));
-      if (extras.length) {
-        const block = el('div', { className: 'picker-cat-block' }, [
-          el('div', { className: 'picker-cat-head' }, [
-            el('span', { className: 'picker-cat-title', text: `Diğer Katalog (${extras.length})` }),
-          ]),
-        ]);
-        for (const m of extras) {
-          block.appendChild(buildModelRow(m, ''));
-          totalRendered++;
-        }
-        body.appendChild(block);
-      }
-    }
-
     if (!totalRendered && !state.pools.length) {
       body.appendChild(el('p', { className: 'muted', text: 'Havuz modeli bulunamadı veya servis kapalı.' }));
     }

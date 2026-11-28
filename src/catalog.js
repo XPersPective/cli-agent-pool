@@ -18,7 +18,7 @@ export function quotaOverview(pool, input = {}) {
   const request = quotaOverviewSchema.parse(input);
   const routes = pool.config.routes.filter(r => r.enabled && (!request.routeId || r.id === request.routeId));
   if (request.routeId && !routes.length) throw new PoolError('NOT_FOUND', 'Bağlantı bulunamadı veya kapalı.');
-  const models = pool.catalogModels().filter(m => m.enabled);
+  const models = pool.pooledModels().filter(m => m.enabled);
   const duplicateRoutes = typeof pool.duplicateRouteMap === 'function' ? pool.duplicateRouteMap() : new Map();
   const connections = routes.map(route => {
     const q = pool.store.quota(route.id);
@@ -60,7 +60,7 @@ const paginate = (items, request) => ({ total: items.length, nextOffset: request
 export function compactCatalog(pool, input = {}) {
   const request = catalogSchema.parse(input), query = request.query?.toLowerCase();
   const duplicateRoutes = typeof pool.duplicateRouteMap === 'function' ? pool.duplicateRouteMap() : new Map();
-  const all = pool.catalogModels().filter(m => m.enabled && (request.routeId ? true : !duplicateRoutes.has(m.routeId)));
+  const all = pool.pooledModels().filter(m => m.enabled && (request.routeId ? true : !duplicateRoutes.has(m.routeId)));
   if (!request.view && !request.kind && !request.billing && !request.routeId && !request.adapter && !request.query) {
     const sources = [...new Set(all.map(m => m.billing))].map(billing => ({ billing, count: all.filter(m => m.billing === billing).length }));
     const providers = [...new Set(all.map(m => m.adapter))].map(adapter => ({ adapter, count: all.filter(m => m.adapter === adapter).length }));

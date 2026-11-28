@@ -69,27 +69,11 @@ block `subscription` and `token_plan` routes but allow `free_credits` routes (su
 
 ## Pool grouping and workspace dashboard
 
-Categories are owner-editable data with stable IDs and display names, not access
-policies. The UI can create, rename and remove arbitrary categories and manage
-model memberships with a default effort per category. Removing membership keeps
-catalog access. Removing a category removes only those membership references.
-Legacy selectionMode/groupingMode inputs migrate out of saved/public config;
-existing explicit memberships and free-category membership are preserved once.
+Categories are owner-editable data with stable IDs and display names. The owner UI can create, rename and remove arbitrary categories and manage model memberships with a default effort per category from the discovered catalog. Removing membership keeps owner catalog access in the management UI while removing agent visibility. Removing a category removes only those membership references. Legacy selectionMode/groupingMode inputs migrate out of saved/public config; existing explicit memberships and free-category membership are preserved once.
 
-The caller chooses category or catalog. A category request filters by its members;
-a catalog request needs no membership/group. A supported requested effort overrides
-the category default. Hidden models, disabled routes/models, native permissions,
-capabilities, explicit paid billing and quota reserves still apply.
-Legacy non-paid autoSelect flags do not act as a caller selection authority.
+Agents interact strictly with pooled models (models belonging to at least one active owner category). Unassigned catalog models are owner-UI-only (plus owner `probeModel`) and fail closed with `MODEL_NOT_IN_POOL` on agent discovery, `pool_select`, `pool_submit`, `/api/model`, `/api/select`, and `/api/tasks`. When the caller specifies `group`, that category strictly overrides defaults (never falling back to other categories or the catalog). A supported requested effort overrides the category default. Hidden models, disabled routes/models, native permissions, capabilities, explicit paid billing and quota reserves still apply. Legacy non-paid autoSelect flags do not act as a caller selection authority.
 
-pool_help provides a short map and per-error recovery. pool_list_pools without a
-group returns category summaries; a group yields a bounded model page. pool_catalog
-without filters returns source summaries; filters or view:models yield a deduplicated
-model page. Default page size is 12, maximum 40, with nextOffset. Cached model quota
-summaries accompany entries; live quota is queried separately. Compatibility list
-aliases are bounded. Task results default to compact. Caller instructions govern
-selection; no policy-query/assignment-permission roundtrip is required. Owner UI
-category edits retain revision conflict checks and preserve unrelated drafts.
+pool_help provides a short map and per-error recovery. pool_list_pools is the primary agent discovery entry (without a group it returns category summaries; with a group it yields a bounded model page). pool_catalog returns pool-only summaries/pages across models assigned to owner categories. Default page size is 12, maximum 40, with nextOffset. Cached model quota summaries accompany entries; live quota is queried separately. Compatibility list aliases are bounded. Task results default to compact. Owner UI category edits retain revision conflict checks and preserve unrelated drafts.
 Multiple MCP clients share one local service and existing workspace scheduling;
 this is not a remote multi-tenant identity system.
 

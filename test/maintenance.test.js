@@ -38,11 +38,16 @@ test('provider family quota scopes do not invent an Argon weekly balance',()=>{
 
 test('card probes preserve owner policy and use an isolated runtime workspace',async t=>{
  const root=mkdtempSync(path.join(tmpdir(),'pool-probe-'));let ran;
- const config=configSchema.parse({workspaceRoots:[],selectionMode:'manual',routes:[{id:'test',adapter:'custom',executable:process.execPath,argsTemplate:['--version'],billing:'free',enabled:true,models:[{id:'tiny',alias:'Tiny',group:'unassigned',memberships:[{group:'low',effort:'low'}],efforts:['low'],kinds:['text']}]}]});
+ const config=configSchema.parse({workspaceRoots:[],selectionMode:'manual',routes:[{id:'test',adapter:'custom',executable:process.execPath,argsTemplate:['--version'],billing:'free',enabled:true,models:[{id:'tiny',alias:'Tiny',group:'unassigned',memberships:[{group:'low',effort:'low'}],efforts:['low'],kinds:['text']},{id:'unpooled',alias:'Unpooled',group:'unassigned',memberships:[],efforts:['low'],kinds:['text']}]}]});
  const store=new Store(':memory:'),pool=new Pool(config,store,{directory:root,checkAuth:async()=>{},execute:(route,model,task)=>{ran=task;return{cancel(){},done:Promise.resolve({result:'OK'})};}});
  pool.getQuota=async()=>({status:'unknown',windows:[],observedAt:new Date().toISOString()});
  t.after(async()=>{await pool.close();store.close();await rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});});
  assert.equal(pool.select({kind:'text',routeId:'test',modelId:'tiny'}).selected.id,'tiny');
+ assert.throws(()=>pool.submit({prompt:'blocked',workspace:root,kind:'text',routeId:'test',modelId:'unpooled',idempotencyKey:'agent-unpooled-1'}),{code:'MODEL_NOT_IN_POOL'});
+ const unpooledProbe=await pool.probeModel({routeId:'test',modelId:'unpooled'});
+ for(let i=0;i<50 && pool.get(unpooledProbe.id).state!=='succeeded';i++)await new Promise(resolve=>setTimeout(resolve,10));
+ assert.equal(pool.get(unpooledProbe.id).state,'succeeded');
+ ran=null;
  await assert.rejects(pool.probeModel({routeId:'test',modelId:'tiny',prompt:'unsafe'}),{code:'INVALID_REQUEST'});
  const task=await pool.probeModel({routeId:'test',modelId:'tiny',group:'low'});
  for(let i=0;i<50 && !ran;i++)await new Promise(resolve=>setTimeout(resolve,10));

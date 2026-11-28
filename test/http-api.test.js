@@ -22,7 +22,7 @@ async function createHttpApp(t) {
   const executable = path.join(root, 'fake-cli.js');
   writeFileSync(executable, `process.stdin.resume();process.stdin.on('end',()=>{console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'ok'}}));console.log(JSON.stringify({type:'turn.completed'}));});`);
   const config = configSchema.parse({
-    categories: [{ id: 'high', name: 'Yüksek' }, { id: 'research', name: 'Araştırma' }],
+    categories: [{ id: 'high', name: 'Yüksek' }, { id: 'free', name: 'Ücretsiz' }, { id: 'research', name: 'Araştırma' }],
     routes: [
       {
         id: 'codex-local', adapter: 'codex', executable, enabled: true, billing: 'subscription',
@@ -33,7 +33,10 @@ async function createHttpApp(t) {
       },
       {
         id: 'free-local', adapter: 'opencode', executable, enabled: true, billing: 'free',
-        models: [{ id: 'openrouter/free-flash', alias: 'Free Flash', group: 'free', kinds: ['text', 'read'], memberships: [] }],
+        models: [
+          { id: 'openrouter/free-flash', alias: 'Free Flash', group: 'free', kinds: ['text', 'read'], memberships: [{ group: 'free' }] },
+          { id: 'opencode/unassigned-opus', alias: 'Unassigned Opus', group: 'unassigned', kinds: ['text', 'read'], memberships: [] },
+        ],
       },
       {
         id: 'disabled-route', adapter: 'qoder', executable, enabled: false, billing: 'free_credits',
@@ -70,7 +73,7 @@ async function createHttpApp(t) {
     store.close();
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
-  return { root, pool, token, base: `http://127.0.0.1:${address.port}` };
+  return { root, pool, token, managementToken, base: `http://127.0.0.1:${address.port}` };
 }
 
 test('HTTP /api serves compact cached catalog, pools, model and quotas without MCP overhead or email leaks', async t => {
@@ -97,6 +100,17 @@ test('HTTP /api serves compact cached catalog, pools, model and quotas without M
 
   const hiddenModels = await (await fetch(`${base}/api/catalog?q=hidden`)).json();
   assert.equal(hiddenModels.total, 0);
+
+  const unassignedSearch = await (await fetch(`${base}/api/catalog?q=unassigned`)).json();
+  assert.equal(unassignedSearch.total, 0);
+
+  const unassignedModelRes = await fetch(`${base}/api/model?route=free-local&model=${encodeURIComponent('opencode/unassigned-opus')}`);
+  assert.equal(unassignedModelRes.status, 403);
+  assert.equal((await unassignedModelRes.json()).error.code, 'MODEL_NOT_IN_POOL');
+
+  const unassignedSelectRes = await fetch(`${base}/api/select?kind=read&routeId=free-local&modelId=${encodeURIComponent('opencode/unassigned-opus')}`);
+  assert.equal(unassignedSelectRes.status, 403);
+  assert.equal((await unassignedSelectRes.json()).error.code, 'MODEL_NOT_IN_POOL');
 
   const pools = await (await fetch(`${base}/api/pools`)).json();
   assert.ok(pools.categories.some(c => c.id === 'research' && c.count === 1));
@@ -129,13 +143,44 @@ test('HTTP /api serves compact cached catalog, pools, model and quotas without M
 });
 
 test('HTTP /api enforces Bearer auth on tasks/tools and blocks browser origins', async t => {
-  const { root, token, base } = await createHttpApp(t);
+  const { root, token, managementToken, base } = await createHttpApp(t);
 
   assert.equal((await fetch(`${base}/api/tasks`)).status, 401);
   assert.equal((await fetch(`${base}/api/tasks`, { headers: { Authorization: 'Bearer wrong' } })).status, 401);
   assert.equal((await fetch(`${base}/api/catalog`, { headers: { Origin: 'https://evil.invalid' } })).status, 403);
   assert.equal((await fetch(`${base}/api/catalog`, { headers: { 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
   assert.equal((await fetch(`${base}/api/tools/pool_submit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 401);
+
+  const unassignedTaskRes = await fetch(`${base}/api/tasks`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt: 'Try unassigned', workspace: root, kind: 'read', routeId: 'free-local', modelId: 'opencode/unassigned-opus', idempotencyKey: 'http-api-unassigned-001' }),
+  });
+  assert.equal(unassignedTaskRes.status, 403);
+  assert.equal((await unassignedTaskRes.json()).error.code, 'MODEL_NOT_IN_POOL');
+
+  const wrongGroupTaskRes = await fetch(`${base}/api/tasks`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt: 'Wrong group override', workspace: root, kind: 'read', group: 'free', routeId: 'codex-local', modelId: 'gpt-5-codex', idempotencyKey: 'http-api-wrong-group-001' }),
+  });
+  assert.equal(wrongGroupTaskRes.status, 403);
+  assert.equal((await wrongGroupTaskRes.json()).error.code, 'MODEL_NOT_IN_POOL');
+
+  assert.equal((await fetch(`${base}/manage`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ operation: 'catalog_models' }),
+  })).status, 401);
+
+  const ownerCatalogRes = await fetch(`${base}/manage`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${managementToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ operation: 'catalog_models' }),
+  });
+  assert.equal(ownerCatalogRes.status, 200);
+  const ownerCatalog = await ownerCatalogRes.json();
+  assert.ok(ownerCatalog.some(m => m.modelId === 'opencode/unassigned-opus'));
 
   const submitRes = await fetch(`${base}/api/tasks`, {
     method: 'POST',

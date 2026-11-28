@@ -31,7 +31,7 @@ const explanations = {
 };
 
 export function noRouteMessage(request, rejected) {
-  const scope = request.group ? `${request.group} havuzunda` : 'seçilen katalogda';
+  const scope = request.group ? `${request.group} havuzunda` : 'havuz kategorilerinde';
   if (!rejected.size) return `Uygun model yok: ${scope} istenen bağlantı/model üyeliği bulunamadı; model gizlenmiş veya havuza eklenmemiş olabilir. Havuz üyeliğini ve model kimliğini kontrol edin.`;
   return `Uygun model yok (${scope}, ${request.mode || request.kind}): ` + [...rejected].map(([reason, count]) => `${explanations[reason]} (${count})`).join('; ') + '. Kullanıcı kuralları değiştirilmedi.';
 }

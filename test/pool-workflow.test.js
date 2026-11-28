@@ -55,14 +55,15 @@ test('quota filtering uses numeric model-scoped balances, including exhausted qu
  assert.equal(quotaMatches(null,'luna','all'),true);
 });
 
-test('category defaults apply only within a category; catalog selection and supported effort remain caller choices', async t => {
+test('category defaults apply only within a category; agents only run pooled models and explicit group strictly overrides', async t => {
   const root = mkdtempSync(path.join(tmpdir(), 'pool-members-'));
   const config = configSchema.parse({ selectionMode: 'manual', workspaceRoots: [root], routes: [{ id: 'codex', adapter: 'codex', executable: process.execPath, billing: 'subscription', enabled: true, models: [{ id: 'gpt-version', alias: 'GPT', group: 'unassigned', efforts: ['low', 'medium', 'high'], defaultEffort: 'high', kinds: ['text'], memberships: [{ group: 'high', effort: 'high' }, { group: 'medium', effort: 'medium' }, { group: 'low' }] }, { id: 'outside', alias: 'Outside', group: 'unassigned', efforts: [], kinds: ['text'], memberships: [] }] }] });
   const store = new Store(':memory:'); let used;
   const pool = new Pool(config, store, { directory: root, checkAuth: async () => {}, execute: (route, model, request, python, progress) => { used = request; progress('model:resolved-gpt-version'); return { cancel() {}, done: Promise.resolve({ result: 'ok' }) }; } });
   t.after(async () => { await pool.close(); store.close(); await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
-  assert.equal(pool.select({kind:'text',routeId:'codex',modelId:'outside'}).selected.id,'outside');
-  assert.throws(() => pool.select({ kind: 'text', group: 'high', modelId: 'outside' }), { code: 'NO_ROUTE' });
+  assert.throws(() => pool.select({ kind: 'text', routeId: 'codex', modelId: 'outside' }), { code: 'MODEL_NOT_IN_POOL' });
+  assert.throws(() => pool.select({ kind: 'text', group: 'high', modelId: 'outside' }), { code: 'MODEL_NOT_IN_POOL' });
+  assert.throws(() => pool.select({ kind: 'text', group: 'free', modelId: 'gpt-version' }), { code: 'MODEL_NOT_IN_POOL' });
   assert.equal(pool.select({kind:'text',group:'high',effort:'low'}).selected.id,'gpt-version');
   assert.equal(pool.select({ kind: 'text', group: 'medium' }).selected.defaultEffort, 'medium');
   store.saveQuota('codex', { status: 'available', observedAt: new Date().toISOString(), windows: [{ remainingPercent: 15 }] });
@@ -79,7 +80,7 @@ test('category defaults apply only within a category; catalog selection and supp
   assert.equal(pool.get(task.id).effort, 'medium');
   assert.equal(pool.pools({group:'medium'}).models[0].effort, 'medium');
   pool.config.selectionMode = 'auto';
-  assert.equal(pool.select({ kind: 'text', modelId: 'outside' }).selected.id, 'outside');
+  assert.throws(() => pool.select({ kind: 'text', modelId: 'outside' }), { code: 'MODEL_NOT_IN_POOL' });
   const invalid = structuredClone(config); invalid.routes[0].models[0].memberships.push({ group: 'high' });
   assert.throws(() => configSchema.parse(invalid));
   invalid.routes[0].models[0].memberships = [{ group: 'high', effort: 'unsupported' }];
@@ -154,6 +155,8 @@ test('OpenCode live free-model labels override a paid API route only for those m
   assert.equal(available.find(model => model.id === 'opencode/new-free').autoSelect, false);
   assert.equal(available.find(model => model.id === 'opencode/paid').billing, 'paid_api');
   assert.equal(available.find(model => model.id === 'opencode/paid').autoSelect, false);
+  assert.throws(() => pool.select({ kind: 'text', routeId: 'opencode', modelId: 'opencode/new-free' }), { code: 'MODEL_NOT_IN_POOL' });
+  pool.config.routes[0].models.find(model => model.id === 'opencode/new-free').memberships = [{ group: 'low' }];
   assert.equal(pool.select({kind:'text'}).selected.id,'opencode/new-free');
   assert.equal(pool.select({ kind: 'text', routeId: 'opencode' }).selected.id, 'opencode/new-free');
   delete config.routes[0].autoSelect;
@@ -163,9 +166,9 @@ test('OpenCode live free-model labels override a paid API route only for those m
   const manualStore = new Store(':memory:');
   const manualPool = new Pool(manualConfig, manualStore, { directory: root });
   t.after(async () => { await manualPool.close(); manualStore.close(); });
-  assert.equal(manualPool.select({ kind: 'text', routeId: 'opencode', modelId:'opencode/new-free' }).selected.id, 'opencode/new-free');
+  assert.throws(() => manualPool.select({ kind: 'text', routeId: 'opencode', modelId: 'opencode/new-free' }), { code: 'MODEL_NOT_IN_POOL' });
   assert.throws(()=>manualPool.select({kind:'text',group:'free',routeId:'opencode'}),{code:'NO_ROUTE'});
-  assert.throws(() => manualPool.select({ kind: 'text', group: 'free', routeId: 'opencode', modelId: 'opencode/paid' }), { code: 'NO_ROUTE' });
+  assert.throws(() => manualPool.select({ kind: 'text', group: 'free', routeId: 'opencode', modelId: 'opencode/paid' }), { code: 'MODEL_NOT_IN_POOL' });
 });
 
 test('Claude control catalog imports resolved versions without a user prompt and preserves pool rules', async t => {
@@ -572,6 +575,8 @@ rl.on('line', line => {
   assert.equal(pool.models().some(m => m.routeId === 'codex-test' && m.id === 'gpt-6.1-sol'), false);
   assert.equal(pool.models().some(m => m.routeId === 'codex-test' && m.id === 'gpt-6.2-nova'), true);
   assert.throws(() => pool.select({ kind: 'text', routeId: 'codex-test', modelId: 'gpt-6.1-sol' }), { code: 'NO_ROUTE' });
+  assert.throws(() => pool.select({ kind: 'text', routeId: 'codex-test', modelId: 'gpt-6.2-nova' }), { code: 'MODEL_NOT_IN_POOL' });
+  pool.config.routes.find(r => r.id === 'codex-test').models.find(m => m.id === 'gpt-6.2-nova').memberships = [{ group: 'high' }];
   assert.equal(pool.select({ kind: 'text', routeId: 'codex-test', modelId: 'gpt-6.2-nova' }).selected.id, 'gpt-6.2-nova');
 
   const unhidden = setRouteModelSettingsFilter(scanned.config.modelFilters, 'codex-test', 'gpt-6.1-sol', false, scanned.config.routes);

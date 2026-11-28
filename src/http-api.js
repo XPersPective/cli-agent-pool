@@ -40,11 +40,11 @@ export const apiIndex = port => ({
   service: 'cli-agent-pool', version, base: `http://127.0.0.1:${port}/api`,
   open: {
     'GET /api/health': 'service up + counts',
-    'GET /api/catalog': 'sources; ?billing=free|subscription|... &adapter= &q= &kind=text|read|write &route= &limit= &offset= -> model page',
-    'GET /api/pools': 'categories; /api/pools/<id> -> category model page',
-    'GET /api/model?route=R&model=M': 'one model with cached quota',
+    'GET /api/pools': 'primary discovery: categories; /api/pools/<id> -> category model page',
+    'GET /api/catalog': 'pool-only sources (owner-assigned categories only); ?billing=free|subscription|... &adapter= &q= &kind=text|read|write &route= &limit= &offset= -> model page',
+    'GET /api/model?route=R&model=M': 'one pooled model with cached quota',
     'GET /api/quotas': 'cached quota per connection; /api/quotas/<routeId> windows; ?live=1 asks the CLI',
-    'GET /api/select?kind=write&mode=execute[&group=]': 'recommend a model without starting',
+    'GET /api/select?kind=write&mode=execute[&group=]': 'recommend a pooled model without starting (explicit group strictly enforces category)',
     'GET /api/help[?code=X]': 'service map or recovery for one error code',
     'GET /api/capabilities': 'optional task contracts',
     'GET /api/connections': 'enabled connections',
@@ -102,15 +102,21 @@ export async function handleApi({ pool, tools, invoke, method, url, authorized, 
   if (target.index) return { status: 200, body: apiIndex(port) };
   if (target.health) {
     const enabled = pool.config.routes.filter(r => r.enabled);
-    return { status: 200, body: { status: 'ok', version, connections: enabled.length, models: pool.catalogModels().filter(m => m.enabled).length, active: pool.active.size } };
+    return { status: 200, body: { status: 'ok', version, connections: enabled.length, models: pool.pooledModels().filter(m => m.enabled).length, active: pool.active.size } };
   }
   if ((target.token || (target.tool && !publicTools.has(target.tool))) && !authorized)
     return { status: 401, body: { error: { code: 'UNAUTHORIZED', message: 'Bu uç nokta Bearer access-token ister; görevler için cli-agent-pool CLI kullanılabilir.' } } };
   if (target.model) {
     const { routeId, modelId } = target.model;
-    if (!routeId || !modelId) throw new PoolError('INVALID_REQUEST', 'route ve model sorgu alanları gerekli (örn. /api/model?route=codex-local&model=gpt-5; arama için /api/catalog?q=...).');
-    const model = pool.catalogModels().find(m => m.enabled && m.routeId === routeId && m.id === modelId);
-    if (!model) throw new PoolError('MODEL_NOT_FOUND', 'Model bulunamadı, kapalı veya gizli.');
+    if (!routeId || !modelId) throw new PoolError('INVALID_REQUEST', 'route ve model sorgu alanları gerekli (örn. /api/model?route=codex-local&model=gpt-5; arama için /api/pools veya /api/catalog?q=...).');
+    const model = pool.pooledModels().find(m => m.enabled && m.routeId === routeId && m.id === modelId);
+    if (!model) {
+      const inCatalog = pool.catalogModels().some(m => m.enabled && m.routeId === routeId && m.id === modelId);
+      if (inCatalog) {
+        throw new PoolError('MODEL_NOT_IN_POOL', 'Model hiçbir havuz kategorisine eklenmemiş. Dış ajanlar yalnızca havuzdaki modelleri sorgulayabilir ve çağırabilir.');
+      }
+      throw new PoolError('MODEL_NOT_FOUND', 'Model havuzda bulunamadı, kapalı veya gizli.');
+    }
     const value = compactModel(pool, model);
     return { status: 200, body: authorized ? value : stripEmails(value) };
   }

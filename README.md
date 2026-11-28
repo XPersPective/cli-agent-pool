@@ -12,20 +12,16 @@ PWA sunucusudur. Gemini CLI desteği kaldırılmıştır.
 
 ### Ajanlar için kısa kullanım
 
-2.0.0: **kategoriler** ve **katalog** bağımsızdır; seçimi çağıranın talimatı belirler.
-UI'dan özel kategori oluşturulur, yeniden adlandırılır ve kaldırılır. Katalogdan
-model çağırmak kategori gerektirmez. `pool_help` kısa haritayı, hata kodu verilirse
-yalnız o sorunun çözüm yolunu sunar. Boş keşif sorguları bütün modelleri dökmez.
+2.33.0: **katalog** yalnızca sahibinin UI üzerinden havuzlara model ekleyip çıkarması içindir; dış ajanların muhatap olduğu arka uç yüzeyi **yalnız havuz kategorileridir (`pools`)**. Bir havuz kategorisine eklenmemiş modeller ajan keşfinde gizlidir ve doğrudan çağrılırsa `MODEL_NOT_IN_POOL` ile reddedilir. Kullanıcı belirli bir kategori (`group`) seçtiğinde yalnız o kategori kullanılır. `pool_help` kısa haritayı, hata kodu verilirse yalnız o sorunun çözüm yolunu sunar. Boş keşif sorguları bütün modelleri dökmez.
 
 Havuz belli ise doğrudan çalıştırın; kaynak kodu veya bütün kataloğu taramak gerekmez:
 
 ```powershell
 cli-agent-pool run --mode execute --group medium --workspace "D:\projeler\uygulama" --prompt "İstenen değişikliği uygula ve ilgili kontrolleri çalıştır"
-cli-agent-pool catalog --query flash --kind write --limit 8
+cli-agent-pool pools --group medium
 ```
 
-İkinci komut yalnız model kimliği bilinmiyorsa gerekir. MCP'de aynı akış
-`pool_submit` → `pool_get_task(compact:true)`; kısa keşif araçları `pool_catalog` ve `pool_quota_overview`.
+İkinci komut yalnız kategori üyeleri bilinmiyorsa gerekir. MCP'de birincil keşif `pool_list_pools`, ardından `pool_submit` → `pool_get_task(compact:true)`; diğer kısa keşif araçları `pool_catalog` (yalnız havuzlu modellerde filtre) ve `pool_quota_overview`.
 Ajanlar MCP handshake yükü olmadan doğrudan yerel HTTP API'yi (`http://127.0.0.1:43127/api`) de sorgulayabilir:
 `GET /api/catalog`, `GET /api/pools`, `GET /api/quotas`, `GET /api/model?route=R&model=M`, `GET /api/select`, `GET /api/help`.
 CLI'da `cli-agent-pool quotas`, `cli-agent-pool model`, `cli-agent-pool api` komutları aynı hızlı uç noktaları kullanır.
@@ -243,10 +239,12 @@ havuzlara farklı eforlarla eklenebilir. Çıkar düğmesi yalnızca seçili hav
 Kategoriler UI'da oluşturulabilir, yeniden adlandırılabilir ve kaldırılabilir.
 High/medium/low/free başlangıç kategorileridir; özel kategoriler de kullanılabilir.
 Bir model birden fazla kategoride bulunabilir. Üyelikteki efor varsayılandır;
-çağıran desteklenen başka eforu seçebilir. Katalogdan model seçmek kategori
-üyeliği gerektirmez. Seçim/gruplama yetki anahtarları kaldırıldı; çağıran kendi
-talimatına göre iki girişten birini kullanır. Kategoriden çıkarmak modeli
-katalogdan gizlemez; kapalı/gizli modeller dışarıya verilmez.
+çağıran desteklenen başka eforu seçebilir. Katalog yalnızca sahibinin UI üzerinden
+havuzlara model ekleyip çıkarması içindir; dış ajanlar yalnızca havuz kategorilerine
+eklenmiş modelleri keşfedip çalıştırabilir (havuz dışı model `MODEL_NOT_IN_POOL` ile
+reddedilir). Kullanıcı açıkça bir kategori (`group`) belirlediğinde yalnız o
+kategori geçerlidir. Kategoriden çıkarmak modeli yönetim kataloğundan gizlemez;
+kapalı/gizli veya havuz dışı modeller dışarıya verilmez.
 
 Kullanıcı onayından sonra eklenen model ve bağlantısı etkinleşir; CLI ayarlarını
 inceleme, yerel oturum ve ücretli API otomatik seçim izinleri geçerliliğini korur.

@@ -188,21 +188,25 @@ test('real MCP client discovers tools and executes shell-free fake CLI through p
   assert.ok(denied.isError); assert.match(denied.content[0].text, /INVALID_WORKSPACE/);
 });
 
-test('MCP exposes a short service map, custom category pages and independent catalog selection', async t => {
-  const {url,token,managementToken}=await application(t);
+test('MCP exposes pool-only discovery, custom category pages and strict pool/category enforcement', async t => {
+  const {url,token,managementToken,root}=await application(t);
   const client=new Client({name:'categories-test',version:'1.0.0'});
   await client.connect(new StreamableHTTPClientTransport(url,{requestInit:{headers:{Authorization:'Bearer '+token}}}));t.after(()=>client.close());
   assert(!(await client.listTools()).tools.some(t=>t.name==='pool_assign_groups'));
   const map=(await client.callTool({name:'pool_help',arguments:{}})).structuredContent.data;
   assert(map.entries.pools);assert(map.entries.catalog);assert(!JSON.stringify(map).includes('selectionMode'));
   const manage=async body=>(await fetch(new URL('/manage',url),{method:'POST',headers:{Authorization:'Bearer '+managementToken,'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
-  const view=await manage({operation:'get'});view.config.categories.push({id:'research',name:'Araştırma'});view.config.routes[0].models[0].memberships=[{group:'research'}];await manage({operation:'save',...view});
+  const view=await manage({operation:'get'});view.config.categories.push({id:'research',name:'Araştırma'});view.config.routes[0].models[0].memberships=[{group:'research'}];view.config.routes[0].models.push({id:'unassigned-model',alias:'Unassigned',group:'unassigned',kinds:['read'],efforts:[],memberships:[]});await manage({operation:'save',...view});
   const pools=(await client.callTool({name:'pool_list_pools',arguments:{}})).structuredContent.data;
   assert(pools.categories.some(c=>c.id==='research'&&c.count===1));assert(!('models' in pools));
   const page=(await client.callTool({name:'pool_list_pools',arguments:{group:'research'}})).structuredContent.data;
   assert.equal(page.models[0].modelId,'test-model');
   const selected=await client.callTool({name:'pool_select',arguments:{kind:'read',modelId:'test-model'}});
   assert.equal(selected.structuredContent.data.selected.modelId,'test-model');
+  const unassignedSelect=await client.callTool({name:'pool_select',arguments:{kind:'read',modelId:'unassigned-model'}});
+  assert.equal(JSON.parse(unassignedSelect.content[0].text).error.code,'MODEL_NOT_IN_POOL');
+  const unassignedSubmit=await client.callTool({name:'pool_submit',arguments:{prompt:'Try unassigned',workspace:root,kind:'read',routeId:'test',modelId:'unassigned-model',idempotencyKey:'mcp-unassigned-001'}});
+  assert.equal(JSON.parse(unassignedSubmit.content[0].text).error.code,'MODEL_NOT_IN_POOL');
   const error=await client.callTool({name:'pool_select',arguments:{kind:'read',group:'missing'}});
   const payload=JSON.parse(error.content[0].text);assert.equal(payload.error.code,'CATEGORY_NOT_FOUND');assert.equal(payload.error.help.tool,'pool_help');
   assert(error.content[0].text.length<500);

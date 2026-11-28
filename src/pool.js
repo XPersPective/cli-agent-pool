@@ -141,15 +141,19 @@ export class Pool {
     })); }));
   }
   catalogModels() {
+    const activeCategoryIds = new Set(this.config.categories.map(category => category.id));
     const unique = new Map();
     for (const model of this.models()) {
       const key = JSON.stringify([model.routeId, model.id]);
       if (unique.has(key)) continue;
       const source = this.config.routes.find(route => route.id === model.routeId).models.find(item => item.id === model.id);
       unique.set(key, { ...model, group: undefined, defaultEffort: source.defaultEffort, order: source.order,
-        categories: (source.memberships || []).map(member => member.group) });
+        categories: (source.memberships || []).map(member => member.group).filter(group => activeCategoryIds.has(group)) });
     }
     return [...unique.values()];
+  }
+  pooledModels() {
+    return this.catalogModels().filter(model => model.categories.length > 0);
   }
   pools(input = {}) { return categoryPage(this, input); }
   select(request, options = {}) {
@@ -171,7 +175,12 @@ export class Pool {
     };
     const rejected = new Map();
     const duplicateRoutes = this.duplicateRouteMap();
-    const matches = (request.group ? this.models() : this.catalogModels()).filter(model => {
+    const sourceModels = request.group
+      ? this.models().filter(model => model.group === request.group)
+      : options.allowCatalog
+        ? this.catalogModels()
+        : this.pooledModels();
+    const matches = sourceModels.filter(model => {
       if ((request.routeId && model.routeId !== request.routeId) || (request.modelId && model.id !== request.modelId) || (request.group && model.group !== request.group)) return false;
       if (!request.routeId && duplicateRoutes.has(model.routeId)) return false;
       const snapshot = options.ignoreQuota ? null : this.store.quota(model.routeId);
@@ -198,7 +207,23 @@ export class Pool {
         return a.model.routeId.localeCompare(b.model.routeId) || a.model.id.localeCompare(b.model.id);
       })
       .map(entry => entry.model);
-    if (!matches.length) throw new PoolError('NO_ROUTE', noRouteMessage(request, rejected));
+    if (!matches.length) {
+      if (!rejected.size && !options.allowCatalog && (request.modelId || (request.routeId && !request.group))) {
+        const inCatalog = this.catalogModels().some(model => model.enabled &&
+          (!request.routeId || model.routeId === request.routeId) &&
+          (!request.modelId || model.id === request.modelId) &&
+          (request.routeId || !duplicateRoutes.has(model.routeId)));
+        if (inCatalog) {
+          throw new PoolError(
+            'MODEL_NOT_IN_POOL',
+            request.group
+              ? `İstenen model "${request.group}" havuz kategorisinde değil. İstenen kategori kuralı geçerlidir; pool_list_pools ile "${request.group}" üyelerini sorgulayın.`
+              : 'İstenen model hiçbir havuz kategorisine eklenmemiş. Dış ajanlar yalnızca havuzdaki modelleri kullanabilir; pool_list_pools ile havuzları sorgulayın.',
+          );
+        }
+      }
+      throw new PoolError('NO_ROUTE', noRouteMessage(request, rejected));
+    }
     return { selected: matches[0], alternatives: matches.slice(1), reason: 'Önce abonelik, token planı ve ücretsiz modeller tercih edilir; ücretli API yalnızca açıkça seçildiğinde veya otomatik seçime izin verildiğinde kullanılır.' };
   }
   async getQuota(routeId, force = false) {
@@ -269,8 +294,9 @@ export class Pool {
     this.quotaRequests.set(routeId, request);
     try { return await request; } finally { this.quotaRequests.delete(routeId); }
   }
-  async selectLive(request, { allowStaleRefresh = false, maxWaitMs = 0 } = {}) {
+  async selectLive(request, { allowStaleRefresh = false, maxWaitMs = 0, allowCatalog = false } = {}) {
     const routes = new Set(this.models().filter(model => model.enabled && model.kinds.includes(request.kind) &&
+      (allowCatalog || model.group !== 'unassigned') &&
       (!request.group || model.group === request.group) && (!request.routeId || model.routeId === request.routeId) &&
       (!request.modelId || model.id === request.modelId) && (request.routeId || model.billing !== 'paid_api' || model.autoSelect)).map(model => model.routeId));
     // Unsupported/offline quota probes stay unknown; never invent a balance.
@@ -306,7 +332,7 @@ export class Pool {
         await work;
       }
     }
-    return this.select(request);
+    return this.select(request, { allowCatalog });
   }
   async probeModel(input) {
     if (!input || typeof input.routeId!=='string' || typeof input.modelId!=='string' || Object.keys(input).some(key=>!['routeId','modelId','group','effort'].includes(key))) throw new PoolError('INVALID_REQUEST','Geçerli bir model seçin.');
@@ -320,7 +346,7 @@ export class Pool {
     if (request.profile === 'director' && !options.owner) throw new PoolError('OWNER_ONLY', 'Director tasks require the owner surface.');
     allowedWorkspace(request.workspace, probe?[path.join(this.directory,'probes')]:undefined);
     if (!this.store.byKey(request.idempotencyKey)) {
-      await this.selectLive(request, { allowStaleRefresh: true, maxWaitMs: 2500 });
+      await this.selectLive(request, { allowStaleRefresh: true, maxWaitMs: 2500, allowCatalog: Boolean(probe) });
     }
     return this.submit(input,probe,options);
   }
@@ -345,7 +371,7 @@ export class Pool {
       if (existing.fingerprint !== fingerprint) throw new PoolError('IDEMPOTENCY_CONFLICT', 'Aynı istek anahtarı farklı içerikle kullanıldı. Yeni bir anahtar seçin.');
       return this.get(existing.id);
     }
-    const model = this.select(request).selected;
+    const model = this.select(request, { allowCatalog: Boolean(probe) }).selected;
     if (request.profile === 'director') assertDirectorRoute(this.routeFor({ routeId: model.routeId }));
     if (parent) director.checkLinkedWorker(this, parent, request, model);
     request.routeId = model.routeId;
@@ -452,7 +478,7 @@ export class Pool {
   async run(task, request, route, handle) {
     try {
       request.workspace = allowedWorkspace(request.workspace, request.probe?[path.join(this.directory,'probes')]:undefined);
-      const model = this.select(request, { excludeTaskId: task.id }).selected;
+      const model = this.select(request, { excludeTaskId: task.id, allowCatalog: Boolean(request.probe) }).selected;
       await this.verifyRouteAuth(route, request.workspace, model);
       if (handle.cancelled || this.closed) { director.failQueuedPreflight(this, task.id, handle.cancelReason || 'CANCELLED'); this.store.update(task.id, 'cancelled', null, handle.cancelReason || 'CANCELLED'); return; }
       const context = this.taskContext(request) || { directory: this.directory };

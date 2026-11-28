@@ -327,9 +327,9 @@ test('non-metered routes are preferred over paid_api and missing subscription pl
   const config = configSchema.parse({
     workspaceRoots: [root],
     routes: [
-      { id: 'paid', adapter: 'claude', executable: process.execPath, enabled: true, billing: 'paid_api', autoSelect: false, priority: 1, api: { protocol: 'anthropic', baseUrl: 'https://example.invalid' }, models: [{ id: 'paid-m', alias: 'Paid', group: 'g', efforts: [], kinds: ['text', 'read'] }] },
-      { id: 'free-oc', adapter: 'opencode', executable: process.execPath, enabled: true, billing: 'free', priority: 100, models: [{ id: 'free-m', alias: 'Free', group: 'g', efforts: [], kinds: ['text', 'read'] }] },
-      { id: 'mcode-cred', adapter: 'mcode', executable: process.execPath, enabled: true, billing: 'free_credits', priority: 50, models: [{ id: 'mcode-m', alias: 'MCode', group: 'g', efforts: [], kinds: ['text'] }] },
+      { id: 'paid', adapter: 'claude', executable: process.execPath, enabled: true, billing: 'paid_api', autoSelect: false, priority: 1, api: { protocol: 'anthropic', baseUrl: 'https://example.invalid' }, models: [{ id: 'paid-m', alias: 'Paid', group: 'low', efforts: [], kinds: ['text', 'read'] }] },
+      { id: 'free-oc', adapter: 'opencode', executable: process.execPath, enabled: true, billing: 'free', priority: 100, models: [{ id: 'free-m', alias: 'Free', group: 'low', efforts: [], kinds: ['text', 'read'] }] },
+      { id: 'mcode-cred', adapter: 'mcode', executable: process.execPath, enabled: true, billing: 'free_credits', priority: 50, models: [{ id: 'mcode-m', alias: 'MCode', group: 'low', efforts: [], kinds: ['text'] }] },
     ],
   });
   const store = new Store(path.join(root, 'pool.sqlite'));

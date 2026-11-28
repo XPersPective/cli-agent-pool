@@ -9,7 +9,7 @@ import { Pool, suggestGroup } from '../src/pool.js';
 import { Store } from '../src/store.js';
 import { browserUI, pickWindowsFolder } from '../src/web.js';
 
-test('owner categories are revision-bound and removing membership does not remove catalog access', async t => {
+test('owner categories are revision-bound and removing membership blocks agent selection while retaining owner catalog', async t => {
   const directory = mkdtempSync(path.join(tmpdir(), 'pool-categories-'));
   const config = configSchema.parse({ selectionMode:'manual', groupingMode:'agent', routes: [{id:'codex',adapter:'codex',executable:process.execPath,billing:'subscription',enabled:true,models:[{id:'astra',alias:'Astra',group:'high',kinds:['text']}]}] });
   writeFileSync(path.join(directory,'config.json'),JSON.stringify(config));
@@ -23,7 +23,8 @@ test('owner categories are revision-bound and removing membership does not remov
   assert.throws(()=>saveConfig(directory,view.config,view.revision),{code:'CONFIG_CONFLICT'});
   pool.config.routes[0].models[0].memberships=[];
   assert.equal(pool.pools({group:'research'}).total,0);
-  assert.equal(pool.select({kind:'text',modelId:'astra'}).selected.id,'astra');
+  assert.equal(pool.catalogModels().some(m => m.id === 'astra'), true);
+  assert.throws(()=>pool.select({kind:'text',modelId:'astra'}),{code:'MODEL_NOT_IN_POOL'});
 });
 
 test('live group selection skips exhausted routes, respects pins and never retries execution', async t => {

@@ -347,6 +347,11 @@ function createPoolBridge(directory, customFetch = fetch) {
       return { ...(last || {}), models };
     },
     catalogModels: async () => {
+      try {
+        return await managementRequest(directory, getConfig(), { operation: 'catalog_models' }, { timeoutMs: 10_000 });
+      } catch (error) {
+        if (!(error instanceof PoolError) || error.code !== 'INVALID_OPERATION') throw error;
+      }
       const all = [];
       let offset = 0;
       for (let page = 0; page < 15; page++) {

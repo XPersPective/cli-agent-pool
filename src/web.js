@@ -14,6 +14,7 @@ import { codexControl } from './codex-control.js';
 import { saveSecret, hasSecret, deleteSecret } from './secrets-store.js';
 import { childEnvironment, resolveWindowsPython, runProcess } from './process.js';
 import { installDesktopAndSkills, scheduleServiceRestart, checkUpdateStatus, readInstalledVersion, updateNeedsRestart, ensureRemoteDaemon, openRemoteWindow, windowsConsoleHostStatus, applyWindowsConsoleHostFix } from './daemon.js';
+import { compactModel } from './catalog.js';
 
 const winLoginScript = fileURLToPath(new URL('./winlogin.py', import.meta.url));
 
@@ -145,6 +146,12 @@ export function managementOperation(pool, management, body) {
     }
     setTimeout(() => { void management.onShutdown?.(); }, 100).unref?.();
     return { stopping: true, activeCount, message: 'CLI Agent Pool servisi güvenli şekilde kapatıldı.' };
+  }
+  if (body.operation === 'catalog_models') {
+    const duplicateRoutes = typeof pool.duplicateRouteMap === 'function' ? pool.duplicateRouteMap() : new Map();
+    return pool.catalogModels()
+      .filter(m => m.enabled && !duplicateRoutes.has(m.routeId))
+      .map(m => compactModel(pool, m));
   }
   if (body.operation === 'save') {
     if (body.config?.port !== pool.config.port || body.config?.python !== pool.config.python) throw new PoolError('RESTART_REQUIRED', 'Port veya Python yolunu değiştirmek için servisi durdurup yerel ayarları değiştirin.');

@@ -152,6 +152,19 @@
 - [x] **Doğrulama kanıtı (2.20.0)**: `npm run check`, `npm run secrets`, `npm audit --audit-level=moderate`, `npm test` (`218/218`, yeni `test/remote.test.js` dahil) ve canlı `cli-agent-pool` servisi üzerinden `/r/state` uçtan uca entegrasyon testi doğrulandı.
 
 ## 2.19.0 — Onay/Ekleme Kilidi Düzeltmesi, Windows Pythonw İzolasyonu, 300 Model Sınırı, Neon/Ağ Hata Düzeltmeleri ve Otomatik Güncelleme Bildirimi
+## 2.33.0 — Dış Ajanlar İçin Havuz-Odaklı Model Keşfi ve Zorunlu Havuz/Kategori Sınırı
+- [x] **Dış ajanlar yalnızca havuz kategorilerine eklenmiş modelleri görebilir ve çalıştırabilir (`src/pool.js`, `src/routing.js`, `src/catalog.js`, `src/http-api.js`, `src/server.js`, `src/service-help.js`)**:
+  - `Pool.catalogModels()` etkin kategori kimliklerine göre üyelikleri süzer; yeni `Pool.pooledModels()` yalnızca en az bir sahip havuz kategorisinde yer alan modelleri döndürür.
+  - `Pool.select()`, `Pool.selectLive()`, `Pool.submit()`, `Pool.submitLive()` ve `Pool.run()` ajan çağrılarında varsayılan olarak yalnızca `pooledModels()` üzerinde çalışır; açık `group` verildiğinde yalnız o kategoriyle sınırlar ve başka kategori veya havuz dışı model sabitlenirse `MODEL_NOT_IN_POOL` (`403`) ile reddeder.
+  - Yalnızca dahili sahip `Pool.probeModel()` çağrısı (`allowCatalog: true`) atanmamış katalog modellerini test etmeye devam eder (`taskSchema` üzerinden dışarı açılmaz).
+  - `/api/catalog`, `/api/models`, `/api/model`, `/api/health`, `/api/quotas` (`quotaOverview`), `pool_catalog`, `pool_list_models`, `pool_select`, `pool_submit` yalnızca havuzlu modelleri sunar; `/api/model` havuz dışı katalog modelinde `MODEL_NOT_IN_POOL` (`403`) döner ve `pool_list_pools` birincil keşif girişi olarak belgelenir.
+- [x] **Sahip yönetim arayüzleri ve Remote PWA kataloğu korundu (`src/web.js`, `remote/server.js`, `remote/public/app.js`)**:
+  - Sahip `/manage` uç noktasına `operation: 'catalog_models'` eklendi; Remote PWA yönetim sekmesi tüm kataloğu buradan okuyarak havuz ekleme/çıkarma yapmaya devam ederken sohbet model seçicisindeki `Diğer Katalog` sızıntısı kaldırıldı.
+- [x] **Belgeler, Skill ve Testler (`skills/cli-agent-pool/SKILL.md`, `README.md`, `docs/*.md`, `test/*.test.js`)**:
+  - `SKILL.md`, `README.md`, `docs/architecture.md`, `docs/agent-api.md`, `docs/errors.md` güncellendi; `catalog`, `groups`, `http-api`, `maintenance`, `mcp`, `pool-workflow` ve `core` testleri havuz-odaklı kural, açık kategori önceliği, sahip `probeModel` ve `/manage` `catalog_models` kapsamıyla doğrulandı.
+- [x] **Sürüm yükseltmesi**: `package.json` / `package-lock.json` `2.33.0`.
+- [x] **Doğrulama kanıtı (2.33.0)**: `npm run check` (`JavaScript and Python syntax checks passed`), `npm run secrets` (`113` dosya temiz), `npm audit --audit-level=moderate` (`0 vulnerabilities`), `npm test` (`260/260` geçti, `0` başarısız / atlanan).
+
 ## 2.32.0 — Sınırsız Girdi/Çıktı Boyutu ve Zaman Aşımsız Görev/İstek Akışı
 - [x] **Girdi ve çıktı karakter/boyut sınırları kaldırıldı (`src/pool.js`, `src/task-protocol.js`, `src/supervisor.py`, `src/adapters.js`, `src/server.js`, `src/rpc.js`, `remote/server.js`, `remote/public/app.js`)**:
   - `taskSchema.prompt` (`100_000` karakter), `executionReportSchema` (`4000`/`1000`/`32_768` karakter), `compactTask` (`6000` karakter kesme), `supervisor.py` stdin (`2_000_000` bayt), `execute` `retainBytes` (`2 MB`) ve `rawLines` (`1000` karakter) sınırları kaldırıldı.

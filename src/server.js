@@ -35,23 +35,23 @@ export function poolTools(pool, caller = {}) {
     if (caller.taskToken || caller.worker) throw new PoolError('OWNER_ONLY', 'This operation requires an owner session outside a Pool task.');
   };
   const register = (name, description, inputSchema, callback, readOnly = true) => tools.set(name, { name, description, inputSchema, callback, readOnly });
-  register('pool_list_connections', 'Enabled connections only; each account is its own connection. Prefer pool_catalog for model discovery.', {}, () => pool.config.routes.filter(r => r.enabled).map(route => {
+  register('pool_list_connections', 'Enabled connections only; each account is its own connection. Prefer pool_list_pools for model discovery.', {}, () => pool.config.routes.filter(r => r.enabled).map(route => {
     const email = pool.store.quota(route.id)?.email || routeAccountEmail(route, pool.directory);
     return { id: route.id, adapter: route.adapter, billing: route.billing, account: route.profile || 'default', ...(email ? { email } : {}), ...(route.runtime === 'wsl' ? { runtime: route.runtime } : {}) };
   }));
-  register('pool_list_pools', 'Categories only by default; group selects a short model page. Cached quota; no CLI calls.', categoryQuerySchema.shape, input => pool.pools(input));
-  register('pool_list_models', 'Compatibility paginated catalog. Prefer pool_catalog.', catalogSchema.shape, input => compactCatalog(pool, {...input, view:'models'}));
+  register('pool_list_pools', 'Primary discovery entry: returns owner-configured pool categories by default; pass group to list a category model page. Cached quota; no CLI calls.', categoryQuerySchema.shape, input => pool.pools(input));
+  register('pool_list_models', 'Compatibility paginated list of pooled models. Prefer pool_list_pools.', catalogSchema.shape, input => compactCatalog(pool, {...input, view:'models'}));
   register('pool_help', 'Short service map, or recovery guidance for one error code.', {code:z.string().max(100).optional()}, ({code}) => serviceHelp(code));
   register('pool_get_policy', 'Compatibility service map; no selection or authority modes. Prefer pool_help.', {}, () => serviceHelp());
-  register('pool_select', 'Recommend an allowed model without starting a task. mode: execute requires write and native tool support. minRemainingPercent can raise the owner quota reserve, never lower it.', { kind: z.enum(['text', 'read', 'write']), mode: z.enum(['response', 'execute']).optional(), routeId: z.string().max(100).optional(), modelId: z.string().max(100).optional(), group: z.string().max(100).optional(), effort: z.string().max(100).optional(), minRemainingPercent: z.number().min(0).max(100).optional() }, async input => { const result = caller.cachedOnly ? pool.select(input) : await pool.selectLive(input, { allowStaleRefresh: true, maxWaitMs: 2500 }); return {selected:compactModel(pool,result.selected),alternatives:result.alternatives.length}; });
-  register('pool_submit', 'Start one bounded CLI task. For implementation use kind: write, mode: execute and the calling project/worktree absolute workspace. Native tools perform edits and checks, then return a short report. Reuse the same idempotency key for a lost response; poll the returned ID, never replay a started write.', taskSchema.extend({ compact: z.boolean().default(true) }).shape, async ({ compact, ...input }) => { let task;
+  register('pool_select', 'Recommend an allowed pooled model without starting a task. Only models assigned to owner pool categories are eligible; an explicit group strictly enforces that category. mode: execute requires write and native tool support. minRemainingPercent can raise the owner quota reserve, never lower it.', { kind: z.enum(['text', 'read', 'write']), mode: z.enum(['response', 'execute']).optional(), routeId: z.string().max(100).optional(), modelId: z.string().max(100).optional(), group: z.string().max(100).optional(), effort: z.string().max(100).optional(), minRemainingPercent: z.number().min(0).max(100).optional() }, async input => { const result = caller.cachedOnly ? pool.select(input) : await pool.selectLive(input, { allowStaleRefresh: true, maxWaitMs: 2500 }); return {selected:compactModel(pool,result.selected),alternatives:result.alternatives.length}; });
+  register('pool_submit', 'Start one bounded CLI task using a pooled model. Only models assigned to owner pool categories are runnable, and an explicit group strictly enforces that category. For implementation use kind: write, mode: execute and the calling project/worktree absolute workspace. Native tools perform edits and checks, then return a short report. Reuse the same idempotency key for a lost response; poll the returned ID, never replay a started write.', taskSchema.extend({ compact: z.boolean().default(true) }).shape, async ({ compact, ...input }) => { let task;
     if (input.profile === 'director') {
       if (caller.taskToken && !directing()) throw new PoolError('OWNER_ONLY', 'Workers cannot submit directors.');
       if (caller.worker && !directing()) owner();
       if ((caller.taskToken || caller.worker) && (input.onExit || input.secretEnv)) throw new PoolError('OWNER_ONLY', 'Only an owner session can attach onExit hooks or secretEnv.');
       task = await pool.submitDirector(input);
     } else task = await pool.submitLive(input, false, { taskToken: caller.taskToken }); return compact ? compactTask(task) : task; }, false);
-  register('pool_catalog', 'Sources only by default; billing/adapter/query filters return short model pages. No category required; no CLI discovery.', catalogSchema.shape, input => compactCatalog(pool, input));
+  register('pool_catalog', 'Pool-only filtered search across models assigned to owner categories (unassigned catalog models are excluded). Prefer pool_list_pools.', catalogSchema.shape, input => compactCatalog(pool, input));
   register('pool_quota_overview', 'Cached quota/status for every enabled connection (or one routeId); no CLI calls, no tokens.', quotaOverviewSchema.shape, input => quotaOverview(pool, input));
   register('pool_get_task', 'Read task state and result. compact: true omits prompt/events and bounds the report to reduce tokens. Queued is not failure; inspect queueReason/blockedBy.', { taskId: z.string().uuid(), after: z.number().int().min(0).default(0), compact: z.boolean().default(true) }, ({ taskId, after, compact }) => compact ? compactTask(pool.get(taskId, after)) : pool.get(taskId, after));
   register('pool_list_tasks', 'Read paginated local task history.', { limit: z.number().int().min(1).max(100).default(50), offset: z.number().int().min(0).max(1_000_000).default(0), activeFirst: z.boolean().default(false) }, ({ limit, offset, activeFirst }) => pool.list(limit, offset, activeFirst));
@@ -159,7 +159,7 @@ export function createServer(pool, token, port = pool.config.port, management) {
         status = code === 'INVALID_REQUEST' || code === 'INVALID_JSON' || code === 'INVALID_URL' || code === 'INVALID_WORKSPACE' ? 400
           : code === 'REQUEST_TOO_LARGE' ? 413
           : /NOT_FOUND|UNKNOWN_TOOL/.test(code) ? 404
-          : code === 'OWNER_ONLY' || code === 'WORKSPACE_DENIED' || code === 'PAID_ROUTE_DENIED' || code === 'READ_PATH_DENIED' ? 403
+          : code === 'OWNER_ONLY' || code === 'WORKSPACE_DENIED' || code === 'PAID_ROUTE_DENIED' || code === 'READ_PATH_DENIED' || code === 'MODEL_NOT_IN_POOL' ? 403
           : code === 'SHUTTING_DOWN' ? 503
           : code === 'INTERNAL_ERROR' ? 500 : 409;
         body = envelope;

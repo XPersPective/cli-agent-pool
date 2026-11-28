@@ -12,11 +12,11 @@ Salt-okunur keşif uç noktaları `127.0.0.1` üzerinde ek anahtar gerektirmeden
 | --- | --- | --- |
 | Uç nokta haritası | `GET /api` | `cli-agent-pool api` |
 | Servis sağlığı | `GET /api/health` | — |
-| Katalog kaynakları | `GET /api/catalog` | `pool_catalog {}` / `cli-agent-pool catalog` |
-| Filtreli model sayfası | `GET /api/catalog?billing=free&kind=write&q=flash&limit=12` | `cli-agent-pool catalog --billing free --kind write --query flash` |
-| Kategori özetleri | `GET /api/pools` | `pool_list_pools {}` / `cli-agent-pool pools` |
+| Katalog kaynakları (yalnız havuzlu) | `GET /api/catalog` | `pool_catalog {}` / `cli-agent-pool catalog` |
+| Filtreli havuz model sayfası | `GET /api/catalog?billing=free&kind=write&q=flash&limit=12` | `cli-agent-pool catalog --billing free --kind write --query flash` |
+| Birincil kategori özetleri | `GET /api/pools` | `pool_list_pools {}` / `cli-agent-pool pools` |
 | Kategori modelleri | `GET /api/pools/research` | `pool_list_pools {group:"research"}` / `cli-agent-pool pools --group research` |
-| Tek model + cached kota | `GET /api/model?route=qoder-local&model=Qwen3.8-Flash` | `cli-agent-pool model --route qoder-local --model Qwen3.8-Flash` |
+| Tek havuz modeli + cached kota | `GET /api/model?route=qoder-local&model=Qwen3.8-Flash` | `cli-agent-pool model --route qoder-local --model Qwen3.8-Flash` |
 | Tüm cached kotalar | `GET /api/quotas` | `pool_quota_overview {}` / `cli-agent-pool quotas` |
 | Canlı kota / giriş | `GET /api/quotas/qoder-local?live=1` (Bearer token) | `pool_get_quotas {routeId:"qoder-local"}` / `cli-agent-pool quotas --route qoder-local --live` |
 | Model önerisi | `GET /api/select?kind=write&mode=execute` | `pool_select` / `cli-agent-pool select --mode execute` |
@@ -24,16 +24,19 @@ Salt-okunur keşif uç noktaları `127.0.0.1` üzerinde ek anahtar gerektirmeden
 | Görev başlat / izle | `POST /api/tasks` · `GET /api/tasks/<id>` (Bearer token) | `pool_submit` · `pool_get_task` / `cli-agent-pool run` |
 
 Sayfalarda nextOffset varsa sonraki sorgunun offset alanına koyun. Varsayılan
-12, en fazla 40 kayıt; boş sorgular bütün modelleri dökmez. Katalog her modeli
-tek kez sunar; kategoriler bir modeli farklı varsayılan eforlarla içerebilir.
-Her model kaydında exact modelId/routeId, araç kapsamı, efor ve cached kota vardır.
-Kota bilinmiyorsa unknown; canlı kontrol ayrı sorgudur.
+12, en fazla 40 kayıt; boş sorgular bütün modelleri dökmez. Dış ajanlar yalnız
+sahip havuz kategorilerine eklenmiş modelleri görür; tam katalog yalnızca
+sahip arayüzüne açıktır. Kategoriler bir modeli farklı varsayılan eforlarla
+içerebilir. Her model kaydında exact modelId/routeId, araç kapsamı, efor ve
+cached kota vardır. Kota bilinmiyorsa unknown; canlı kontrol ayrı sorgudur.
 
 ## Çalıştırma
 
-Bilinen model/kategori için doğrudan pool_submit. group yalnız kategori seçerken
-verilir. Katalogdan seçim kategori üyeliği gerektirmez. Seçimi çağıranın talimatı
-belirler. Desteklenen bir request.effort kategori varsayılanını geçersiz kılar.
+Birincil keşif `pool_list_pools` iledir; bilinen havuz modeli/kategori için
+doğrudan `pool_submit`. `group` verildiğinde seçim kesinlikle o kategoriyle
+sınırlandırılır (kullanıcının belirttiği kategori her şeyi ezer). Havuz
+kategorilerinde olmayan modeller `MODEL_NOT_IN_POOL` ile reddedilir.
+Desteklenen bir `request.effort` kategori varsayılanını geçersiz kılar.
 
 ~~~json
 {"prompt":"İstenen değişikliği uygula ve kontrol et.","workspace":"D:/projeler/uygulama","kind":"write","mode":"execute","routeId":"qoder-local","modelId":"Qwen3.8-Flash","idempotencyKey":"implement-001"}
@@ -65,8 +68,9 @@ ilgili sorun için okunur. Başarısız veya yarım kalan yazma görevleri doğr
 `failed` olur; otomatik replay veya başka modele kör tekrar yok. Kapalı/gizli
 modeller hiçbir girişten verilmez. Ücretli API billing, native izinler, model
 yetenekleri ve kota rezervleri geçerlidir; seçim/gruplama yetki modu yoktur.
-Kategoriden çıkarma katalog erişimini kaldırmaz. Kategoriler UI'da oluşturulur,
-adlandırılır, kaldırılır.
+Kategoriden çıkarma sahip UI kataloğunu silmez ama ajanın o modele erişimini
+kapatır (`MODEL_NOT_IN_POOL`). Kategoriler UI'da oluşturulur, adlandırılır,
+kaldırılır.
 
 Birden fazla istemci aynı servisi kullanabilir; Pool çalışma klasörü kilidi veya
 karantina (`needs_review`) uygulamaz, eşzamanlı yazma koordinasyonu çağırana

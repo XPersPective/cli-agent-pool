@@ -7,7 +7,8 @@ Hatanın/task ID'sini koruyun; normal sorgularda bütün bu dosyayı yüklemeyin
 | --- | --- |
 | AUTH_REQUIRED | İlgili resmî CLI girişini tamamlayın; quota/status ile yeniden kontrol edin. |
 | MODEL_UNAVAILABLE | Native CLI model/hesabı yükleyemedi; katalog ve CLI hesabını kontrol edin. Başka plan otomatik kullanılmaz. |
-| CATEGORY_NOT_FOUND | pool_list_pools ile güncel ID alın; katalog seçimi category gerektirmez. |
+| CATEGORY_NOT_FOUND | pool_list_pools ile güncel ID alın; dış ajanlar yalnızca tanımlı kategorilerdeki modelleri kullanabilir. |
+| MODEL_NOT_IN_POOL | İstenen model hiçbir havuz kategorisinde değil (veya seçilen kategoride yok); `pool_list_pools` ile havuz modelini seçin ya da sahibinden UI üzerinden havuza eklemesini isteyin. |
 | NO_ROUTE | Tam model/route veya kategori, etkinlik ve kota durumunu kontrol edin. |
 | PERMISSION_REQUIRED | Native CLI denied tool ve workspace izinlerini inceleyin. Bypass yok. |
 | QUOTA_EXHAUSTED | Reset/bakiye beklenir; başka model yalnız çağıranın talimatı izin veriyorsa seçilir. |
